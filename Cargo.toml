@@ -10,7 +10,7 @@ categories = ["science::robotics", "algorithms", "mathematics", "simulation"]
 keywords = [
     "trajectory-planning",
     "jerk-limited",
-    "path-parameterization",
+    "motion-planning",
     "convex-optimization",
     "time-optimal",
 ]
