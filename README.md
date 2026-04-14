@@ -290,7 +290,7 @@ All metrics are listed in the form of "mean ± std".
 | <font color="#C00000">**TOPP3-RA**</font> (Iteration 1) | **10.571045** ± 0.857653 | **41.499200** ± 1.385735 |
 | <font color="#C00000">**TOPP3-RA**</font> (Iteration 2) | **20.300932** ± 1.237908 | **41.399867** ± 1.386791 |
 
-#### Convex-Objective, 7-DOF, 100 Random Splines
+#### Convex-Objective
 
 In this test, TOPP methods still use traversal time as the optimization objective.
 
