@@ -308,7 +308,9 @@ In this test, TOPP methods still use traversal time as the optimization objectiv
 
 For COPP-Pro licensing, commercial collaboration, or technical consulting, please contact:
 
-+ Mr. Yunan Wang: wang-yn22@mails.tsinghua.edu.cn
-+ Dr. Suqin He: hsq_thu2012@163.com
-+ Dr. Shize Lin: linszthume@gmail.com
-+ Prof. Chuxiong Hu: cxhu@tsinghua.edu.cn
++ [Mr. Yunan Wang](https://scholar.google.com/citations?user=RXaTo_kAAAAJ): wang-yn22@mails.tsinghua.edu.cn
++ [Dr. Suqin He](https://github.com/hsqthu2012): hsq_thu2012@163.com
++ [Dr. Shize Lin](https://github.com/thume4zzzz): linszthume@gmail.com
++ [Prof. Chuxiong Hu](https://www.me.tsinghua.edu.cn/en/info/1275/2062.htm): cxhu@tsinghua.edu.cn
+
+Furthermore, we thank [Jizhou Yan](https://github.com/yixing312) for his expertise on Rust.
