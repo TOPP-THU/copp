@@ -2,7 +2,14 @@ name: Python Wheels
 
 on:
   push:
+    branches: ["**"]
     tags: ["v*"]
+    paths:
+      - "bindings/python/**"
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/python-wheels.yml"
   pull_request:
     paths:
       - "bindings/python/**"
