@@ -123,18 +123,3 @@ jobs:
           python -c "import glob, subprocess, sys; wheel = glob.glob('dist/*.whl')[0]; subprocess.check_call([sys.executable, '-m', 'pip', 'install', wheel])"
           python -m pip install pytest
           python -m pytest bindings/python/tests/ -v
-
-  publish:
-    needs: [build, sdist, test, smoke-test]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: dist/
