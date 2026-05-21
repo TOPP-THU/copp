@@ -1,9 +1,37 @@
+# Rust
 /target
+
+# Data
 /data
 /.vscode
+.idea/
 
 *.rkyv
 
 /bindings/**/build/
 /bindings/**/build-*/
 /bindings/c/docs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+.env/
+env/
+*.egg-info/
+*.egg
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Example outputs
+bindings/python/outputs/

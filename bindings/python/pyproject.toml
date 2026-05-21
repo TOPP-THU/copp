@@ -1,0 +1,28 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "copp"
+version = "0.1.0"
+description = "Convex-objective path parameterization for robotic trajectory planning"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["numpy>=1.22"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
+
+[tool.maturin]
+features = ["pyo3/abi3-py310"]
+module-name = "copp._copp"

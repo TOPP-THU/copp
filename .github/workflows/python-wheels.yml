@@ -1,0 +1,133 @@
+name: Python Wheels
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "bindings/python/**"
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/python-wheels.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64
+            artifact: wheel-ubuntu-latest-x86_64
+          - os: ubuntu-latest
+            target: aarch64
+            artifact: wheel-ubuntu-latest-aarch64
+          - os: macos-15-intel
+            target: x86_64
+            artifact: wheel-macos-15-intel-x86_64
+          - os: macos-14
+            target: aarch64
+            artifact: wheel-macos-14-aarch64
+          - os: windows-latest
+            target: x86_64
+            artifact: wheel-windows-latest-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist -m bindings/python/Cargo.toml
+          manylinux: auto
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*.whl
+
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist -m bindings/python/Cargo.toml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  test:
+    needs: [build]
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel-ubuntu-latest-x86_64
+          path: dist
+      - env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: 1
+        run: |
+          python -c "import glob, subprocess, sys; wheel = glob.glob('dist/*.whl')[0]; subprocess.check_call([sys.executable, '-m', 'pip', 'install', wheel])"
+          python -m pip install pytest
+          python -m pytest bindings/python/tests/ -v
+
+  smoke-test:
+    needs: [build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            artifact: wheel-ubuntu-latest-x86_64
+          - runner: ubuntu-24.04-arm
+            artifact: wheel-ubuntu-latest-aarch64
+          - runner: macos-15-intel
+            artifact: wheel-macos-15-intel-x86_64
+          - runner: macos-14
+            artifact: wheel-macos-14-aarch64
+          - runner: windows-latest
+            artifact: wheel-windows-latest-x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          allow-prereleases: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist
+      - env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: 1
+        run: |
+          python -c "import glob, subprocess, sys; wheel = glob.glob('dist/*.whl')[0]; subprocess.check_call([sys.executable, '-m', 'pip', 'install', wheel])"
+          python -m pip install pytest
+          python -m pytest bindings/python/tests/ -v
+
+  publish:
+    needs: [build, sdist, test, smoke-test]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
