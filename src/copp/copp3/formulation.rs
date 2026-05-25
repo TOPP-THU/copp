@@ -23,10 +23,6 @@
 //! $c=\frac{\dddot{s}}{\dot{s}}$-constant formulation degenerates near zero speed.
 //! A short boundary neighborhood modeled by $\dddot{s}$-constant stationary intervals is the
 //! practical remedy.
-//!
-//! For online/windowed planning, `num_stationary_max` can be asymmetric. A practical example is
-//! [test_mercedes_benz_mold](../../../../tests/test_real_cnc/test_real_cnc.rs), where window-end
-//! stationary allowance is intentionally relaxed for intermediate windows.
 
 use crate::copp::CoppObjective;
 use crate::copp::constraints::Constraints;
@@ -36,6 +32,69 @@ use itertools::izip;
 
 const DEFAULT_A_LINEARIZATION_FLOOR: f64 = 1E-10;
 const DEFAULT_NUM_STATIONARY_MAX: (usize, usize) = (1, 1);
+
+/// Borrowed third-order TOPP/COPP profile parts.
+///
+/// This view keeps APIs lightweight for callers that already own separate
+/// `a`/`b` slices while preserving the same semantic grouping as
+/// [`Topp3Profile`]. The tuple layout is `(a, b, num_stationary)`.
+pub type Topp3ProfileRef<'a> = (&'a [f64], &'a [f64], (usize, usize));
+
+/// Mutable borrowed third-order TOPP/COPP profile parts.
+///
+/// This view is intended for in-place profile post-processing. The tuple
+/// layout is `(a, b, num_stationary)`, where only the `a` and `b` slices are
+/// mutable and the stationary boundary counts remain immutable metadata.
+pub type Topp3ProfileMut<'a> = (&'a mut [f64], &'a mut [f64], (usize, usize));
+
+/// Node-based third-order TOPP/COPP profile.
+///
+/// The three fields are tied together by convention: `a.len() == b.len()`,
+/// and `num_stationary` describes stationary head/tail intervals on the same
+/// path grid used with those node profiles.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Topp3Profile {
+    /// Node samples of $a_k = \dot{s}_k^2$.
+    pub a: Vec<f64>,
+    /// Node samples of $b_k = \ddot{s}_k$.
+    pub b: Vec<f64>,
+    /// Stationary boundary interval counts as `(head, tail)`.
+    ///
+    /// `head` counts stationary intervals at the start of the grid, and
+    /// `tail` counts stationary intervals at the end. These markers are used
+    /// by TOPP3/COPP3 interpolation and timing reconstruction.
+    pub num_stationary: (usize, usize),
+}
+
+impl Topp3Profile {
+    /// Build a third-order profile from owned parts.
+    #[inline]
+    pub fn new(a: Vec<f64>, b: Vec<f64>, num_stationary: (usize, usize)) -> Self {
+        Self {
+            a,
+            b,
+            num_stationary,
+        }
+    }
+
+    /// Borrow the profile as `(a, b, num_stationary)` parts.
+    #[inline]
+    pub fn as_parts(&self) -> Topp3ProfileRef<'_> {
+        (&self.a, &self.b, self.num_stationary)
+    }
+
+    /// Mutably borrow the profile as `(a, b, num_stationary)` parts.
+    #[inline]
+    pub fn as_parts_mut(&mut self) -> Topp3ProfileMut<'_> {
+        (&mut self.a, &mut self.b, self.num_stationary)
+    }
+
+    /// Consume the profile and return `(a, b, num_stationary)`.
+    #[inline]
+    pub fn into_parts(self) -> (Vec<f64>, Vec<f64>, (usize, usize)) {
+        (self.a, self.b, self.num_stationary)
+    }
+}
 
 #[inline(always)]
 fn determine_num_stationary_side(a: f64, b: f64, num_stationary_max: usize) -> usize {
@@ -65,7 +124,7 @@ fn determine_num_stationary_pair(
 /// third-order constraints have been linearized.
 ///
 /// # Important invariant
-/// The builder precomputes linearized jerk buffers in `Constraints`:
+/// The builder precomputes linearized jerk buffers in [`Constraints`](crate::constraints::Constraints):
 /// - `jerk_a_linear`
 /// - `jerk_max_linear`
 ///
@@ -79,10 +138,10 @@ fn determine_num_stationary_pair(
 ///
 /// Around reference `a_linearization`, it is approximated into affine form:
 /// $$
-/// \left(g\_a(s) + \frac{g\_{\text{max}}(s)}{2a_{lin}^{3/2}}\right)a + g\_b(s) b + g\_c(s) c
-/// \le \frac{3g\_{\text{max}}(s)}{2a_{lin}^{1/2}} - g\_d(s).
+/// \left(g\_a(s) + \frac{g\_{\text{max}}(s)}{2a_{\text{lin}}^{3/2}}\right)a + g\_b(s) b + g\_c(s) c
+/// \le \frac{3g\_{\text{max}}(s)}{2a_{\text{lin}}^{1/2}} - g\_d(s).
 /// $$
-/// where $a_{lin}$ corresponds to code input `a_linearization[k]`.
+/// where $a_{\text{lin}}$ corresponds to code input `a_linearization[k]`.
 ///
 /// The affine coefficients are stored into those two buffers for downstream LP/SOCP/RA use.
 pub struct Topp3Problem<'a> {
@@ -96,10 +155,10 @@ pub struct Topp3Problem<'a> {
     pub(crate) num_stationary: (usize, usize),
 }
 
-/// Builder for [`Topp3Problem`], including optional in-build linearization.
+/// Builder for [`Topp3Problem`](crate::solver::topp3_lp::Topp3Problem), including optional in-build linearization.
 ///
 /// # Side effect notice
-/// `build_with_linearization()` updates cached affine linearization data inside `Constraints`.
+/// `build_with_linearization()` updates cached affine linearization data inside [`Constraints`](crate::constraints::Constraints).
 /// Raw jerk constraints remain unchanged.
 pub struct Topp3ProblemBuilder<'a> {
     /// Mutable constraint storage used to build linearized TOPP3 problem data.
@@ -123,7 +182,7 @@ pub struct Topp3ProblemBuilder<'a> {
     /// Discrete code form:
     /// `1.0 / max(a_linearization, a_linearization_floor).sqrt()`.
     ///
-    /// More details are available in the [`Topp3Problem`] documentation.
+    /// More details are available in the [`Topp3Problem`](crate::solver::topp3_lp::Topp3Problem) documentation.
     pub a_linearization_floor: f64,
 }
 
@@ -257,14 +316,14 @@ impl<'a> Topp3ProblemBuilder<'a> {
 }
 
 /// The problem of COPP3.
-/// # Arguments  
-/// * `robot` - A robot with torque implemented, which defines the constraints and dynamic of the problem.  
-/// * `objectives` - Objectives for COPP3 optimization.     
-/// * `idx_s_start` - The starting index along the path (reached).  
+/// # Arguments
+/// * `robot` - A robot with torque implemented, which defines the constraints and dynamic of the problem.
+/// * `objectives` - Objectives for COPP3 optimization.
+/// * `idx_s_start` - The starting index along the path (reached).
 /// * `a_linearization` - Linearization reference profile for third-order constraints.
-/// * `a_boundary=(a_start,a_final)` - The initial and final acceleration at the start and end of the path.  
-/// * `b_boundary=(b_start,b_final)` - The initial and final boundary conditions for `b`.  
-/// * `num_stationary=(start,end)` - Effective stationary intervals derived in `build_with_linearization()`.  
+/// * `a_boundary=(a_start,a_final)` - The initial and final acceleration at the start and end of the path.
+/// * `b_boundary=(b_start,b_final)` - The initial and final boundary conditions for `b`.
+/// * `num_stationary=(start,end)` - Effective stationary intervals derived in `build_with_linearization()`.
 pub struct Copp3Problem<'a, M: RobotTorque> {
     pub(crate) robot: &'a mut Robot<M>,
     pub(crate) objectives: &'a [CoppObjective<'a>],
@@ -277,7 +336,7 @@ pub struct Copp3Problem<'a, M: RobotTorque> {
     pub(crate) num_stationary: (usize, usize),
 }
 
-/// Builder for [`Copp3Problem`].
+/// Builder for [`Copp3Problem`](crate::solver::copp3_socp::Copp3Problem).
 pub struct Copp3ProblemBuilder<'a, M: RobotTorque> {
     /// A robot with torque implemented, which defines the constraints and dynamic of the problem.
     pub robot: &'a mut Robot<M>,
@@ -293,13 +352,25 @@ pub struct Copp3ProblemBuilder<'a, M: RobotTorque> {
     pub b_boundary: (f64, f64),
     /// User-input upper bound of stationary intervals at (start, end).
     pub num_stationary_max: (usize, usize),
+    /// Denominator floor for stable evaluation of `1/sqrt(a_linearization)` near `a=0`.
+    ///
+    /// Effective usage in linearization is:
+    /// $$
+    /// \frac{1}{\sqrt{\max(a_{lin}, a_{floor})}}.
+    /// $$
+    /// Discrete code form:
+    /// `1.0 / max(a_linearization, a_linearization_floor).sqrt()`.
+    ///
+    /// More details are available in the [`Topp3Problem`](crate::solver::topp3_lp::Topp3Problem) documentation.
+    pub a_linearization_floor: f64,
 }
 
 impl<'a, M: RobotTorque> Copp3ProblemBuilder<'a, M> {
     /// Create a COPP3 builder with required fields.
     ///
-    /// Default:
+    /// Defaults:
     /// - `num_stationary_max = (1, 1)`
+    /// - `a_linearization_floor = 1E-10`
     pub fn new(
         robot: &'a mut Robot<M>,
         objectives: &'a [CoppObjective<'a>],
@@ -316,6 +387,7 @@ impl<'a, M: RobotTorque> Copp3ProblemBuilder<'a, M> {
             a_boundary,
             b_boundary,
             num_stationary_max: DEFAULT_NUM_STATIONARY_MAX,
+            a_linearization_floor: DEFAULT_A_LINEARIZATION_FLOOR,
         }
     }
 
@@ -337,7 +409,16 @@ impl<'a, M: RobotTorque> Copp3ProblemBuilder<'a, M> {
         self
     }
 
+    /// Set denominator floor used in linearization.
+    #[inline]
+    pub fn with_a_linearization_floor(mut self, floor: f64) -> Self {
+        self.a_linearization_floor = floor;
+        self
+    }
+
     /// Build a validated COPP3 problem and linearize third-order constraints in one step.
+    ///
+    /// This validates boundaries/interval/floor first, then writes linearized jerk buffers.
     pub fn build_with_linearization(self) -> Result<Copp3Problem<'a, M>, CoppError> {
         check_boundary_state_copp3_valid(self.a_boundary, self.b_boundary)?;
         if self.a_linearization.is_empty() {
@@ -355,13 +436,22 @@ impl<'a, M: RobotTorque> Copp3ProblemBuilder<'a, M> {
         self.robot
             .constraints
             .check_s_in_bounds(self.idx_s_start, self.a_linearization.len())?;
+        if self.a_linearization_floor <= 0.0 {
+            return Err(CoppError::InvalidInput(
+                "Copp3ProblemBuilder::build_with_linearization".into(),
+                format!(
+                    "a_linearization_floor must be positive, got {}",
+                    self.a_linearization_floor
+                ),
+            ));
+        }
 
         self.robot
             .constraints
             .linearize_constraint_3order_with_floor(
                 self.a_linearization,
                 self.idx_s_start,
-                DEFAULT_A_LINEARIZATION_FLOOR,
+                self.a_linearization_floor,
             )
             .map_err(|e| {
                 CoppError::InvalidInput(
@@ -420,7 +510,7 @@ impl<'a, M: RobotTorque> Copp3Problem<'a, M> {
     }
 }
 
-/// Get the weight of `a` for value function.  
+/// Get the weight of `a` for value function.
 /// Time loss = \sum_{k=0}^n weight_a[k] / sqrt(a[k]) \approx Time
 pub(crate) fn get_weight_a_topp3(s: &[f64], num_stationary: (usize, usize)) -> Vec<f64> {
     let n = s.len() - 1;

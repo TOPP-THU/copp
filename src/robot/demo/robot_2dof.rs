@@ -8,6 +8,7 @@
 //! # Scope
 //! The module is compiled only for tests (`#[cfg(test)]` in parent module).
 
+use crate::diag::RobotDynamicsError;
 use crate::robot::robot_core::{RobotBasic, RobotTorque};
 use nalgebra::DMatrix;
 
@@ -128,7 +129,13 @@ impl RobotTorque for Plannar2LinkEnd {
     /// Implements
     /// `tau = M(q) * ddq + C(q, dq) * dq + g(q)`
     /// with explicit scalar expressions for this 2-link model.
-    fn inverse_dynamics(&self, q: &[f64], dq: &[f64], ddq: &[f64], tau: &mut [f64]) {
+    fn inverse_dynamics(
+        &self,
+        q: &[f64],
+        dq: &[f64],
+        ddq: &[f64],
+        tau: &mut [f64],
+    ) -> Result<(), RobotDynamicsError> {
         let q2 = q[1];
         let q1 = q[0];
         let dq2 = dq[1];
@@ -165,6 +172,7 @@ impl RobotTorque for Plannar2LinkEnd {
         // tau = M(q) * ddq + C(q, dq) * dq + g(q)
         tau[0] = i11 + i12 + c_tau1 + g1;
         tau[1] = i21 + i22 + c_tau2 + g2;
+        Ok(())
     }
 }
 
@@ -199,7 +207,8 @@ mod tests {
             let dq = [rng.random_range(-10.0..10.0), rng.random_range(-10.0..10.0)];
             let ddq = [rng.random_range(-50.0..50.0), rng.random_range(-50.0..50.0)];
 
-            <Plannar2LinkEnd as RobotTorque>::inverse_dynamics(&robot, &q, &dq, &ddq, &mut tau_id);
+            <Plannar2LinkEnd as RobotTorque>::inverse_dynamics(&robot, &q, &dq, &ddq, &mut tau_id)
+                .unwrap();
 
             Plannar2LinkEnd::fill_mass_matrix(&robot, &q, &mut m);
             Plannar2LinkEnd::fill_coriolis_matrix(&robot, &q, &dq, &mut c);

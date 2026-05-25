@@ -1,1 +1,37 @@
-* text=auto
+* text=auto eol=lf
+
+# Keep Windows command scripts in their native line ending.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets and archives should never be line-ending normalized.
+*.7z binary
+*.a binary
+*.avi binary
+*.bin binary
+*.bmp binary
+*.dll binary
+*.doc binary
+*.docx binary
+*.dylib binary
+*.exe binary
+*.gif binary
+*.gz binary
+*.ico binary
+*.jpeg binary
+*.jpg binary
+*.lib binary
+*.mat binary
+*.mov binary
+*.mp4 binary
+*.npy binary
+*.npz binary
+*.pdf binary
+*.png binary
+*.ppt binary
+*.pptx binary
+*.so binary
+*.tar binary
+*.xls binary
+*.xlsx binary
+*.zip binary

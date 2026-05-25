@@ -1,0 +1,72 @@
+# Doxygen configuration for the COPP C ABI.
+#
+# Run from the repository root with:
+#   doxygen bindings/c/Doxyfile
+#
+# Or use:
+#   powershell -ExecutionPolicy Bypass -File bindings/c/scripts/generate_docs.ps1
+
+PROJECT_NAME           = "COPP C ABI"
+PROJECT_BRIEF          = "C interface for COPP trajectory optimization"
+OUTPUT_DIRECTORY       = bindings/c/docs
+
+INPUT                  = bindings/c/README.md \
+                         bindings/c/include/copp
+RECURSIVE              = YES
+FILE_PATTERNS          = *.h *.md *.dox
+EXCLUDE_PATTERNS       =
+USE_MDFILE_AS_MAINPAGE = bindings/c/README.md
+
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+GENERATE_LATEX         = NO
+GENERATE_XML           = NO
+GENERATE_TREEVIEW      = YES
+FULL_SIDEBAR           = YES
+SEARCHENGINE           = YES
+ALPHABETICAL_INDEX     = YES
+SHOW_FILES             = YES
+SHOW_NAMESPACES        = NO
+
+OPTIMIZE_OUTPUT_FOR_C  = YES
+TYPEDEF_HIDES_STRUCT   = YES
+EXTRACT_ALL            = YES
+EXTRACT_STATIC         = NO
+HIDE_UNDOC_MEMBERS     = NO
+HIDE_UNDOC_CLASSES     = NO
+
+MARKDOWN_SUPPORT       = YES
+JAVADOC_AUTOBRIEF      = YES
+MULTILINE_CPP_IS_BRIEF = NO
+
+# Doxygen understands formulas written as \f$ ... \f$ or \f[ ... \f].
+# Use MathJax in HTML output so formulas render cleanly in browsers.
+USE_MATHJAX            = YES
+MATHJAX_RELPATH        = https://cdn.jsdelivr.net/npm/mathjax@3/es5
+FORMULA_FONTSIZE       = 10
+
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = NO
+WARN_IF_DOC_ERROR      = YES
+WARN_NO_PARAMDOC       = NO
+
+QUIET                  = NO
+ABBREVIATE_BRIEF       =
+BRIEF_MEMBER_DESC      = YES
+REPEAT_BRIEF           = YES
+ALWAYS_DETAILED_SEC    = NO
+INLINE_INHERITED_MEMB  = NO
+
+SORT_MEMBER_DOCS       = NO
+SORT_BRIEF_DOCS        = NO
+SORT_GROUP_NAMES       = NO
+SORT_BY_SCOPE_NAME     = NO
+DISTRIBUTE_GROUP_DOC   = YES
+
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = NO
+SKIP_FUNCTION_MACROS   = NO
+
+SOURCE_BROWSER         = NO
+REFERENCED_BY_RELATION = NO
+REFERENCES_RELATION    = NO

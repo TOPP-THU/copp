@@ -30,8 +30,8 @@ use core::f64;
 /// 4. Final nonnegative cone packing for all inequality rows added after boundary equalities.
 ///
 /// # Logging behavior
-/// - `Debug`: emits stage-by-stage matrix/vector/cone sizes.
-/// - `Trace`: no extra output in this function yet; Trace currently inherits Debug visibility.
+/// - [`Debug`](crate::diag::Verbosity::Debug): emits stage-by-stage matrix/vector/cone sizes.
+/// - [`Trace`](crate::diag::Verbosity::Trace): no extra output in this function yet; Trace currently inherits Debug visibility.
 pub(crate) fn clarabel_standard_constraint_topp2(
     problem: &Topp2Problem,
     constraints: ConstraintsClarabel,
@@ -119,7 +119,7 @@ pub(crate) fn clarabel_standard_capacity_topp2(
     (capacity_val, capacity_b, 3)
 }
 
-/// Add one boundary equality `a[id_col] = a_boundary` as a Clarabel `ZeroConeT(1)` row.
+/// Add one boundary equality `a[id_col] = a_boundary` as a one-row Clarabel [`ZeroConeT`](clarabel::solver::SupportedConeT::ZeroConeT).
 ///
 /// Note: this function always appends data and does not perform feasibility checks.
 fn clarabel_a_point_constraint_topp2(
@@ -144,7 +144,7 @@ fn clarabel_a_point_constraint_topp2(
 ///
 /// Upper-bound estimate: `num_val<=2*(n-1)`, `num_b<=2*(n-1)`, `num_cone<=1`.
 ///
-/// If `modify_cones=true`, a single `NonnegativeConeT` is appended for all added rows.
+/// If `modify_cones=true`, a single [`NonnegativeConeT`](clarabel::solver::SupportedConeT::NonnegativeConeT) is appended for all added rows.
 fn clarabel_1order_constraint_topp2(
     constraints: &Constraints,
     n: usize,
@@ -186,7 +186,7 @@ fn clarabel_1order_constraint_topp2(
 /// Upper-bound estimate: `num_val<=4*count_acc_constraints`,
 /// `num_b<=2*count_acc_constraints`, `num_cone<=1`.
 ///
-/// If `modify_cones=true`, a single `NonnegativeConeT` is appended for all added rows.
+/// If `modify_cones=true`, a single [`NonnegativeConeT`](clarabel::solver::SupportedConeT::NonnegativeConeT) is appended for all added rows.
 fn clarabel_2order_constraint_topp2(
     constraints: &Constraints,
     idx_s_start: usize,
@@ -208,10 +208,8 @@ fn clarabel_2order_constraint_topp2(
                     - constraints.s_unchecked(idx_s_start + k - 1));
             row.extend(b.len()..(b.len() + nrows));
             row.extend(b.len()..(b.len() + nrows));
-            // row.extend((b.len()..(b.len() + ncols)).flat_map(|r| [r, r]));
             col.resize(col.len() + nrows, k - 1);
             col.resize(col.len() + nrows, k);
-            // col.extend(std::iter::repeat([k - 1, k]).take(ncols).flatten());
             val.extend(acc_b.iter().map(|&b_coeff| -b_coeff * ds_double_reciprocal));
             val.extend(
                 acc_a
@@ -230,10 +228,8 @@ fn clarabel_2order_constraint_topp2(
                     - constraints.s_unchecked(idx_s_start + k));
             row.extend(b.len()..(b.len() + nrows));
             row.extend(b.len()..(b.len() + nrows));
-            // row.extend((b.len()..(b.len() + ncols)).flat_map(|r| [r, r]));
             col.resize(col.len() + nrows, k);
             col.resize(col.len() + nrows, k + 1);
-            // col.extend(std::iter::repeat([k, k + 1]).take(ncols).flatten());
             val.extend(
                 acc_a
                     .iter()

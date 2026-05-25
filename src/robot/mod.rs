@@ -2,12 +2,12 @@
 //!
 //! # Method identity
 //! This module groups:
-//! - core robot traits/wrappers in [`Robot`], [`RobotBasic`], [`RobotTorque`],
+//! - core robot traits/wrappers in [`Robot`], [`RobotBasic`], [`RobotTorque`].
 //! - lightweight demo/reference robot models in `demo`.
 //!
 //! # Usage guidance
 //! - For most users, prefer [`Robot`] as the primary entry instead of operating
-//!   on [`Constraints`](crate::constraints::Constraints) directly. `Robot`
+//!   on [`Constraints`](crate::constraints::Constraints) directly. [`Robot`]
 //!   enables physically meaningful high-level constraint APIs.
 //! - `Topp*Problem` workflows can use any model implementing [`RobotBasic`].
 //! - `Copp*Problem` workflows require models implementing [`RobotTorque`].

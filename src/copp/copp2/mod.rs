@@ -21,7 +21,7 @@ pub(crate) mod formulation;
 pub(crate) mod interpolation;
 pub(crate) mod opt2;
 
-/// Crate-internal stable façade for second-order APIs.
+/// Crate-internal stable facade for second-order APIs.
 ///
 /// `lib.rs` should import from this module instead of deep internal paths
 /// (e.g. `dp2::reach_set2`, `opt2::copp2_socp`) to avoid breakage when
@@ -48,6 +48,7 @@ pub(crate) mod stable {
     }
 
     pub(crate) mod copp2_socp {
+        pub use super::super::opt2::ClarabelExpertInfor2nd;
         pub use super::super::opt2::copp2_socp::*;
     }
 }

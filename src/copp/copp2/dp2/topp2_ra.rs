@@ -8,11 +8,11 @@
 //! # Discrete variables (local notation)
 //! On a path grid `s[0..=n]`:
 //! - `a[k]` denotes $\dot{s}_k^2$;
-//! - backward intervals are `[a_min[k], a_max[k]]` from `reach_set2`;
+//! - backward intervals are `[a_min[k], a_max[k]]` from [`reach_set2_backward`](crate::solver::reach_set2::reach_set2_backward);
 //! - forward pass selects one feasible state per station, yielding the final profile `a`.
 //!
 //! # High-level pipeline
-//! 1. Build backward reachable intervals by calling `reach_set2_backward`.
+//! 1. Build backward reachable intervals by calling [`reach_set2_backward`](crate::solver::reach_set2::reach_set2_backward).
 //! 2. Run forward clipping against local constraints and backward intervals.
 //! 3. Select maximal feasible `a[k]` at each stage to recover the time-optimal profile.
 
@@ -34,11 +34,12 @@ use itertools::izip;
 /// - `a[0] = a_start`, `a[n] = a_final`, where `n = idx_s_final - idx_s_start`;
 /// - `a` is time-optimal under configured first-/second-order constraints.
 ///
-/// The returned profile can be mapped to `t(s)` by `s_to_t_topp2`, then to sampled
-/// `s(t)` by `t_to_s_topp2`.
+/// The returned profile can be mapped to `t(s)` by
+/// [`s_to_t_topp2`](crate::solver::topp2_ra::s_to_t_topp2), then to sampled
+/// `s(t)` by [`t_to_s_topp2`](crate::solver::topp2_ra::t_to_s_topp2).
 ///
 /// # Errors
-/// Returns `CoppError` when backward reachable-set construction fails or when
+/// Returns [`CoppError`](crate::diag::CoppError) when backward reachable-set construction fails or when
 /// forward pass cannot maintain feasibility under constraints.
 ///
 /// # Contract
@@ -204,7 +205,7 @@ fn topp2_ra_core(
         {
             crate::verbosity_log!(
                 Verbosity::Debug,
-                "The forward reachable set at k = {k} (idx_s = {idx_s}) is degenerate since a_max and a_min are approximately equal at {}.",
+                "The one-step forward reachable set at k = {k} (idx_s = {idx_s}) is degenerate since a_max and a_min are approximately equal at {}.",
                 0.5 * (a_max_curr + a_min_curr)
             );
         }
@@ -239,13 +240,65 @@ mod tests {
         Topp2ProblemBuilder, a_to_b_topp2, s_to_t_topp2, t_to_s_topp2,
     };
     use crate::copp::copp2::stable::reach_set2::ReachSet2OptionsBuilder;
-    use crate::path::{add_symmetric_axial_limits_for_test, lissajous_path_for_test};
+    use crate::path::{
+        Path, SplineConfig, add_symmetric_axial_limits_for_test, lissajous_path_for_test,
+    };
     use crate::robot::robot_core::Robot;
+    use nalgebra::DMatrix;
     use std::time::{Duration, Instant};
 
     #[test]
     fn test_topp2_ra() -> Result<(), CoppError> {
         run_test_topp2_ra_repeated(1, false)
+    }
+
+    #[test]
+    #[ignore = "bindings"]
+    fn test_topp2_ra_bindings_parity() -> Result<(), CoppError> {
+        let dim = 3;
+        let num_waypoints = 8;
+        let n: usize = 201;
+        let pi = std::f64::consts::PI;
+
+        let waypoints = DMatrix::<f64>::from_fn(dim, num_waypoints, |axis, j| {
+            let s = j as f64 / (num_waypoints - 1) as f64;
+            match axis {
+                0 => 0.20 * (2.0 * pi * s).sin(),
+                1 => 0.15 * (1.5 * pi * s).cos(),
+                2 => 0.10 * s * (1.0 - s),
+                _ => unreachable!("dimension is fixed to 3"),
+            }
+        });
+        let path = Path::from_waypoints(&waypoints, SplineConfig::default())?;
+        let s = DMatrix::<f64>::from_fn(1, n, |_, j| j as f64 / (n - 1) as f64);
+
+        let mut robot = Robot::with_capacity(dim, n);
+        robot
+            .with_s(&s.as_view())?
+            .with_q_from_path_2nd(&path, 0, n)?
+            .with_q_from_path_3rd(&path, 0, n)?;
+        add_symmetric_axial_limits_for_test(&mut robot, 10.0, 50.0, Some(1000.0))?;
+
+        let topp2_problem = Topp2ProblemBuilder::new(&robot, (0, n - 1), (0.0, 0.0)).build()?;
+        let options = ReachSet2OptionsBuilder::new().build()?;
+        let a_profile = topp2_ra(&topp2_problem, &options)?;
+
+        let (t_final, t_s) = s_to_t_topp2(s.as_slice(), &a_profile, 0.0)?;
+        let s_t = t_to_s_topp2(
+            s.as_slice(),
+            &a_profile,
+            &t_s,
+            InterpolationMode::UniformTimeGrid(0.0, 1e-3, true),
+        )?;
+
+        crate::verbosity_log!(
+            Verbosity::Summary,
+            "TOPP2-RA Rust bindings parity test: t_final={:.17}, s_t.len={}",
+            t_final,
+            s_t.len()
+        );
+
+        Ok(())
     }
 
     /// Conditions: release, --include-ignored, CPU = Intel(R) Core(TM) Ultra 9 285K.
@@ -274,17 +327,12 @@ mod tests {
             let mut robot = Robot::with_capacity(dim, n);
 
             let mut rng = rand::rng();
-            let (s, derivs, _, _) = lissajous_path_for_test(dim, n, &mut rng).map_err(|e| {
+            let (s, path, _, _) = lissajous_path_for_test(dim, n, &mut rng).map_err(|e| {
                 CoppError::InvalidInput("lissajous_path_for_test".into(), e.to_string())
             })?;
-            robot.with_s(&s.as_view())?;
-            robot.with_q(
-                &derivs.q.as_view(),
-                &derivs.dq.as_ref().unwrap().as_view(),
-                &derivs.ddq.as_ref().unwrap().as_view(),
-                derivs.dddq.as_ref().map(|m| m.as_view()).as_ref(),
-                0,
-            )?;
+            robot
+                .with_s(&s.as_view())?
+                .with_q_from_path_2nd(&path, 0, n)?;
             add_symmetric_axial_limits_for_test(&mut robot, 1.0, 1.0, None)?;
 
             let start = Instant::now();
@@ -292,7 +340,7 @@ mod tests {
             let a_profile = topp2_ra(&topp2_problem, &options)?;
             let tc_topp2_ra = start.elapsed();
 
-            let b_profile = a_to_b_topp2(s.as_slice(), &a_profile);
+            let b_profile = a_to_b_topp2(s.as_slice(), &a_profile)?;
             assert!(
                 !izip!(
                     s.as_slice().windows(2),
@@ -308,7 +356,7 @@ mod tests {
             );
 
             let start = Instant::now();
-            let (t_final, t_s) = s_to_t_topp2(s.as_slice(), &a_profile, 0.0);
+            let (t_final, t_s) = s_to_t_topp2(s.as_slice(), &a_profile, 0.0)?;
             assert_eq!(t_s.len(), s.ncols());
             let tc_interpolation = start.elapsed();
             let s_t = t_to_s_topp2(
@@ -316,7 +364,7 @@ mod tests {
                 &a_profile,
                 &t_s,
                 InterpolationMode::UniformTimeGrid(0.0, 1E-3, true),
-            );
+            )?;
 
             tc_sum_ra += tc_topp2_ra;
             tc_sum_interpolation += tc_interpolation;

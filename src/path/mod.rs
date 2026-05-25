@@ -1,30 +1,31 @@
 //! Path abstraction for trajectory planning.
 //!
 //! The main entry point is [`Path`].  It supports two construction modes and a
-//! uniform evaluation API — pick the one that fits your use case:
+//! uniform evaluation API: pick the one that fits your use case:
 //!
-//! | You have … | Use |
+//! | You have | Use |
 //! |---|---|
-//! | An analytic formula `q(s)` | [`Path::from_parametric`] |
-//! | A set of waypoint positions | [`Path::from_waypoints`] |
+//! | An analytic formula `q(s)` | [`Path::from_parametric`](crate::path::Path::from_parametric) |
+//! | A set of waypoint positions | [`Path::from_waypoints`](crate::path::Path::from_waypoints) |
+//! | Explicit derivatives from an external evaluator | [`Path::from_evaluator_2nd`](crate::path::Path::from_evaluator_2nd) / [`Path::from_evaluator_3rd`](crate::path::Path::from_evaluator_3rd) |
 //!
 //! Once built, call one of the evaluation methods with a one-dimensional parameter slice:
 //!
 //! | Method | Output |
 //! |---|---|
-//! | [`Path::evaluate_q`]         | position `q` only |
-//! | [`Path::evaluate_up_to_2nd`] | `q`, `dq`, `ddq` |
-//! | [`Path::evaluate_up_to_3rd`] | `q`, `dq`, `ddq`, `dddq` |
+//! | [`Path::evaluate_q`](crate::path::Path::evaluate_q)         | position `q` only |
+//! | [`Path::evaluate_up_to_2nd`](crate::path::Path::evaluate_up_to_2nd) | `q`, `dq`, `ddq` |
+//! | [`Path::evaluate_up_to_3rd`](crate::path::Path::evaluate_up_to_3rd) | `q`, `dq`, `ddq`, `dddq` |
 //!
 //! # Examples
 //!
-//! ## Analytic path — automatic differentiation
+//! ## Analytic path: automatic differentiation
 //!
 //! ```rust,no_run
 //! use copp::path::{Path, sin, cos};
 //! use copp::path::autodiff::Jet3;
 //!
-//! // Build a 2-DOF path: q0 = sin(s), q1 = cos(s), s ∈ [0, 1]
+//! // Build a 2-DOF path: q0 = sin(s), q1 = cos(s), s in [0, 1]
 //! let path = Path::from_parametric(
 //!     |s: Jet3| vec![sin(s), cos(s)],
 //!     0.0, 1.0,
@@ -33,12 +34,12 @@
 //! // Evaluate at 5 uniformly-spaced parameter values
 //! let s = [0.0, 0.25, 0.5, 0.75, 1.0];
 //! let out = path.evaluate_up_to_3rd(&s).unwrap();
-//! // out.q    – shape (2, 5)
-//! // out.dq   – Some, shape (2, 5)   first derivative w.r.t. s
-//! // out.dddq – Some, shape (2, 5)   third derivative w.r.t. s
+//! // out.q   : shape (2, 5)
+//! // out.dq  : Some, shape (2, 5)   first derivative w.r.t. s
+//! // out.dddq: Some, shape (2, 5)   third derivative w.r.t. s
 //! ```
 //!
-//! ## Spline path — waypoint interpolation
+//! ## Spline path: waypoint interpolation
 //!
 //! ```rust,no_run
 //! use copp::path::{Path, SplineConfig};
@@ -62,12 +63,15 @@ mod path_core;
 pub mod spline;
 
 pub use autodiff::{Jet3, cos, exp, ln, powi, sin, sqrt};
-pub use path_core::{ParametricFn, Path, PathDerivatives};
+pub use path_core::{
+    ParametricFn, Path, PathDerivatives, PathEvaluator, PathEvaluator2nd, PathEvaluator3rd,
+};
 pub use spline::{Parametrization, SplineConfig};
 
 #[cfg(test)]
 use crate::diag::PathError;
 
+/// Policy for handling path queries outside the configured `s` range.
 #[derive(Clone, Copy, Debug)]
 pub enum OutOfRangeMode {
     /// Return an error when s is outside `[s_min, s_max]`.
@@ -76,16 +80,17 @@ pub enum OutOfRangeMode {
     Clamp,
 }
 
-/// Build a Lissajous analytic path and evaluate derivatives up to third order.
+/// Build a random Lissajous analytic path.
 ///
 /// This helper is intended for cross-module unit tests to avoid repeating the
-/// same hand-written `q/dq/ddq/dddq` generation logic.
+/// same hand-written path construction logic.
 #[cfg(test)]
+#[allow(clippy::type_complexity)]
 pub(crate) fn lissajous_path_for_test(
     dim: usize,
     s_len: usize,
     rng: &mut impl rand::RngExt,
-) -> Result<(nalgebra::DMatrix<f64>, PathDerivatives, Vec<f64>, Vec<f64>), PathError> {
+) -> Result<(nalgebra::DMatrix<f64>, Path, Vec<f64>, Vec<f64>), PathError> {
     let omega = (0..dim)
         .map(|_| rng.random_range(0.1..(2.0 * std::f64::consts::PI)))
         .collect::<Vec<f64>>();
@@ -93,22 +98,22 @@ pub(crate) fn lissajous_path_for_test(
         .map(|_| rng.random_range(0.0..(2.0 * std::f64::consts::PI)))
         .collect::<Vec<f64>>();
 
-    let (s, derivs) = lissajous_path_fixed_for_test(dim, s_len, omega.clone(), phi.clone())?;
+    let (s, path) = lissajous_path_fixed_for_test(dim, s_len, omega.clone(), phi.clone())?;
 
-    Ok((s, derivs, omega, phi))
+    Ok((s, path, omega, phi))
 }
 
-/// Build a Lissajous analytic path and evaluate derivatives up to third order.
+/// Build a Lissajous analytic path from fixed frequencies/phases.
 ///
 /// This helper is intended for cross-module unit tests to avoid repeating the
-/// same hand-written `q/dq/ddq/dddq` generation logic.
+/// same hand-written path construction logic.
 #[cfg(test)]
 pub(crate) fn lissajous_path_fixed_for_test(
     dim: usize,
     s_len: usize,
     omega: Vec<f64>,
     phi: Vec<f64>,
-) -> Result<(nalgebra::DMatrix<f64>, PathDerivatives), PathError> {
+) -> Result<(nalgebra::DMatrix<f64>, Path), PathError> {
     let s = nalgebra::DMatrix::<f64>::from_fn(1, s_len, |_, j| j as f64 / (s_len - 1) as f64);
 
     let path = Path::from_parametric(
@@ -121,8 +126,7 @@ pub(crate) fn lissajous_path_fixed_for_test(
         1.0,
     )?;
 
-    let derivs = path.evaluate_up_to_3rd(s.as_slice())?;
-    Ok((s, derivs))
+    Ok((s, path))
 }
 
 /// Add symmetric axial limits (`+limit` / `-limit`) to all currently stored stations.
@@ -143,11 +147,13 @@ pub(crate) fn add_symmetric_axial_limits_for_test<M: crate::robot::robot_core::R
 
     let vel_max = vec![vel_limit; dim];
     let vel_min = vec![-vel_limit; dim];
-    robot.with_axial_velocity((vel_max.as_slice(), n), (vel_min.as_slice(), n), 0)?;
 
     let acc_max = vec![acc_limit; dim];
     let acc_min = vec![-acc_limit; dim];
-    robot.with_axial_acceleration((acc_max.as_slice(), n), (acc_min.as_slice(), n), 0)?;
+
+    let robot = robot
+        .with_axial_velocity((vel_max.as_slice(), n), (vel_min.as_slice(), n), 0)?
+        .with_axial_acceleration((acc_max.as_slice(), n), (acc_min.as_slice(), n), 0)?;
 
     if let Some(jerk_limit) = jerk_limit {
         let jerk_max = vec![jerk_limit; dim];
@@ -164,7 +170,9 @@ mod tests {
     use crate::copp::copp2::stable::basic::{Topp2ProblemBuilder, s_to_t_topp2};
     use crate::copp::copp2::stable::reach_set2::ReachSet2OptionsBuilder;
     use crate::copp::copp2::stable::topp2_ra::topp2_ra;
-    use crate::copp::copp3::stable::basic::{Topp3ProblemBuilder, s_to_t_topp3, t_to_s_topp3};
+    use crate::copp::copp3::stable::basic::{
+        Topp3ProblemBuilder, Topp3Profile, s_to_t_topp3, t_to_s_topp3,
+    };
     use crate::copp::copp3::stable::topp3_lp::topp3_lp;
     use crate::copp::{ClarabelOptionsBuilder, InterpolationMode};
     use crate::diag::ConstraintError;
@@ -182,7 +190,6 @@ mod tests {
     const N: usize = 1000;
 
     #[test]
-    #[ignore = "plotting"]
     fn test_topp3_with_spline_path() -> Result<(), Box<dyn Error>> {
         crate::verbosity_log!(
             crate::diag::Verbosity::Summary,
@@ -210,7 +217,7 @@ mod tests {
 
         let mut robot = setup_robot_with_constraints(&s, &derivs)?;
         let s_slice: Vec<f64> = (0..N).map(|j| s[(0, j)]).collect();
-        let (a, b, num_stat, timings) = solve_topp_pipeline(&mut robot, &s_slice)?;
+        let (profile, timings) = solve_topp_pipeline(&mut robot, &s_slice)?;
 
         crate::verbosity_log!(
             crate::diag::Verbosity::Summary,
@@ -226,7 +233,7 @@ mod tests {
         );
 
         let (t, q_t, dq_t, ddq_t, dddq_t, interp_ms) =
-            interpolate_to_time_domain(&path, &s_slice, &a, &b, num_stat, 1e-3)?;
+            interpolate_to_time_domain(&path, &s_slice, &profile, 1e-3)?;
         crate::verbosity_log!(
             crate::diag::Verbosity::Summary,
             "[Interpolation] {:.3} ms, {} samples",
@@ -290,26 +297,24 @@ mod tests {
         let n = s.ncols();
         let mut robot = Robot::with_capacity(DIM, n);
 
-        robot.with_s(&s.as_view())?;
-        robot.with_q(
-            &derivs.q.as_view(),
-            &derivs.dq.as_ref().unwrap().as_view(),
-            &derivs.ddq.as_ref().unwrap().as_view(),
-            derivs.dddq.as_ref().map(|m| m.as_view()).as_ref(),
-            0,
-        )?;
-
-        let vel_max = DMatrix::<f64>::from_element(DIM, n, 1.0);
-        let vel_min = DMatrix::<f64>::from_element(DIM, n, -1.0);
-        robot.with_axial_velocity(&vel_max.as_view(), &vel_min.as_view(), 0)?;
-
-        let acc_max = DMatrix::<f64>::from_element(DIM, n, 1.0);
-        let acc_min = DMatrix::<f64>::from_element(DIM, n, -1.0);
-        robot.with_axial_acceleration(&acc_max.as_view(), &acc_min.as_view(), 0)?;
-
-        let jerk_max = DMatrix::<f64>::from_element(DIM, n, 5.0);
-        let jerk_min = DMatrix::<f64>::from_element(DIM, n, -5.0);
-        robot.with_axial_jerk(&jerk_max.as_view(), &jerk_min.as_view(), 0)?;
+        let vel_max = vec![1.0; DIM];
+        let vel_min = vec![-1.0; DIM];
+        let acc_max = vec![1.0; DIM];
+        let acc_min = vec![-1.0; DIM];
+        let jerk_max = vec![5.0; DIM];
+        let jerk_min = vec![-5.0; DIM];
+        robot
+            .with_s(&s.as_view())?
+            .with_q(
+                &derivs.q.as_view(),
+                &derivs.dq.as_ref().unwrap().as_view(),
+                &derivs.ddq.as_ref().unwrap().as_view(),
+                derivs.dddq.as_ref().map(|m| m.as_view()).as_ref(),
+                0,
+            )?
+            .with_axial_velocity((vel_max.as_slice(), n), (vel_min.as_slice(), n), 0)?
+            .with_axial_acceleration((acc_max.as_slice(), n), (acc_min.as_slice(), n), 0)?
+            .with_axial_jerk((jerk_max.as_slice(), n), (jerk_min.as_slice(), n), 0)?;
 
         Ok(robot)
     }
@@ -324,10 +329,10 @@ mod tests {
     fn solve_topp_pipeline(
         robot: &mut Robot<usize>,
         s_slice: &[f64],
-    ) -> Result<(Vec<f64>, Vec<f64>, (usize, usize), ToppTimings), Box<dyn Error>> {
+    ) -> Result<(Topp3Profile, ToppTimings), Box<dyn Error>> {
         let n = s_slice.len();
 
-        let topp2_problem = Topp2ProblemBuilder::new(&robot, (0, n - 1), (0.0, 0.0)).build()?;
+        let topp2_problem = Topp2ProblemBuilder::new(robot, (0, n - 1), (0.0, 0.0)).build()?;
 
         let options = ReachSet2OptionsBuilder::new()
             .a_cmp_abs_tol(1e-9)
@@ -339,7 +344,7 @@ mod tests {
         let start = Instant::now();
         let a_ra = topp2_ra(&topp2_problem, &options)?;
         let topp2_ms = start.elapsed().as_secs_f64() * 1e3;
-        let (t_motion_2, _) = s_to_t_topp2(s_slice, &a_ra, 0.0);
+        let (t_motion_2, _) = s_to_t_topp2(s_slice, &a_ra, 0.0)?;
 
         robot.constraints.amax_substitute(&a_ra, 0)?;
 
@@ -351,14 +356,12 @@ mod tests {
             .build()?;
 
         let start = Instant::now();
-        let (a_lp, b_lp, num_stationary) = topp3_lp(&topp3_problem, &options_lp)?;
+        let profile = topp3_lp(&topp3_problem, &options_lp)?;
         let topp3_ms = start.elapsed().as_secs_f64() * 1e3;
-        let (t_motion_3, _) = s_to_t_topp3(s_slice, &a_lp, &b_lp, num_stationary, 0.0);
+        let (t_motion_3, _) = s_to_t_topp3(s_slice, profile.as_parts(), 0.0)?;
 
         Ok((
-            a_lp,
-            b_lp,
-            num_stationary,
+            profile,
             ToppTimings {
                 topp2_ms,
                 topp3_ms,
@@ -368,12 +371,11 @@ mod tests {
         ))
     }
 
+    #[allow(clippy::type_complexity)]
     fn interpolate_to_time_domain(
         path: &super::Path,
         s_slice: &[f64],
-        a: &[f64],
-        b: &[f64],
-        num_stationary: (usize, usize),
+        profile: &Topp3Profile,
         dt: f64,
     ) -> Result<
         (
@@ -387,7 +389,7 @@ mod tests {
         Box<dyn Error>,
     > {
         let start = Instant::now();
-        let (t_final, t_s) = s_to_t_topp3(s_slice, a, b, num_stationary, 0.0);
+        let (t_final, t_s) = s_to_t_topp3(s_slice, profile.as_parts(), 0.0)?;
 
         let t_sample: Vec<f64> = (0..=((t_final / dt).floor() as usize))
             .map(|i| i as f64 * dt)
@@ -395,14 +397,12 @@ mod tests {
 
         let s_t = t_to_s_topp3(
             s_slice,
-            a,
-            b,
-            num_stationary,
+            profile.as_parts(),
             &t_s,
             InterpolationMode::NonUniformTimeGrid(&t_sample),
-        );
+        )?;
 
-        // Evaluate q(s(t)) – only position needed, derivatives computed via finite diff
+        // Evaluate q(s(t)): only position needed, derivatives computed via finite diff
         let n_t = t_sample.len();
         let s_t_matrix = DMatrix::<f64>::from_row_slice(1, n_t, &s_t);
         let q_t = path.evaluate_q(s_t_matrix.as_slice())?.q;
@@ -431,10 +431,10 @@ mod tests {
         ddq_t: &DMatrix<f64>,
         dddq_t: &DMatrix<f64>,
     ) -> Result<(), Box<dyn Error>> {
-        if let Some(parent) = Path::new(filename).parent() {
-            if !parent.as_os_str().is_empty() {
-                create_dir_all(parent)?;
-            }
+        if let Some(parent) = Path::new(filename).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            create_dir_all(parent)?;
         }
 
         let root = BitMapBackend::new(filename, (2400, 1600)).into_drawing_area();
@@ -536,7 +536,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "plotting"]
     fn test_topp3_with_parametric_path() -> Result<(), Box<dyn Error>> {
         crate::verbosity_log!(
             crate::diag::Verbosity::Summary,
@@ -559,7 +558,7 @@ mod tests {
 
         let mut robot = setup_robot_with_constraints(&s, &derivs)?;
         let s_slice: Vec<f64> = (0..N).map(|j| s[(0, j)]).collect();
-        let (a, b, num_stat, timings) = solve_topp_pipeline(&mut robot, &s_slice)?;
+        let (profile, timings) = solve_topp_pipeline(&mut robot, &s_slice)?;
 
         crate::verbosity_log!(
             crate::diag::Verbosity::Summary,
@@ -575,7 +574,7 @@ mod tests {
         );
 
         let (t, q_t, dq_t, ddq_t, dddq_t, interp_ms) =
-            interpolate_to_time_domain(&path, &s_slice, &a, &b, num_stat, 1e-3)?;
+            interpolate_to_time_domain(&path, &s_slice, &profile, 1e-3)?;
         crate::verbosity_log!(
             crate::diag::Verbosity::Summary,
             "[Interpolation] {:.3} ms, {} samples",

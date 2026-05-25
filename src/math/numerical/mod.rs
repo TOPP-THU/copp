@@ -1,4 +1,4 @@
-//! Numerical kernels: LP, projection, and scalar optimization utilities.
+//! Numerical kernels: LP solvers and helper predicates.
 //!
 //! # Method identity
 //! - `general`: vector products and convexity predicates.

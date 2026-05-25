@@ -12,7 +12,7 @@
 //! - station count is `s_len = idx_s_final - idx_s_start + 1`.
 //!
 //! # High-level pipeline
-//! 1. Construct `Topp2ProblemBuilder` or `Copp2ProblemBuilder` from caller data.
+//! 1. Construct [`Topp2ProblemBuilder`](crate::solver::topp2_ra::Topp2ProblemBuilder) or [`Copp2ProblemBuilder`](crate::solver::copp2_socp::Copp2ProblemBuilder) from caller data.
 //! 2. Run builder validation (index interval, bounds, objective compatibility).
 //! 3. Build immutable problem objects used by DP/optimization backends.
 
@@ -44,9 +44,9 @@ impl<'a> Topp2Problem<'a> {
     }
 }
 
-/// Builder for [`Topp2Problem`].
+/// Builder for [`Topp2Problem`](crate::solver::topp2_ra::Topp2Problem).
 pub struct Topp2ProblemBuilder<'a> {
-    /// Reference to path constraints (extracted from robot at construction time).
+    /// Reference to path constraints.
     pub constraints: &'a Constraints,
     /// Closed station-index interval `(idx_s_start, idx_s_final)`.
     pub idx_s_interval: (usize, usize),
@@ -55,10 +55,10 @@ pub struct Topp2ProblemBuilder<'a> {
 }
 
 impl<'a> Topp2ProblemBuilder<'a> {
-    /// Create a TOPP2 builder from a [`Robot`] reference.
+    /// Create a TOPP2 builder from a [`Robot`](crate::robot::Robot) reference.
     ///
     /// # Parameters
-    /// - `robot`: robot wrapper with the trait [`RobotBasic`] whose constraint buffer defines the problem domain.
+    /// - `robot`: robot wrapper with the trait [`RobotBasic`](crate::robot::RobotBasic) whose constraint buffer defines the problem domain.
     /// - `idx_s_interval`: closed station-index interval `(idx_s_start, idx_s_final)`.
     /// - `a_boundary`: endpoint state tuple `(a_start, a_final)`.
     #[inline]
@@ -93,7 +93,7 @@ impl<'a> Topp2ProblemBuilder<'a> {
         }
     }
 
-    /// Build a validated [`Topp2Problem`].
+    /// Build a validated [`Topp2Problem`](crate::solver::topp2_ra::Topp2Problem).
     #[inline]
     pub fn build(&self) -> Result<Topp2Problem<'a>, CoppError> {
         self.validate()?;
@@ -155,7 +155,7 @@ impl<'a, M: RobotTorque> Copp2Problem<'a, M> {
     }
 }
 
-/// Builder for [`Copp2Problem`].
+/// Builder for [`Copp2Problem`](crate::solver::copp2_socp::Copp2Problem).
 pub struct Copp2ProblemBuilder<'a, M: RobotTorque> {
     /// Reference to robot model defining constraints and dynamics.
     pub robot: &'a Robot<M>,
@@ -169,6 +169,11 @@ pub struct Copp2ProblemBuilder<'a, M: RobotTorque> {
 
 impl<'a, M: RobotTorque> Copp2ProblemBuilder<'a, M> {
     /// Create a COPP2 builder with all required fields.
+    ///
+    /// # Parameters
+    /// - `robot`: robot with the trait [`RobotTorque`](crate::robot::RobotTorque) defining the problem domain.
+    /// - `idx_s_interval`: closed station-index interval `(idx_s_start, idx_s_final)`.
+    /// - `a_boundary`: endpoint state tuple `(a_start, a_final)`.
     #[inline]
     pub fn new(
         robot: &'a Robot<M>,
@@ -184,7 +189,7 @@ impl<'a, M: RobotTorque> Copp2ProblemBuilder<'a, M> {
         }
     }
 
-    /// Build a validated [`Copp2Problem`].
+    /// Build a validated [`Copp2Problem`](crate::solver::copp2_socp::Copp2Problem).
     #[inline]
     pub fn build(&self) -> Result<Copp2Problem<'a, M>, CoppError> {
         self.validate()?;

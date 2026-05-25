@@ -12,16 +12,19 @@
 //! # High-level pipeline
 //! 1. Validate interval and boundary consistency.
 //! 2. Estimate capacities and assemble standard TOPP2 constraints.
-//! 3. Add COPP2 objective-induced variables/cones (`Time`, `ThermalEnergy`, `TotalVariationTorque`, `Linear`).
+//! 3. Add COPP2 objective-induced variables/cones ([`Time`](crate::prelude::CoppObjective::Time), [`ThermalEnergy`](crate::prelude::CoppObjective::ThermalEnergy), [`TotalVariationTorque`](crate::prelude::CoppObjective::TotalVariationTorque), [`Linear`](crate::prelude::CoppObjective::Linear)).
 //! 4. Build sparse matrices `A`, `P`, vector `q`, and solve by Clarabel.
-//! 5. Apply status acceptance policy (`ClarabelOptions::is_allow`) and extract `a` when allowed.
+//! 5. Apply status acceptance policy ([`ClarabelOptions::is_allow`](crate::solver::copp2_socp::ClarabelOptions::is_allow)) and extract `a` when allowed.
 //!
 //! # API layering
-//! - `copp2_socp`: strict/normal API, returns only accepted `a`.
-//! - `copp2_socp_expert`: expert API, always returns full Clarabel solution for diagnosis.
+//! - [`copp2_socp`](crate::solver::copp2_socp::copp2_socp): strict/normal API, returns only accepted `a`.
+//! - [`copp2_socp_expert`](crate::solver::copp2_socp::copp2_socp_expert): expert API, always returns full Clarabel solution for diagnosis.
+//! - [`copp2_socp_expert_with_info`](crate::solver::copp2_socp::copp2_socp_expert_with_info): expert API plus Clarabel linear-solver
+//!   metadata for solver-side diagnostics.
 
 use crate::copp::clarabel_backend::{ConstraintsClarabel, ObjConsClarabel};
 use crate::copp::copp2::formulation::Copp2Problem;
+use crate::copp::copp2::opt2::ClarabelExpertInfor2nd;
 use crate::copp::copp2::opt2::clarabel_constraints::{
     clarabel_standard_capacity_topp2, clarabel_standard_constraint_topp2,
 };
@@ -38,7 +41,6 @@ use core::f64;
 use itertools::{Itertools, izip};
 use nalgebra::{DMatrix, DVectorView};
 
-#[cfg(test)]
 use crate::copp::copp2::stable::basic::a_to_b_topp2;
 
 /// Strict COPP2-SOCP API for production use.
@@ -48,7 +50,7 @@ use crate::copp::copp2::stable::basic::a_to_b_topp2;
 /// non-accepted solver statuses as hard failures.
 ///
 /// # Contract
-/// - Internally calls [`copp2_socp_expert`].
+/// - Internally calls [`copp2_socp_expert`](crate::solver::copp2_socp::copp2_socp_expert).
 /// - Returns `Ok(a)` **iff** `options.is_allow(solution.status)` is `true`.
 /// - Returns `Err(CoppError::ClarabelSolverStatus(...))` when status is not accepted.
 ///
@@ -56,11 +58,11 @@ use crate::copp::copp2::stable::basic::a_to_b_topp2;
 /// Returns accepted profile `a` for production usage.
 ///
 /// # Errors
-/// Returns `CoppError` for model/solver failures and when solver status is not accepted.
+/// Returns [`CoppError`](crate::diag::CoppError) for model/solver failures and when solver status is not accepted.
 ///
 /// # Notes
 /// For workflows requiring low-level diagnostics (`status`, iterate behavior, residual-related fields in
-/// Clarabel solution), prefer [`copp2_socp_expert`].
+/// Clarabel solution), prefer [`copp2_socp_expert`](crate::solver::copp2_socp::copp2_socp_expert).
 pub fn copp2_socp<'a, M: RobotTorque>(
     problem: &Copp2Problem<'a, M>,
     options: &ClarabelOptions,
@@ -74,7 +76,7 @@ pub fn copp2_socp<'a, M: RobotTorque>(
 /// # Purpose
 /// This API is intended for advanced users who need both:
 /// - extracted high-level profile `Option<Vec<f64>>`, and
-/// - raw solver result `DefaultSolution<f64>` for post-analysis.
+/// - raw solver result [`DefaultSolution<f64>`](clarabel::solver::DefaultSolution) for post-analysis.
 ///
 /// # Return contract
 /// - `Ok((Some(a), solution))`: status accepted by `options.is_allow(solution.status)`.
@@ -85,7 +87,7 @@ pub fn copp2_socp<'a, M: RobotTorque>(
 /// Returns tuple `(Option<Vec<f64>>, DefaultSolution<f64>)` for diagnostic workflows.
 ///
 /// # Errors
-/// Returns `CoppError` only for real failures (input, model build, or solver runtime).
+/// Returns [`CoppError`](crate::diag::CoppError) only for real failures (input, model build, or solver runtime).
 ///
 /// # Contract
 /// - caller must handle `None` profile when status is not accepted;
@@ -93,14 +95,27 @@ pub fn copp2_socp<'a, M: RobotTorque>(
 ///
 /// # Verbosity behavior
 /// Logging is layered by `options.verbosity()`:
-/// - `Silent`: no algorithm logs;
-/// - `Summary`: lifecycle milestones and elapsed time;
-/// - `Debug`: assembly-level counters and stage summaries;
-/// - `Trace`: fine-grained stage deltas and solver snapshot diagnostics.
+/// - [`Silent`](crate::diag::Verbosity::Silent): no algorithm logs;
+/// - [`Summary`](crate::diag::Verbosity::Summary): lifecycle milestones and elapsed time;
+/// - [`Debug`](crate::diag::Verbosity::Debug): assembly-level counters and stage summaries;
+/// - [`Trace`](crate::diag::Verbosity::Trace): fine-grained stage deltas and solver snapshot diagnostics.
 pub fn copp2_socp_expert<'a, M: RobotTorque>(
     problem: &Copp2Problem<'a, M>,
     options: &ClarabelOptions,
 ) -> Result<(Option<Vec<f64>>, DefaultSolution<f64>), CoppError> {
+    let result = copp2_socp_expert_with_info(problem, options)?;
+    Ok((result.result, result.solution))
+}
+
+/// Expert COPP2-SOCP API with Clarabel solution and linear-solver diagnostics.
+///
+/// Use this variant when callers need more than
+/// [`DefaultSolution`](clarabel::solver::DefaultSolution), because Clarabel stores linear solver metadata on the
+/// solver `info` object rather than inside the returned solution.
+pub fn copp2_socp_expert_with_info<'a, M: RobotTorque>(
+    problem: &Copp2Problem<'a, M>,
+    options: &ClarabelOptions,
+) -> Result<ClarabelExpertInfor2nd, CoppError> {
     match options.verbosity() {
         Verbosity::Silent => copp2_socp_core(problem, (options, SilentVerboser)),
         Verbosity::Summary => copp2_socp_core(problem, (options, SummaryVerboser::new())),
@@ -119,11 +134,11 @@ pub fn copp2_socp_expert<'a, M: RobotTorque>(
 /// # Invariants
 /// - decision-variable layout always starts with contiguous `a[0..=n]`;
 /// - `q_object.len()` is treated as final `n_var` before solver build;
-/// - extracted `a` is produced only through `clarabel_to_copp2_solution` when status is accepted.
+/// - extracted `a` is produced only through [`clarabel_to_copp2_solution`](crate::solver::copp2_socp::clarabel_to_copp2_solution) when status is accepted.
 fn copp2_socp_core<'a, M: RobotTorque>(
     problem: &Copp2Problem<'a, M>,
     options_verboser: (&ClarabelOptions, impl Verboser),
-) -> Result<(Option<Vec<f64>>, DefaultSolution<f64>), CoppError> {
+) -> Result<ClarabelExpertInfor2nd, CoppError> {
     let (options, mut verboser) = options_verboser;
     let (idx_s_start, idx_s_final) = problem.idx_s_interval;
     if verboser.is_enabled(Verbosity::Summary) {
@@ -314,6 +329,7 @@ fn copp2_socp_core<'a, M: RobotTorque>(
     let mut solver = DefaultSolver::<f64>::new(&p_object, &q_object, &a_csc, &b, &cones, settings)
         .map_err(|e| CoppError::ClarabelSolverError("copp2_socp".into(), e))?;
     solver.solve();
+    let linsolver = solver.info.linsolver.clone();
     let solution = solver.solution;
     if verboser.is_enabled(Verbosity::Summary) {
         crate::verbosity_log!(
@@ -349,7 +365,11 @@ fn copp2_socp_core<'a, M: RobotTorque>(
             }
         );
     }
-    Ok((a_profile, solution))
+    Ok(ClarabelExpertInfor2nd {
+        result: a_profile,
+        solution,
+        linsolver,
+    })
 }
 
 /// Determine the number of clarabel's capacity for the objective in COPP2.
@@ -402,10 +422,10 @@ fn clarabel_objective_capacity_copp2<M: RobotBasic>(
     (capacity_val, capacity_b, capacity_cones, n_vars)
 }
 
-/// Add the constraints for sqrt(a) >= eta in COPP2 optimization.  
+/// Add the constraints for sqrt(a) >= eta in COPP2 optimization.
 /// x = [a[0], a[1], ..., a[n], eta[0], eta[1], ..., eta[n], ...] \in R^{2*(n+1)+...}.
-/// sqrt(a[k]) >= eta[k] >= 0  
-/// num_val <= 4*(n+1), num_b <= 4*(n+1), num_cones <= n+2  
+/// sqrt(a[k]) >= eta[k] >= 0
+/// num_val <= 4*(n+1), num_b <= 4*(n+1), num_cones <= n+2
 /// Return the len of the new x: n+1 or 2*(n+1)
 fn clarabel_sqrt_a_copp2(
     n: usize,
@@ -431,11 +451,8 @@ fn clarabel_sqrt_a_copp2(
                 val.resize(val.len() + 3 * (n + 1), -1.0);
                 cones.resize(cones.len() + n + 1, SecondOrderConeT(3));
                 for k in 0..=n {
-                    // row.extend(b.len()..b.len() + 3);
                     col.extend([k, k, k + n + 1]);
-                    // val.resize(val.len() + 3, -1.0);
                     b.extend([0.25, -0.25, 0.0]);
-                    // cones.push(SecondOrderConeT(3));
                 }
                 return 2 * (n + 1);
             }
@@ -445,7 +462,7 @@ fn clarabel_sqrt_a_copp2(
     n + 1
 }
 
-/// Add the constraints and objective for Time in COPP2 optimization.  
+/// Add the constraints and objective for Time in COPP2 optimization.
 /// num_val <= 6*n, num_b <= 3*n, num_cones <= n, n_var <= n
 fn clarabel_objective_time_copp2(
     s: &[f64],
@@ -480,13 +497,12 @@ fn clarabel_objective_time_copp2(
         b.push(0.0);
         // 1
         b.push(1.0);
-        // cones.push(SecondOrderConeT(3));
     }
     cones.resize(cones.len() + len - 1, SecondOrderConeT(3));
     true
 }
 
-/// Add the constraints and objective for ThermalEnergy in COPP2 optimization.  
+/// Add the constraints and objective for ThermalEnergy in COPP2 optimization.
 /// num_val <= (6+2*dim)*n, num_b <= (dim+2)*n, num_cones <= n, n_var <= n
 fn clarabel_objective_thermal_energy_copp2(
     s: &[f64],
@@ -562,7 +578,7 @@ fn clarabel_objective_thermal_energy_copp2(
     true
 }
 
-/// Add the constraints and objective for TotalVariationTorque in COPP2 optimization.  
+/// Add the constraints and objective for TotalVariationTorque in COPP2 optimization.
 /// num_val <= 8*dim*n, num_b <= 2*dim*n, num_cones <= 1, n_var <= dim*n
 fn clarabel_objective_tv_torque_copp2(
     weight: f64,
@@ -706,7 +722,7 @@ fn clarable_objective_copp2<M: RobotTorque>(
         problem.robot.torque2_coeff_a(
             problem.idx_s_interval.0,
             problem.idx_s_interval.1 - problem.idx_s_interval.0,
-        )
+        )?
     } else {
         (
             DMatrix::<f64>::zeros(0, 0),
@@ -766,7 +782,6 @@ fn clarable_objective_copp2<M: RobotTorque>(
 }
 
 /// Compute the objective value for COPP2 optimization.
-#[cfg(test)]
 pub(crate) fn objective_value_copp2_opt<M: RobotTorque>(
     robot: &Robot<M>,
     start_idx_s: usize,
@@ -782,7 +797,9 @@ pub(crate) fn objective_value_copp2_opt<M: RobotTorque>(
     if a_profile.len() != s.len() {
         return (f64::INFINITY, vec![0.0; objective.len()]);
     }
-    let b_profile = a_to_b_topp2(&s, a_profile);
+    let Ok(b_profile) = a_to_b_topp2(&s, a_profile) else {
+        return (f64::INFINITY, vec![0.0; objective.len()]);
+    };
     let torque = if objective.iter().any(|obj| {
         matches!(
             obj,
@@ -838,9 +855,8 @@ pub(crate) fn objective_value_copp2_opt<M: RobotTorque>(
     (obj_val_total, obj_val)
 }
 
-/// Compute the time value in COPP2 optimization.  
-/// Input: s, a_sqrt = sqrt(a)  
-#[cfg(test)]
+/// Compute the time value in COPP2 optimization.
+/// Input: s, a_sqrt = sqrt(a)
 #[inline(always)]
 fn objective_value_time_copp2(s: &[f64], a_sqrt: &[f64]) -> f64 {
     // objective: minimize 2 * weight * \sum (s[k+1]-s[k]) / (sqrt(a[k]) + sqrt(a[k+1]))
@@ -852,7 +868,6 @@ fn objective_value_time_copp2(s: &[f64], a_sqrt: &[f64]) -> f64 {
 }
 
 /// Compute the thermal energy value in COPP2 optimization.
-#[cfg(test)]
 #[inline(always)]
 fn objective_value_thermal_energy_copp2(
     s: &[f64],
@@ -875,7 +890,6 @@ fn objective_value_thermal_energy_copp2(
 }
 
 /// Compute the total variation of torque value in COPP2 optimization.
-#[cfg(test)]
 #[inline(always)]
 fn objective_value_tv_torque_copp2(torque: &DMatrix<f64>, normalize: &[f64]) -> f64 {
     // minimize: weight * \sum |tau[i][k+1]-tau[i][k]| * normalize[i]
@@ -893,7 +907,6 @@ fn objective_value_tv_torque_copp2(torque: &DMatrix<f64>, normalize: &[f64]) -> 
 }
 
 /// Compute the objective value for Linear in COPP2 optimization.
-#[cfg(test)]
 #[inline(always)]
 fn objective_value_linear_copp2(s: &[f64], a_profile: &[f64], alpha: &[f64], beta: &[f64]) -> f64 {
     // objective: minimize \sum (alpha[k]*a[k] + beta[k]*b[k])
@@ -919,10 +932,13 @@ mod tests {
     use crate::copp::copp2::stable::reach_set2::{ReachSet2Options, ReachSet2OptionsBuilder};
     use crate::copp::copp2::stable::topp2_ra::topp2_ra;
     use crate::copp::{ClarabelOptions, ClarabelOptionsBuilder};
-    use crate::path::{add_symmetric_axial_limits_for_test, lissajous_path_for_test};
+    use crate::path::{
+        Path, SplineConfig, add_symmetric_axial_limits_for_test, lissajous_path_for_test,
+    };
     use crate::robot::demo::Plannar2LinkEnd;
     use crate::robot::robot_core::Robot;
     use core::panic;
+    use nalgebra::DMatrix;
     use std::time::Instant;
     use std::vec;
 
@@ -942,7 +958,73 @@ mod tests {
 
     #[test]
     fn test_copp2_socp() -> Result<(), CoppError> {
-        run_test_copp2_socp_repeated(1, false)
+        let options_socp = ClarabelOptionsBuilder::new()
+            .allow_almost_solved(true)
+            .build()?;
+        run_test_copp2_socp_once(&options_socp)
+    }
+
+    #[test]
+    #[ignore = "bindings"]
+    fn test_copp2_socp_bindings_parity() -> Result<(), CoppError> {
+        let dim = 3;
+        let num_waypoints = 8;
+        let n: usize = 81;
+        let pi = std::f64::consts::PI;
+
+        let waypoints = DMatrix::<f64>::from_fn(dim, num_waypoints, |axis, j| {
+            let s = j as f64 / (num_waypoints - 1) as f64;
+            match axis {
+                0 => 0.20 * (2.0 * pi * s).sin(),
+                1 => 0.15 * (1.5 * pi * s).cos(),
+                2 => 0.10 * s * (1.0 - s),
+                _ => unreachable!("dimension is fixed to 3"),
+            }
+        });
+        let path = Path::from_waypoints(&waypoints, SplineConfig::default())?;
+        let s = DMatrix::<f64>::from_fn(1, n, |_, j| j as f64 / (n - 1) as f64);
+
+        let mut robot = Robot::with_capacity(dim, n);
+        robot
+            .with_s(&s.as_view())?
+            .with_q_from_path_2nd(&path, 0, n)?;
+        add_symmetric_axial_limits_for_test(&mut robot, 10.0, 50.0, None)?;
+        let torque_max = vec![1.0e6; dim];
+        let torque_min = vec![-1.0e6; dim];
+        robot.with_axial_torque((torque_max.as_slice(), n), (torque_min.as_slice(), n), 0)?;
+
+        let normalize = vec![1.0; dim];
+        let options = ClarabelOptionsBuilder::new()
+            .allow_almost_solved(true)
+            .build()?;
+
+        let objectives_thermal = [
+            CoppObjective::Time(1.0),
+            CoppObjective::ThermalEnergy(1.0, &normalize),
+        ];
+        let problem_thermal =
+            Copp2ProblemBuilder::new(&robot, (0, n - 1), (0.0, 0.0), &objectives_thermal)
+                .build()?;
+        let a_thermal = copp2_socp(&problem_thermal, &options)?;
+        let (t_final_thermal, _) = s_to_t_topp2(s.as_slice(), &a_thermal, 0.0)?;
+
+        let objectives_tv = [
+            CoppObjective::Time(1.0),
+            CoppObjective::TotalVariationTorque(1.0, &normalize),
+        ];
+        let problem_tv =
+            Copp2ProblemBuilder::new(&robot, (0, n - 1), (0.0, 0.0), &objectives_tv).build()?;
+        let a_tv = copp2_socp(&problem_tv, &options)?;
+
+        crate::verbosity_log!(
+            crate::diag::Verbosity::Summary,
+            "COPP2-SOCP Rust bindings parity test: t_final_thermal={:.17}, thermal.len={}, tv.len={}",
+            t_final_thermal,
+            a_thermal.len(),
+            a_tv.len()
+        );
+
+        Ok(())
     }
 
     /// Conditions: release, --include-ignored, CPU = Intel(R) Core(TM) Ultra 9 285K.
@@ -981,16 +1063,11 @@ mod tests {
             let dim = robot.dim();
 
             let mut rng = rand::rng();
-            let (s, derivs, omega, phi) =
+            let (s, path, omega, phi) =
                 lissajous_path_for_test(dim, n, &mut rng).expect("random range is valid");
-            robot.with_s(&s.as_view())?;
-            robot.with_q(
-                &derivs.q.as_view(),
-                &derivs.dq.as_ref().unwrap().as_view(),
-                &derivs.ddq.as_ref().unwrap().as_view(),
-                derivs.dddq.as_ref().map(|m| m.as_view()).as_ref(),
-                0,
-            )?;
+            robot
+                .with_s(&s.as_view())?
+                .with_q_from_path_2nd(&path, 0, n)?;
             add_symmetric_axial_limits_for_test(&mut robot, 1.0, 1.0, None)?;
 
             // Test different objectives in COPP2 optimization
@@ -1032,8 +1109,8 @@ mod tests {
                 .project_to_feasible_topp2(&mut a_case1, &a_feasible, 0)?;
             let (_, obj_case1) = objective_value_copp2_opt(&robot, 0, &objectives_test, &a_case1);
             if obj_case1[0] < obj_case0[0] - 1E-3 || obj_case1[1] - 1E-3 > obj_case0[1] {
-                let (tf_case0, _) = s_to_t_topp2(s.as_slice(), &a_case0, 0.0);
-                let (tf_case1, _) = s_to_t_topp2(s.as_slice(), &a_case1, 0.0);
+                let (tf_case0, _) = s_to_t_topp2(s.as_slice(), &a_case0, 0.0)?;
+                let (tf_case1, _) = s_to_t_topp2(s.as_slice(), &a_case1, 0.0)?;
                 crate::verbosity_log!(
                     crate::diag::Verbosity::Summary,
                     "omega = {omega:?}\nphi = {phi:?}"
@@ -1253,6 +1330,10 @@ mod tests {
         Ok(())
     }
 
+    fn run_test_copp2_socp_once(_options_socp: &ClarabelOptions) -> Result<(), CoppError> {
+        run_test_copp2_socp_repeated(1, false)
+    }
+
     fn run_one_copp2_socp_only_time_case(
         options_ra: &ReachSet2Options,
         options_socp: &ClarabelOptions,
@@ -1262,24 +1343,18 @@ mod tests {
         let dim = robot.dim();
 
         let mut rng = rand::rng();
-        let (s, derivs, omega, phi) =
+        let (s, path, omega, phi) =
             lissajous_path_for_test(dim, n, &mut rng).expect("random range is valid");
-        robot.with_s(&s.as_view())?;
-        robot.with_q(
-            &derivs.q.as_view(),
-            &derivs.dq.as_ref().unwrap().as_view(),
-            &derivs.ddq.as_ref().unwrap().as_view(),
-            derivs.dddq.as_ref().map(|m| m.as_view()).as_ref(),
-            0,
-        )?;
+        robot
+            .with_s(&s.as_view())?
+            .with_q_from_path_2nd(&path, 0, n)?;
         add_symmetric_axial_limits_for_test(&mut robot, 1.0, 1.0, None)?;
 
-        let topp2_problem =
-            Topp2ProblemBuilder::new(&robot, (0, n - 1), (0.0, 0.0)).build()?;
+        let topp2_problem = Topp2ProblemBuilder::new(&robot, (0, n - 1), (0.0, 0.0)).build()?;
         let start = Instant::now();
         let a_ra = topp2_ra(&topp2_problem, options_ra)?;
         let tc_ra = start.elapsed().as_secs_f64() * 1E3;
-        let (tf_ra, _) = s_to_t_topp2(s.as_slice(), &a_ra, 0.0);
+        let (tf_ra, _) = s_to_t_topp2(s.as_slice(), &a_ra, 0.0)?;
 
         let obj1 = [CoppObjective::Linear(
             1.0,
@@ -1291,13 +1366,13 @@ mod tests {
         let start = Instant::now();
         let a_lp = copp2_socp(&copp2_problem, options_socp)?;
         let tc_lp = start.elapsed().as_secs_f64() * 1E3;
-        let (tf_lp, _) = s_to_t_topp2(s.as_slice(), &a_lp, 0.0);
+        let (tf_lp, _) = s_to_t_topp2(s.as_slice(), &a_lp, 0.0)?;
 
         copp2_problem.objectives = &[CoppObjective::Time(1.0)];
         let start = Instant::now();
         let a_qp = copp2_socp(&copp2_problem, options_socp)?;
         let tc_qp = start.elapsed().as_secs_f64() * 1E3;
-        let (tf_qp, _) = s_to_t_topp2(s.as_slice(), &a_qp, 0.0);
+        let (tf_qp, _) = s_to_t_topp2(s.as_slice(), &a_qp, 0.0)?;
 
         if (tf_lp - tf_ra).abs() > 1e-3 || (tf_qp - tf_ra).abs() > 1e-3 {
             crate::verbosity_log!(

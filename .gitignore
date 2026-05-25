@@ -1,3 +1,9 @@
 /target
 /data
 /.vscode
+
+*.rkyv
+
+/bindings/**/build/
+/bindings/**/build-*/
+/bindings/c/docs/

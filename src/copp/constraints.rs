@@ -21,35 +21,36 @@
 //! - `b[k]` corresponds to $b_k$,
 //! - `c[k]` corresponds to $c_k$.
 //!
-//! Continuous constraint families:
+//! Constraint families:
 //! - first-order rows: $a(s) \le a\_{\text{max}}(s)$;
 //! - second-order rows: $f\_a(s) a(s) + f\_b(s) b(s) \le f\_{\text{max}}(s)$;
 //! - third-order rows: $\sqrt{a(s)}(g\_a(s) a(s) + g\_b(s) b(s) + g\_c(s) c(s) + g\_d(s)) \le g\_{\text{max}}(s)$;
 //! - linearized third-order rows: $h\_a(s) a(s) + h\_b(s) b(s) + h\_c(s) c(s) \le h\_{\text{max}}(s)$.
 //!
 //! # API layering
-//! - Public safe getters `get_*` (e.g. [`get_s`](`Constraints::get_s`), [`get_acc_constraints`](`Constraints::get_acc_constraints`), [`get_jerk_constraints`](`Constraints::get_jerk_constraints`))
+//! - Public safe getters `get_*` (e.g. [`get_s`](Constraints::get_s), [`get_acc_constraints`](Constraints::get_acc_constraints), [`get_jerk_constraints`](Constraints::get_jerk_constraints))
 //!   return `Result<_, ConstraintError>` with explicit bounds contract.
 //! - Internal fast getters `*_unchecked` are `pub(crate)` and require caller-side precondition guarantees.
 //!
 //! # User guidance
 //! - For most users, prefer [`Robot`](crate::robot::Robot) as the entry point so
-//!   constraints can be expressed with physical semantics (`with_axial_velocity`,
-//!   `with_axial_acceleration`, torque-related APIs).
-//! - Direct manipulation of [`Constraints`] is recommended for advanced users who
+//!   constraints can be expressed with physical semantics ([`with_axial_velocity`](crate::robot::Robot::with_axial_velocity),
+//!   [`with_axial_acceleration`](crate::robot::Robot::with_axial_acceleration), torque-related APIs).
+//! - Direct manipulation of [`Constraints`](crate::constraints::Constraints) is recommended for advanced users who
 //!   need maximum flexibility and custom low-level constraint composition.
 //!
 //! # Contract summary
 //! - Public APIs validate station range before indexing.
 //! - Internal unchecked APIs are for hot paths and guarded by debug assertions.
 //! - Linearized jerk access requires builders to call
-//!   [`build_with_linearization`](`crate::copp::copp3::formulation::Topp3ProblemBuilder::build_with_linearization`) or
-//!   [`build_with_linearization`](`crate::copp::copp3::formulation::Copp3ProblemBuilder::build_with_linearization`) beforehand.
+//!   [`build_with_linearization(Topp3)`](crate::solver::topp3_lp::Topp3ProblemBuilder::build_with_linearization) or
+//!   [`build_with_linearization(Copp3)`](crate::solver::copp3_socp::Copp3ProblemBuilder::build_with_linearization) beforehand.
 //! - For robust solver behavior, keep zero-state `a=b=c=0` strictly feasible at every station.
 //!   In practice this means every active scalar RHS must stay strictly positive:
 //!   `amax > 0`, `acc_max > 0`, and `jerk_max > 0` (after sign normalization).
 
-use crate::diag::ConstraintError;
+use crate::diag::{ConstraintError, CoppError};
+use crate::path::Path;
 use core::f64;
 use itertools::{Itertools, izip};
 use nalgebra::{Const, DMatrix, DMatrixView, Dyn, Matrix, RowDVector, ViewStorage};
@@ -57,6 +58,7 @@ use std::cmp::{max, min};
 use std::collections::BTreeMap;
 use std::ops::Bound::{Excluded, Included, Unbounded};
 
+#[cfg(test)]
 use crate::copp::copp2::stable::basic::a_to_b_topp2;
 
 /// Small numerical threshold used by feasibility and bound computations.
@@ -91,6 +93,7 @@ const EPSILON_NUMERIC: f64 = 1E-10;
 /// - `get_*` methods are safe public accessors and return `Result<_, ConstraintError>`.
 /// - `*_unchecked` methods are internal fast-path helpers. Callers must satisfy
 ///   preconditions; debug builds assert them.
+#[derive(Clone)]
 pub struct Constraints {
     /// Allocated circular-buffer capacity in **columns**.
     pub(crate) capacity_col: usize,
@@ -164,7 +167,7 @@ pub type InputMatrix<'a> = Matrix<f64, Dyn, Dyn, ViewStorage<'a, f64, Dyn, Dyn, 
 
 /// Conversion helper trait for 1D-like first-order inputs.
 ///
-/// This trait normalizes different containers into a `1 x N` `InputMatrix` view.
+/// This trait normalizes different containers into a `1 x N` [`InputMatrix`](crate::constraints::InputMatrix) view.
 /// It is used by APIs such as `with_s()` and `with_constraint_1order()`.
 pub trait AsInputMatrix1D {
     /// Borrow input data as a `1 x N` matrix view.
@@ -190,6 +193,7 @@ impl AsInputMatrix1D for Vec<f64> {
 }
 
 impl Constraints {
+    /// Default number of constraint stations preallocated for a new container.
     pub const DEFAULT_CAPACITY: usize = 1000;
 
     /// Construct a new container with default column capacity.
@@ -243,7 +247,7 @@ impl Constraints {
         }
     }
 
-    /// Calculate the physical column index in the circular buffer given a logical offset `col`.  
+    /// Calculate the physical column index in the circular buffer given a logical offset `col`.
     /// This uses `head_col` as the memory offset (bias) for the circular buffer.
     #[inline(always)]
     fn idx(&self, col: usize) -> usize {
@@ -303,7 +307,7 @@ impl Constraints {
     /// Get station value `s[idx_s]` with bounds validation.
     ///
     /// # Errors
-    /// Returns `ConstraintError::OutOfSBounds` if `idx_s` is outside
+    /// Returns [`ConstraintError::OutOfSBounds`](crate::diag::ConstraintError::OutOfSBounds) if `idx_s` is outside
     /// `[idx_s_start(), idx_s_end())`.
     #[inline(always)]
     pub fn get_s(&self, idx_s: usize) -> Result<f64, ConstraintError> {
@@ -341,8 +345,8 @@ impl Constraints {
     /// A contiguous vector of station values with length `idx_s_to - idx_s_from`.
     ///
     /// # Errors
-    /// - `ConstraintError::EmptyInterval` when `idx_s_from >= idx_s_to`.
-    /// - `ConstraintError::OutOfSBounds` if the interval is outside stored data.
+    /// - [`ConstraintError::EmptyInterval`](crate::diag::ConstraintError::EmptyInterval) when `idx_s_from >= idx_s_to`.
+    /// - [`ConstraintError::OutOfSBounds`](crate::diag::ConstraintError::OutOfSBounds) if the interval is outside stored data.
     pub fn s_vec(&self, idx_s_from: usize, idx_s_to: usize) -> Result<Vec<f64>, ConstraintError> {
         if idx_s_from >= idx_s_to {
             return Err(ConstraintError::EmptyInterval {
@@ -408,7 +412,7 @@ impl Constraints {
     /// Get first-order upper bound `amax[idx_s]` with bounds validation.
     ///
     /// # Errors
-    /// Returns `ConstraintError::OutOfSBounds` if `idx_s` is invalid.
+    /// Returns [`ConstraintError::OutOfSBounds`](crate::diag::ConstraintError::OutOfSBounds) if `idx_s` is invalid.
     #[inline(always)]
     pub fn get_amax(&self, idx_s: usize) -> Result<f64, ConstraintError> {
         self.check_s_in_bounds(idx_s, 1)?;
@@ -461,7 +465,7 @@ impl Constraints {
     /// view into internal storage.
     ///
     /// # Errors
-    /// Returns `ConstraintError::OutOfSBounds` if `idx_s` is invalid.
+    /// Returns [`ConstraintError::OutOfSBounds`](crate::diag::ConstraintError::OutOfSBounds) if `idx_s` is invalid.
     pub fn get_acc_constraints<'a>(
         &'a self,
         idx_s: usize,
@@ -511,7 +515,7 @@ impl Constraints {
     /// `(jerk_a, jerk_b, jerk_c, jerk_d, jerk_max)`, each a `valid_rows x 1` view.
     ///
     /// # Errors
-    /// Returns `ConstraintError::OutOfSBounds` if `idx_s` is invalid.
+    /// Returns [`ConstraintError::OutOfSBounds`](crate::diag::ConstraintError::OutOfSBounds) if `idx_s` is invalid.
     pub fn get_jerk_constraints<'a>(
         &'a self,
         idx_s: usize,
@@ -531,8 +535,9 @@ impl Constraints {
 
     /// Get the linearized third-order constraints at index `idx_s` without bounds checking.
     ///
-    /// This accessor assumes linearized jerk constraints are prepared by
-    /// `Topp3ProblemBuilders` / `Copp3ProblemBuilders` via `build_with_linearization`.
+    /// This accessor assumes linearized jerk constraints are prepared via
+    /// [`Topp3ProblemBuilder::build_with_linearization`](crate::solver::topp3_lp::Topp3ProblemBuilder::build_with_linearization)
+    /// or [`Copp3ProblemBuilder::build_with_linearization`](crate::solver::copp3_socp::Copp3ProblemBuilder::build_with_linearization).
     ///
     /// # Preconditions
     /// Caller must guarantee:
@@ -580,8 +585,8 @@ impl Constraints {
     /// view into internal storage.
     ///
     /// # Errors
-    /// - `ConstraintError::OutOfSBounds` if `idx_s` is outside current station window.
-    /// - `ConstraintError::LinearJerkNotAvailable` if `idx_s` is not covered by the
+    /// - [`ConstraintError::OutOfSBounds`](crate::diag::ConstraintError::OutOfSBounds) if `idx_s` is outside current station window.
+    /// - [`ConstraintError::LinearJerkNotAvailable`](crate::diag::ConstraintError::LinearJerkNotAvailable) if `idx_s` is not covered by the
     ///   latest linearization interval.
     pub fn get_jerk_linear_constraints<'a>(
         &'a self,
@@ -666,7 +671,7 @@ impl Constraints {
     /// Append strictly increasing station samples to the logical tail.
     ///
     /// # Parameters
-    /// - `s_new`: a `1 x N` station segment; accepted via `AsInputMatrix1D`.
+    /// - `s_new`: a `1 x N` station segment; accepted via [`AsInputMatrix1D`](crate::constraints::AsInputMatrix1D).
     ///
     /// # Behavior
     /// - Rejects non-increasing input.
@@ -677,14 +682,17 @@ impl Constraints {
     ///   `with_q` / `with_constraint_*` calls can progressively fill data.
     ///
     /// # Errors
-    /// Returns `ConstraintError::NonIncreasingS` on monotonicity violations.
+    /// Returns [`ConstraintError::NonIncreasingS`](crate::diag::ConstraintError::NonIncreasingS) on monotonicity violations.
+    ///
+    /// # Returns
+    /// Returns `&mut Self` for chaining on success.
     pub(crate) fn with_s<T: AsInputMatrix1D + ?Sized>(
         &mut self,
         s_new: &T,
-    ) -> Result<(), ConstraintError> {
+    ) -> Result<&mut Self, ConstraintError> {
         let s_new = s_new.as_input_matrix();
         if s_new.ncols() == 0 {
-            return Ok(());
+            return Ok(self);
         }
         // Check if s_new[0] > self.s[last]
         if self.len > 0 && s_new[0] <= self.s[self.idx(self.len - 1)] {
@@ -696,11 +704,6 @@ impl Constraints {
             .zip(s_new.iter().skip(1))
             .enumerate()
             .find(|(_, (prev, curr))| prev >= curr);
-        // let check_s_new_increasing = s_new
-        //     .as_slice()
-        //     .windows(2)
-        //     .enumerate()
-        //     .find(|(_, w)| w[0] >= w[1]);
         if let Some((index, _)) = check_s_new_increasing {
             return Err(ConstraintError::NonIncreasingS { index });
         }
@@ -717,7 +720,7 @@ impl Constraints {
 
         self.len += s_new.ncols();
 
-        Ok(())
+        Ok(self)
     }
 
     /// Copy a dense matrix block into a circular matrix starting at `start_idx`.
@@ -903,11 +906,19 @@ impl Constraints {
     /// # Behavior
     /// - Performs shape checks and bounds checks.
     /// - Overwrites corresponding circular-buffer ranges.
-    /// - Marks derivative data as fully valid (`n_rows = dim`) over the updated range.
+    /// - Marks second-order derivative data as fully valid (`n_rows = dim`)
+    ///   over the updated range.
+    /// - If `dddq_new` is provided, writes it and marks third-order derivative
+    ///   data as valid over the updated range.
+    /// - If `dddq_new` is `None`, clears third-order derivative availability
+    ///   over the updated range.
     ///
     /// # Errors
-    /// - `ConstraintError::NoMatchDimensions` on shape mismatch.
-    /// - `ConstraintError::OutOfSBounds` if target interval is invalid.
+    /// - [`ConstraintError::NoMatchDimensions`](crate::diag::ConstraintError::NoMatchDimensions) on shape mismatch.
+    /// - [`ConstraintError::OutOfSBounds`](crate::diag::ConstraintError::OutOfSBounds) if target interval is invalid.
+    ///
+    /// # Returns
+    /// Returns `&mut Self` for chaining on success.
     pub(crate) fn with_q(
         &mut self,
         q_new: &InputMatrix,
@@ -915,7 +926,7 @@ impl Constraints {
         ddq_new: &InputMatrix,
         dddq_new: Option<&InputMatrix>,
         idx_s: usize,
-    ) -> Result<(), ConstraintError> {
+    ) -> Result<&mut Self, ConstraintError> {
         // Check dimensions and bounds
         if q_new.nrows() != self.dim
             || dq_new.shape() != q_new.shape()
@@ -926,7 +937,7 @@ impl Constraints {
         }
         self.check_s_in_bounds(idx_s, dq_new.ncols())?;
         if dq_new.ncols() == 0 {
-            return Ok(());
+            return Ok(self);
         }
         // Add new derivatives
         let start_idx = self.idx(idx_s - self.idx_s);
@@ -954,9 +965,129 @@ impl Constraints {
                 ModeUpdateValidRows::SetValues,
             );
             Self::merge_valid_rows(&mut self.valid_rows_dddq, idx_s, idx_s + dddq_new.ncols());
+        } else {
+            self.clear_dddq(idx_s, dq_new.ncols())?;
         }
 
-        Ok(())
+        Ok(self)
+    }
+
+    /// Clear third-derivative data availability over a station interval.
+    ///
+    /// # Parameters
+    /// - `idx_s`: global start station id (inclusive).
+    /// - `len`: number of station samples to clear.
+    ///
+    /// # Behavior
+    /// - Validates that `[idx_s, idx_s + len)` is inside the stored station range.
+    /// - Marks `dddq` as unavailable over that interval.
+    /// - Zeros the stored `dddq` values in the covered circular-buffer columns.
+    fn clear_dddq(&mut self, idx_s: usize, len: usize) -> Result<&mut Self, ConstraintError> {
+        self.check_s_in_bounds(idx_s, len)?;
+        if len == 0 {
+            return Ok(self);
+        }
+
+        let start_idx = self.idx(idx_s - self.idx_s);
+        let ncols_mat = self.dddq.ncols();
+        let nrows = self.dddq.nrows();
+        Self::circular_process(ncols_mat, start_idx, len, |start_idx_, ncols, _| {
+            self.dddq
+                .view_mut((0, start_idx_), (nrows, ncols))
+                .fill(0.0);
+        });
+
+        let idx_to = idx_s + len;
+        Self::update_valid_rows(
+            &mut self.valid_rows_dddq,
+            idx_s,
+            idx_to,
+            0,
+            ModeUpdateValidRows::SetValues,
+        );
+        Self::merge_valid_rows(&mut self.valid_rows_dddq, idx_s, idx_to);
+
+        Ok(self)
+    }
+
+    /// Sample a path over a stored station interval and write derivatives up to second order.
+    ///
+    /// # Parameters
+    /// - `path`: geometric path to evaluate at stored station samples.
+    /// - `idx_s_from`: global start station id (inclusive).
+    /// - `idx_s_to`: global end station id (exclusive).
+    ///
+    /// # Behavior
+    /// - Exports station samples from `[idx_s_from, idx_s_to)`.
+    /// - Evaluates `q`, `dq`, and `ddq` with [`Path::evaluate_up_to_2nd`](crate::path::Path::evaluate_up_to_2nd).
+    /// - Writes the evaluated derivatives into the circular constraint buffers.
+    /// - Marks second-order path-derivative data as valid over the interval.
+    /// - Clears third-order path-derivative data over the interval.
+    ///
+    /// # Errors
+    /// - [`CoppError::ConstraintError`](crate::diag::CoppError::ConstraintError) if the station interval is empty, out of
+    ///   bounds, or the evaluated path dimension does not match `self.dim`.
+    /// - [`CoppError::PathError`](crate::diag::CoppError::PathError) if path evaluation fails, for example because a
+    ///   stored station is outside the path range.
+    ///
+    /// # Returns
+    /// Returns `&mut Self` for chaining on success.
+    pub(crate) fn with_q_from_path_2nd(
+        &mut self,
+        path: &Path,
+        idx_s_from: usize,
+        idx_s_to: usize,
+    ) -> Result<&mut Self, CoppError> {
+        let s = self.s_vec(idx_s_from, idx_s_to)?;
+        let derivs = path.evaluate_up_to_2nd(&s)?;
+        self.with_q(
+            &derivs.q.as_view(),
+            &derivs.dq.as_ref().unwrap().as_view(),
+            &derivs.ddq.as_ref().unwrap().as_view(),
+            None,
+            idx_s_from,
+        )?;
+        Ok(self)
+    }
+
+    /// Sample a path over a stored station interval and write derivatives up to third order.
+    ///
+    /// # Parameters
+    /// - `path`: geometric path to evaluate at stored station samples.
+    /// - `idx_s_from`: global start station id (inclusive).
+    /// - `idx_s_to`: global end station id (exclusive).
+    ///
+    /// # Behavior
+    /// - Exports station samples from `[idx_s_from, idx_s_to)`.
+    /// - Evaluates `q`, `dq`, `ddq`, and `dddq` with [`Path::evaluate_up_to_3rd`](crate::path::Path::evaluate_up_to_3rd).
+    /// - Writes the evaluated derivatives into the circular constraint buffers.
+    /// - Marks both second- and third-order path-derivative data as valid over
+    ///   the interval.
+    ///
+    /// # Errors
+    /// - [`CoppError::ConstraintError`](crate::diag::CoppError::ConstraintError) if the station interval is empty, out of
+    ///   bounds, or the evaluated path dimension does not match `self.dim`.
+    /// - [`CoppError::PathError`](crate::diag::CoppError::PathError) if path evaluation fails, for example because a
+    ///   stored station is outside the path range.
+    ///
+    /// # Returns
+    /// Returns `&mut Self` for chaining on success.
+    pub(crate) fn with_q_from_path_3rd(
+        &mut self,
+        path: &Path,
+        idx_s_from: usize,
+        idx_s_to: usize,
+    ) -> Result<&mut Self, CoppError> {
+        let s = self.s_vec(idx_s_from, idx_s_to)?;
+        let derivs = path.evaluate_up_to_3rd(&s)?;
+        self.with_q(
+            &derivs.q.as_view(),
+            &derivs.dq.as_ref().unwrap().as_view(),
+            &derivs.ddq.as_ref().unwrap().as_view(),
+            derivs.dddq.as_ref().map(|m| m.as_view()).as_ref(),
+            idx_s_from,
+        )?;
+        Ok(self)
     }
 
     /// Add / tighten first-order bound `amax` over an interval.
@@ -970,18 +1101,21 @@ impl Constraints {
     /// Stored value is updated as `self.amax = min(self.amax, amax_new_reduced)`.
     ///
     /// # Errors
-    /// - `ConstraintError::OutOfSBounds` if interval is invalid.
-    /// - `ConstraintError::NonPositiveA` if any reduced bound is non-positive.
+    /// - [`ConstraintError::OutOfSBounds`](crate::diag::ConstraintError::OutOfSBounds) if interval is invalid.
+    /// - [`ConstraintError::NonPositiveA`](crate::diag::ConstraintError::NonPositiveA) if any reduced bound is non-positive.
+    ///
+    /// # Returns
+    /// Returns `&mut Self` for chaining on success.
     pub fn with_constraint_1order<T: AsInputMatrix1D + ?Sized>(
         &mut self,
         amax_new: &T,
         idx_s: usize,
-    ) -> Result<(), ConstraintError> {
+    ) -> Result<&mut Self, ConstraintError> {
         let amax_new = amax_new.as_input_matrix();
         // Check bounds
         self.check_s_in_bounds(idx_s, amax_new.ncols())?;
         if amax_new.ncols() == 0 || amax_new.nrows() == 0 {
-            return Ok(());
+            return Ok(self);
         }
         let amax_row: RowDVector<f64> = RowDVector::from_iterator(
             amax_new.ncols(),
@@ -1005,7 +1139,7 @@ impl Constraints {
         };
         Self::circular_process(ncols_mat, start_idx, ncols_data, func);
 
-        Ok(())
+        Ok(self)
     }
 
     /// Append second-order inequality rows over station interval starting at `idx_s`.
@@ -1026,8 +1160,11 @@ impl Constraints {
     /// - Merges adjacent validity intervals when row counts match.
     ///
     /// # Errors
-    /// - `ConstraintError::NoMatchDimensions` for shape mismatch.
-    /// - `ConstraintError::OutOfSBounds` for invalid interval.
+    /// - [`ConstraintError::NoMatchDimensions`](crate::diag::ConstraintError::NoMatchDimensions) for shape mismatch.
+    /// - [`ConstraintError::OutOfSBounds`](crate::diag::ConstraintError::OutOfSBounds) for invalid interval.
+    ///
+    /// # Returns
+    /// Returns `&mut Self` for chaining on success.
     pub fn with_constraint_2order(
         &mut self,
         acc_a_new: &InputMatrix,
@@ -1035,14 +1172,14 @@ impl Constraints {
         acc_max_new: &InputMatrix,
         idx_s: usize,
         is_negative: bool,
-    ) -> Result<(), ConstraintError> {
+    ) -> Result<&mut Self, ConstraintError> {
         // Check dimensions and bounds
         if acc_a_new.shape() != acc_b_new.shape() || acc_a_new.shape() != acc_max_new.shape() {
             return Err(ConstraintError::NoMatchDimensions);
         }
         self.check_s_in_bounds(idx_s, acc_a_new.ncols())?;
         if acc_a_new.ncols() == 0 || acc_a_new.nrows() == 0 {
-            return Ok(());
+            return Ok(self);
         }
         // Add new second-order constraints
         let start_idx = self.idx(idx_s - self.idx_s);
@@ -1072,7 +1209,7 @@ impl Constraints {
         });
 
         Self::merge_valid_rows(&mut self.valid_rows_acc, idx_s, idx_s + acc_a_new.ncols());
-        Ok(())
+        Ok(self)
     }
 
     /// Append third-order nonlinear inequality rows over station interval.
@@ -1090,8 +1227,11 @@ impl Constraints {
     /// linearization-valid interval is cleared because source nonlinear rows changed.
     ///
     /// # Errors
-    /// - `ConstraintError::NoMatchDimensions` for shape mismatch.
-    /// - `ConstraintError::OutOfSBounds` for invalid interval.
+    /// - [`ConstraintError::NoMatchDimensions`](crate::diag::ConstraintError::NoMatchDimensions) for shape mismatch.
+    /// - [`ConstraintError::OutOfSBounds`](crate::diag::ConstraintError::OutOfSBounds) for invalid interval.
+    ///
+    /// # Returns
+    /// Returns `&mut Self` for chaining on success.
     #[allow(clippy::too_many_arguments)]
     pub fn with_constraint_3order(
         &mut self,
@@ -1102,7 +1242,7 @@ impl Constraints {
         jerk_max_new: &InputMatrix,
         idx_s: usize,
         is_negative: bool,
-    ) -> Result<(), ConstraintError> {
+    ) -> Result<&mut Self, ConstraintError> {
         // Check dimensions and bounds
         if [&jerk_b_new, &jerk_c_new, &jerk_d_new, &jerk_max_new]
             .iter()
@@ -1112,7 +1252,7 @@ impl Constraints {
         }
         self.check_s_in_bounds(idx_s, jerk_a_new.ncols())?;
         if jerk_a_new.ncols() == 0 || jerk_a_new.nrows() == 0 {
-            return Ok(());
+            return Ok(self);
         }
         if self.valid_ids_linear_jerk.1 > idx_s
             && self.valid_ids_linear_jerk.0 < idx_s + jerk_a_new.ncols()
@@ -1152,7 +1292,7 @@ impl Constraints {
 
         Self::merge_valid_rows(&mut self.valid_rows_jerk, idx_s, idx_s + jerk_a_new.ncols());
 
-        Ok(())
+        Ok(self)
     }
 
     /// Linearize third-order jerk constraints around a reference profile `a_linear`.
@@ -1270,7 +1410,7 @@ impl Constraints {
     /// - `idx_from`: inclusive start station id.
     /// - `idx_to`: exclusive end station id.
     /// - `n_rows`: row count argument applied per `mode`.
-    /// - `mode`: `SetValues` to overwrite, `AddValues` to accumulate.
+    /// - `mode`: [`SetValues`](ModeUpdateValidRows::SetValues) to overwrite, [`AddValues`](ModeUpdateValidRows::AddValues) to accumulate.
     ///
     /// # Invariant handling
     /// The function splits leaves at boundaries when necessary so update is exact
@@ -1321,7 +1461,7 @@ impl Constraints {
 
     /// Merge adjacent map leaves with identical row counts near update boundaries.
     ///
-    /// This post-processing keeps `ValidRows` compact after splits and updates.
+    /// This post-processing keeps [`ValidRows`] compact after splits and updates.
     fn merge_valid_rows(valid_rows: &mut ValidRows, idx_from: usize, idx_to: usize) {
         // Merge those near idx_from
         if let Some((&idx_right, &(idx_left, nrows))) =
@@ -1421,8 +1561,8 @@ impl Constraints {
     /// Remove a prefix of logical stations from the front.
     ///
     /// # Modes
-    /// - `ModePopConstraints::CutAtIdxS(cut)`: keep stations with `id >= cut`.
-    /// - `ModePopConstraints::PopNCols(n)`: remove first `n` logical stations.
+    /// - [`ModePopConstraints::CutAtIdxS`](crate::constraints::ModePopConstraints::CutAtIdxS)`(cut)`: keep stations with `id >= cut`.
+    /// - [`ModePopConstraints::PopNCols`](crate::constraints::ModePopConstraints::PopNCols)`(n)`: remove first `n` logical stations.
     ///
     /// # Notes
     /// - `amax` values in removed columns are reset to `+inf`.
@@ -1470,8 +1610,8 @@ impl Constraints {
     /// Remove a suffix of logical stations from the back.
     ///
     /// # Modes
-    /// - `ModePopConstraints::CutAtIdxS(cut)`: keep stations with `id < cut`.
-    /// - `ModePopConstraints::PopNCols(n)`: remove last `n` logical stations.
+    /// - [`ModePopConstraints::CutAtIdxS`](crate::constraints::ModePopConstraints::CutAtIdxS)`(cut)`: keep stations with `id < cut`.
+    /// - [`ModePopConstraints::PopNCols`](crate::constraints::ModePopConstraints::PopNCols)`(n)`: remove last `n` logical stations.
     ///
     /// # Notes
     /// - `amax` values in removed columns are reset to `+inf`.
@@ -1521,7 +1661,7 @@ impl Constraints {
     ///   otherwise reset it to `0`.
     ///
     /// # Notes
-    /// `amax` is reinitialized to `+∞`; other matrices are kept allocated and may
+    /// `amax` is reinitialized to `+鈭瀈; other matrices are kept allocated and may
     /// retain old values outside the active logical window.
     pub fn clear(&mut self, keep_idx_s: bool) {
         self.head_col = 0;
@@ -1536,7 +1676,7 @@ impl Constraints {
         self.amax.fill(f64::INFINITY);
     }
 
-    /// Compute total row count over station interval in a `ValidRows` map.
+    /// Compute total row count over station interval in a [`ValidRows`] map.
     ///
     /// Returns:
     /// `sum_{k in [idx_from, idx_to)} valid_rows(k)`.
@@ -1567,7 +1707,7 @@ impl Constraints {
     /// - `idx_from`: global start station id.
     ///
     /// # Errors
-    /// Returns `ConstraintError::OutOfSBounds` if target range is invalid.
+    /// Returns [`ConstraintError::OutOfSBounds`](crate::diag::ConstraintError::OutOfSBounds) if target range is invalid.
     pub fn amax_substitute(
         &mut self,
         amax_new: &[f64],
@@ -1602,7 +1742,7 @@ impl Constraints {
     /// - forward (`REV = false`): `amin <= a[num_stationary] <= amax`
     /// - reverse (`REV = true`): `amin <= a[n - num_stationary] <= amax`
     ///
-    /// Returns `(∞, 0)` when prerequisite station range is unavailable.
+    /// Returns `(<= 0)` when prerequisite station range is unavailable.
     pub(crate) fn stationary_constraint_topp3<const REV: bool>(
         &self,
         a_linear: &[f64],
@@ -1722,59 +1862,13 @@ impl Constraints {
         (amax_stationary, amin_stationary)
     }
 
-    /// Evaluate maximum violation magnitudes of first/second-order TOPP2 constraints.
-    ///
-    /// # Returns
-    /// `(exceed_1order, exceed_2order)` where each value is `<= 0` when fully
-    /// feasible and positive when violated.
-    #[allow(dead_code)]
-    pub(crate) fn exceed_topp2(&self, idx_s_start: usize, a_profile: &[f64]) -> (f64, f64) {
-        let Ok(s) = self.s_vec(idx_s_start, idx_s_start + a_profile.len()) else {
-            return (f64::NAN, f64::NAN);
-        };
-        let b_profile = a_to_b_topp2(&s, a_profile);
-        let mut excced_1order = -a_profile
-            .iter()
-            .fold(f64::INFINITY, |a, &b| a.min(b))
-            .min(0.0);
-        for (i, &a) in a_profile.iter().enumerate() {
-            let idx_s = idx_s_start + i;
-            let amax_curr = self.amax_unchecked(idx_s);
-            if amax_curr.is_finite() {
-                excced_1order = excced_1order.max(a - amax_curr);
-            }
-        }
-        let mut excced_2order: f64 = 0.0;
-        for (i, (a, &b)) in a_profile.windows(2).zip(b_profile.iter()).enumerate() {
-            let idx_s = idx_s_start + i;
-            let (acc_a_curr, acc_b_curr, acc_max_curr) = self.acc_constraints_unchecked(idx_s);
-            for (&acc_a, &acc_b, &acc_max) in
-                izip!(acc_a_curr.iter(), acc_b_curr.iter(), acc_max_curr.iter())
-            {
-                if acc_max.is_finite() {
-                    excced_2order = excced_2order.max(acc_a * a[0] + acc_b * b - acc_max);
-                }
-            }
-            let (acc_a_next, acc_b_next, acc_max_next) = self.acc_constraints_unchecked(idx_s + 1);
-            for (&acc_a, &acc_b, &acc_max) in
-                izip!(acc_a_next.iter(), acc_b_next.iter(), acc_max_next.iter())
-            {
-                if acc_max.is_finite() {
-                    excced_2order = excced_2order.max(acc_a * a[1] + acc_b * b - acc_max);
-                }
-            }
-        }
-
-        (excced_1order, excced_2order)
-    }
-
     /// Test-only projection of `a_ori` toward feasible profile `a_fea` for TOPP2.
     ///
     /// # Returns
     /// Interpolation factor applied to `a_ori` (in `[0, 1]` in typical cases).
     ///
     /// # Errors
-    /// Returns `ConstraintError::InfeasibleReference` if provided `a_fea` itself
+    /// Returns [`ConstraintError::InfeasibleReference`](crate::diag::ConstraintError::InfeasibleReference) if provided `a_fea` itself
     /// violates active constraints.
     #[cfg(test)]
     pub(crate) fn project_to_feasible_topp2(
@@ -1833,8 +1927,8 @@ impl Constraints {
             }
         }
         // Project: second-order
-        let b_ori = a_to_b_topp2(&s, a_ori);
-        let b_fea = a_to_b_topp2(&s, a_fea);
+        let b_ori = a_to_b_topp2(&s, a_ori).map_err(|_| ConstraintError::NoMatchDimensions)?;
+        let b_fea = a_to_b_topp2(&s, a_fea).map_err(|_| ConstraintError::NoMatchDimensions)?;
         for (i, (a_o, a_f, &b_o, &b_f)) in izip!(
             a_ori.windows(2),
             a_fea.windows(2),
@@ -1985,9 +2079,9 @@ enum ModeUpdateValidRows {
 
 /// The mode for popping constraints.
 pub enum ModePopConstraints {
-    /// `ModePopConstraints::CutAtIdxS(cut)`: keep stations with `id >= cut` or `id < cut`.
+    /// [`ModePopConstraints::CutAtIdxS`](crate::constraints::ModePopConstraints::CutAtIdxS)`(cut)`: keep stations with `id >= cut` or `id < cut`.
     CutAtIdxS(usize),
-    /// `ModePopConstraints::PopNCols(n)`: remove first or last `n` logical stations.
+    /// [`ModePopConstraints::PopNCols`](crate::constraints::ModePopConstraints::PopNCols)`(n)`: remove first or last `n` logical stations.
     PopNCols(usize),
 }
 

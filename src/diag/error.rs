@@ -13,6 +13,9 @@ pub enum CoppError {
     /// Some error occurred in the Path struct, such as invalid input or computation failure.
     #[error("Some error occurred in the Path struct: {0}")]
     PathError(#[from] PathError),
+    /// Some error occurred while evaluating user-provided robot inverse dynamics.
+    #[error("Robot dynamics error: {0}")]
+    RobotDynamicsError(#[from] RobotDynamicsError),
     /// The specified optimization problem is reported infeasible by the backend solver.
     #[error("{0} reported an infeasibility: {1}")]
     Infeasible(String, String),
@@ -36,20 +39,70 @@ pub enum CoppError {
     Other(String, String),
 }
 
+/// Error type for user-provided robot inverse-dynamics evaluation.
+///
+/// This type intentionally stores a free-form message so robot integrations can
+/// report errors from external dynamics libraries without fitting them into a
+/// fixed COPP-specific taxonomy.
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+#[error("{message}")]
+pub struct RobotDynamicsError {
+    message: String,
+}
+
+impl RobotDynamicsError {
+    /// Construct a robot dynamics error from a display-ready message.
+    #[inline]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+
+    /// Borrow the underlying error message.
+    #[inline]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// Consume the error and return its message.
+    #[inline]
+    pub fn into_message(self) -> String {
+        self.message
+    }
+}
+
+impl From<String> for RobotDynamicsError {
+    #[inline]
+    fn from(message: String) -> Self {
+        Self::new(message)
+    }
+}
+
+impl From<&str> for RobotDynamicsError {
+    #[inline]
+    fn from(message: &str) -> Self {
+        Self::new(message)
+    }
+}
+
 /// Error type for constraint storage/query operations.
 ///
 /// # Usage recommendation
 /// For public-facing application code, prefer using [`CoppError`](crate::diag::CoppError)
 /// as the unified error type.
 ///
-/// [`ConstraintError`] is automatically converted into [`CoppError`] via
+/// [`ConstraintError`](crate::diag::ConstraintError) is automatically converted into [`CoppError`](crate::diag::CoppError) via
 /// `From<ConstraintError> for CoppError`, so `?` can be used directly when
 /// your function returns `Result<_, CoppError>`.
 #[derive(Error, Debug)]
 pub enum ConstraintError {
     /// Input station sequence is not strictly increasing.
     #[error("`s` must be strictly increasing; first violation at local index {index}.")]
-    NonIncreasingS { index: usize },
+    NonIncreasingS {
+        /// Local index of the first non-increasing station.
+        index: usize,
+    },
 
     /// Input matrix/vector dimensions are incompatible with expected shape.
     #[error("Input dimensions do not match the expected shape.")]
@@ -63,11 +116,19 @@ pub enum ConstraintError {
     #[error(
         "`{bound_name}` requires strict signed limits at every station: upper bound > 0 and lower bound < 0."
     )]
-    InvalidSignedBounds { bound_name: &'static str },
+    InvalidSignedBounds {
+        /// Name of the bound array that violated the signed-bound contract.
+        bound_name: &'static str,
+    },
 
     /// Requested station interval is outside currently stored constraints range.
     #[error("Requested station interval is out of bounds: idx_s={idx_s}, len={len}.")]
-    OutOfSBounds { idx_s: usize, len: usize },
+    OutOfSBounds {
+        /// Requested starting station index.
+        idx_s: usize,
+        /// Number of stations currently stored.
+        len: usize,
+    },
 
     /// `a` violates positivity / non-negativity preconditions.
     #[error(
@@ -92,7 +153,9 @@ pub enum ConstraintError {
         valid_range.1
     )]
     LinearJerkNotAvailable {
+        /// Requested station index.
         idx_s: usize,
+        /// Half-open station range for which linearized jerk data is available.
         valid_range: (usize, usize),
     },
 
@@ -106,45 +169,76 @@ pub enum ConstraintError {
 
     /// Requested interval is empty.
     #[error("Requested interval is empty: {start} <= idx_s < {end}.")]
-    EmptyInterval { start: usize, end: usize },
+    EmptyInterval {
+        /// Start index of the requested interval.
+        start: usize,
+        /// End index of the requested interval.
+        end: usize,
+    },
 }
 
 /// Error type for path construction and path evaluation APIs.
 ///
-/// This error is returned by path-related modules such as [`Path`](`crate::path::Path`)
+/// This error is returned by path-related modules such as [`Path`](crate::path::Path)
 /// and spline utilities when input data, parameter ranges, or numerical systems
 /// are invalid.
 #[derive(Error, Debug)]
 pub enum PathError {
     /// Path dimension is invalid (typically zero).
     #[error("invalid dimension: {dim}")]
-    InvalidDimension { dim: usize },
+    InvalidDimension {
+        /// Requested path dimension.
+        dim: usize,
+    },
     /// Path parameter range is invalid (must satisfy finite `s_min < s_max`).
     #[error("invalid s range: [{s_min}, {s_max}]")]
-    InvalidRange { s_min: f64, s_max: f64 },
+    InvalidRange {
+        /// Lower endpoint of the invalid parameter range.
+        s_min: f64,
+        /// Upper endpoint of the invalid parameter range.
+        s_max: f64,
+    },
     /// Spline order is invalid (must satisfy required minimum/order constraints).
     #[error("invalid spline order: {order}, expected >= 3")]
-    InvalidOrder { order: usize },
+    InvalidOrder {
+        /// Requested spline order.
+        order: usize,
+    },
     /// Matrix/tensor shapes are incompatible for the requested operation.
     #[error("dimension mismatch")]
     DimensionMismatch,
-    /// Input `s` has invalid matrix shape (must be `1xN` or `Nx1`).
-    #[error("invalid shape for parameter s: ({rows}, {cols}), expected 1xN or Nx1")]
-    InvalidSShape { rows: usize, cols: usize },
+    /// The path representation cannot provide the requested derivative order.
+    #[error("unsupported derivative order: requested {requested}, available {available}")]
+    UnsupportedDerivativeOrder {
+        /// Requested derivative order.
+        requested: usize,
+        /// Highest derivative order available from the path representation.
+        available: usize,
+    },
     /// Waypoint sequence is too short to build a valid path.
     #[error("not enough waypoints: {n}, expected >= 2")]
-    NotEnoughWaypoints { n: usize },
+    NotEnoughWaypoints {
+        /// Number of supplied waypoints.
+        n: usize,
+    },
     /// Query parameter `s` is outside the configured valid interval.
     #[error("s out of range [{s_min}, {s_max}] at index {index}: {value}")]
     OutOfRangeS {
+        /// Lower endpoint of the valid parameter range.
         s_min: f64,
+        /// Upper endpoint of the valid parameter range.
         s_max: f64,
+        /// Index of the out-of-range query value.
         index: usize,
+        /// Out-of-range query value.
         value: f64,
     },
     /// Boundary conditions are not supported for the requested spline order.
     #[error("unsupported boundary for order={order}")]
-    UnsupportedBoundary { order: usize },
+    UnsupportedBoundary {
+        /// Requested spline order.
+        order: usize,
+    },
     /// Internal linear system is singular and cannot be solved robustly.
     #[error("singular linear system")]
     SingularSystem,
@@ -185,8 +279,8 @@ pub(crate) fn check_abs_rel_tol(
     rel_tol_name: &str,
     rel_tol: f64,
 ) -> Result<(), CoppError> {
-    check_not_nan_infinite(function_name, abs_tol_name, abs_tol)?;
-    check_not_nan_infinite(function_name, rel_tol_name, rel_tol)?;
+    check_options_not_nan_infinite(function_name, abs_tol_name, abs_tol)?;
+    check_options_not_nan_infinite(function_name, rel_tol_name, rel_tol)?;
     if abs_tol >= 0.0 && rel_tol >= 0.0 && (abs_tol > f64::EPSILON || rel_tol > f64::EPSILON) {
         Ok(())
     } else {
@@ -200,7 +294,7 @@ pub(crate) fn check_abs_rel_tol(
 }
 
 #[inline(always)]
-pub(crate) fn check_not_nan_infinite(
+pub(crate) fn check_options_not_nan_infinite(
     function_name: &str,
     var_name: &str,
     var_value: f64,
@@ -220,6 +314,189 @@ pub(crate) fn check_not_nan_infinite(
     }
 }
 
+/// Check that a scalar input value is neither NaN nor infinite.
+///
+/// This is the input-data counterpart of [`check_not_nan_infinite`], which is
+/// reserved for option validation and therefore returns [`InvalidOptions`](CoppError::InvalidOptions).
+#[inline(always)]
+pub(crate) fn check_input_not_nan_infinite(
+    function_name: &str,
+    var_name: &str,
+    var_value: f64,
+) -> Result<(), CoppError> {
+    if var_value.is_nan() {
+        Err(CoppError::InvalidInput(
+            function_name.into(),
+            format!("{var_name} = {var_value} must not be NaN"),
+        ))
+    } else if var_value.is_infinite() {
+        Err(CoppError::InvalidInput(
+            function_name.into(),
+            format!("{var_name} = {var_value} must not be infinite"),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Check that every value in an input slice is neither NaN nor infinite.
+///
+/// The reported variable name includes the first offending local index, which
+/// keeps interpolation and solver diagnostics precise without duplicating this
+/// scan logic in each module.
+#[inline(always)]
+pub(crate) fn check_input_slice_not_nan_infinite(
+    function_name: &str,
+    slice_name: &str,
+    values: &[f64],
+) -> Result<(), CoppError> {
+    if let Some((index, value)) = values.iter().enumerate().find(|(_, value)| value.is_nan()) {
+        Err(CoppError::InvalidInput(
+            function_name.into(),
+            format!("`{slice_name}[{index}]` = {value} must not be NaN"),
+        ))
+    } else if let Some((index, value)) = values
+        .iter()
+        .enumerate()
+        .find(|(_, value)| value.is_infinite())
+    {
+        Err(CoppError::InvalidInput(
+            function_name.into(),
+            format!("`{slice_name}[{index}]` = {value} must not be infinite"),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Check that an input slice is strictly increasing.
+///
+/// This check assumes finiteness has already been verified when NaN-specific
+/// diagnostics are needed; otherwise comparisons involving NaN simply fail the
+/// ordering contract at the first affected pair.
+#[inline(always)]
+pub(crate) fn check_input_strictly_increasing(
+    function_name: &str,
+    slice_name: &str,
+    values: &[f64],
+) -> Result<(), CoppError> {
+    if let Some(index) = values.windows(2).position(|pair| pair[0] >= pair[1]) {
+        Err(CoppError::InvalidInput(
+            function_name.into(),
+            format!(
+                "`{slice_name}` must be strictly increasing; first violation at local index {index}."
+            ),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Check that an input scalar is nonnegative.
+///
+/// This helper first rejects NaN and infinity so downstream numerical code can
+/// safely use ordinary comparisons and square roots.
+#[inline(always)]
+pub(crate) fn check_input_non_negative(
+    function_name: &str,
+    var_name: &str,
+    var_value: f64,
+) -> Result<(), CoppError> {
+    check_input_not_nan_infinite(function_name, var_name, var_value)?;
+    if var_value < 0.0 {
+        Err(CoppError::InvalidInput(
+            function_name.into(),
+            format!("{var_name} = {var_value} must be nonnegative"),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Check that every value in an input slice is nonnegative.
+///
+/// The function reports the first offending entry and is intended for data
+/// profiles such as sampled `a(s)` that must be valid before interpolation.
+#[inline(always)]
+pub(crate) fn check_input_slice_non_negative(
+    function_name: &str,
+    slice_name: &str,
+    values: &[f64],
+) -> Result<(), CoppError> {
+    check_input_slice_not_nan_infinite(function_name, slice_name, values)?;
+    if let Some((index, value)) = values.iter().enumerate().find(|(_, value)| **value < 0.0) {
+        Err(CoppError::InvalidInput(
+            function_name.into(),
+            format!("`{slice_name}[{index}]` = {value} must be nonnegative"),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Check that an input length is at least the required minimum.
+///
+/// Callers pass display-ready length names such as `` `s.len()` `` so error
+/// messages can mirror the notation used in each API contract.
+#[inline(always)]
+pub(crate) fn check_input_len_at_least(
+    function_name: &str,
+    len_name: &str,
+    len: usize,
+    min_len: usize,
+) -> Result<(), CoppError> {
+    if len < min_len {
+        Err(CoppError::InvalidInput(
+            function_name.into(),
+            format!("{len_name} = {len} must be at least {min_len}"),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Check that two input lengths are equal.
+///
+/// This is used for shape contracts where both the actual and reference lengths
+/// are useful to report to the caller.
+#[inline(always)]
+pub(crate) fn check_input_len_equal(
+    function_name: &str,
+    lhs_name: &str,
+    lhs_len: usize,
+    rhs_name: &str,
+    rhs_len: usize,
+) -> Result<(), CoppError> {
+    if lhs_len != rhs_len {
+        Err(CoppError::InvalidInput(
+            function_name.into(),
+            format!("{lhs_name} = {lhs_len} must equal {rhs_name} = {rhs_len}"),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Check that an input slice is not empty.
+///
+/// This helper is for APIs where an empty user-provided sample grid is
+/// ambiguous and should be rejected before interpolation starts.
+#[inline(always)]
+pub(crate) fn check_input_not_empty(
+    function_name: &str,
+    slice_name: &str,
+    len: usize,
+) -> Result<(), CoppError> {
+    if len == 0 {
+        Err(CoppError::InvalidInput(
+            function_name.into(),
+            format!("{slice_name} must not be empty"),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 /// Check the non-negativity.
 #[inline(always)]
 pub(crate) fn check_non_negative(
@@ -227,7 +504,7 @@ pub(crate) fn check_non_negative(
     var_name: &str,
     var_value: f64,
 ) -> Result<(), CoppError> {
-    check_not_nan_infinite(function_name, var_name, var_value)?;
+    check_options_not_nan_infinite(function_name, var_name, var_value)?;
     if var_value < 0.0 {
         Err(CoppError::InvalidOptions(
             function_name.into(),
@@ -245,7 +522,7 @@ pub(crate) fn check_strictly_positive(
     var_name: &str,
     var_value: f64,
 ) -> Result<(), CoppError> {
-    check_not_nan_infinite(function_name, var_name, var_value)?;
+    check_options_not_nan_infinite(function_name, var_name, var_value)?;
     if var_value < f64::EPSILON {
         Err(CoppError::InvalidOptions(
             function_name.into(),

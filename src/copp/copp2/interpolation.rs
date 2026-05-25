@@ -17,6 +17,11 @@
 //! - Profile `b` is segment-based (`b.len() == s.len() - 1`).
 
 use crate::copp::InterpolationMode;
+use crate::diag::{
+    CoppError, check_input_len_at_least, check_input_len_equal, check_input_not_empty,
+    check_input_not_nan_infinite, check_input_slice_non_negative,
+    check_input_slice_not_nan_infinite, check_input_strictly_increasing,
+};
 use itertools::izip;
 
 /// Compute segment profile `b` from node profile `a`.
@@ -27,25 +32,25 @@ use itertools::izip;
 ///
 /// # Input contract
 /// - valid when `s.len() >= 2` and `a.len() == s.len()`;
-/// - otherwise returns an empty vector.
+/// - `s` must be finite and strictly increasing;
+/// - `a` must contain only finite values.
 ///
 /// # Returns
 /// Returns `b` with `b.len() == s.len() - 1`.
 ///
 /// # Errors
-/// This function does not return `Result`; invalid input is mapped to empty output.
+/// Returns [`CoppError::InvalidInput`](crate::diag::CoppError::InvalidInput) when dimensions, monotonicity, or numeric
+/// finiteness requirements are violated.
 ///
 /// # Contract
 /// - Output ordering is consistent with segment ordering on `s.windows(2)`.
 /// - No allocation beyond returned vector and iterator temporaries.
-pub fn a_to_b_topp2(s: &[f64], a: &[f64]) -> Vec<f64> {
-    if s.len() < 2 || a.len() != s.len() {
-        return vec![];
-    }
-    s.windows(2)
+pub fn a_to_b_topp2(s: &[f64], a: &[f64]) -> Result<Vec<f64>, CoppError> {
+    check_topp2_sa("a_to_b_topp2", s, a)?;
+    Ok(s.windows(2)
         .zip(a.windows(2))
         .map(|(s_pair, a_pair)| 0.5 * (a_pair[1] - a_pair[0]) / (s_pair[1] - s_pair[0]))
-        .collect::<Vec<f64>>()
+        .collect::<Vec<f64>>())
 }
 
 /// Compute cumulative time profile `t(s)` from `a(s)`.
@@ -57,21 +62,24 @@ pub fn a_to_b_topp2(s: &[f64], a: &[f64]) -> Vec<f64> {
 ///
 /// # Input contract
 /// - valid when `s.len() >= 2` and `a.len() == s.len()`;
-/// - otherwise returns `(NaN, empty)`.
+/// - `s`, `a`, and `t0` must contain only finite values;
+/// - `s` must be strictly increasing;
+/// - each interval must have finite positive speed denominator.
 ///
 /// # Returns
 /// Returns `(t_final, t_s)` with `t_s.len() == s.len()` on valid input.
 ///
 /// # Errors
-/// This function does not return `Result`; invalid input is mapped to `(NaN, vec![])`.
+/// Returns [`CoppError::InvalidInput`](crate::diag::CoppError::InvalidInput) when dimensions, monotonicity, positivity,
+/// or numeric finiteness requirements are violated.
 ///
 /// # Contract
 /// - `t_s` is monotonically increasing when `a` is nonnegative and `s` is increasing.
 /// - `t_s[0] == t0` always holds on valid input.
-pub fn s_to_t_topp2(s: &[f64], a: &[f64], t0: f64) -> (f64, Vec<f64>) {
-    if s.len() < 2 || a.len() != s.len() {
-        return (f64::NAN, vec![]);
-    }
+pub fn s_to_t_topp2(s: &[f64], a: &[f64], t0: f64) -> Result<(f64, Vec<f64>), CoppError> {
+    check_topp2_sa("s_to_t_topp2", s, a)?;
+    check_input_not_nan_infinite("s_to_t_topp2", "t0", t0)?;
+    check_topp2_time_denominator("s_to_t_topp2", a)?;
     // Map s to t
     let mut t_s = Vec::<f64>::with_capacity(s.len()); // t_s[i] = t(s[i]), begin from t0
     let mut t_prev = t0;
@@ -80,19 +88,25 @@ pub fn s_to_t_topp2(s: &[f64], a: &[f64], t0: f64) -> (f64, Vec<f64>) {
         t_prev += 2.0 * (s_pair[1] - s_pair[0]) / (a_pair[0].sqrt() + a_pair[1].sqrt());
         t_s.push(t_prev);
     }
-    (t_prev, t_s)
+    if !t_prev.is_finite() || t_s.iter().any(|value| !value.is_finite()) {
+        return Err(CoppError::InvalidInput(
+            "s_to_t_topp2".into(),
+            "computed time profile contains NaN or infinity".into(),
+        ));
+    }
+    Ok((t_prev, t_s))
 }
 
 /// Interpolate inverse mapping `s(t)` from `a(s)` and sampled `t(s)`.
 ///
 /// # Modes
-/// - `UniformTimeGrid(t0, dt, include_final)`: generate uniform time samples;
+/// - [`UniformTimeGrid`](crate::InterpolationMode::UniformTimeGrid)`(t0, dt, include_final)`: generate uniform time samples;
 /// - `NonUniformTimeGrid(t_sample)`: use caller-provided increasing samples.
 ///
 /// # Input contract
 /// - requires `s.len() >= 2`, `a.len() == s.len()`, `t_s.len() == s.len()`;
 /// - requires `t_s` strictly increasing.
-/// - invalid input returns empty vector.
+/// - all profile and time-grid values must be finite.
 ///
 /// # Output semantics
 /// - output length matches requested sample count in each mode;
@@ -102,24 +116,38 @@ pub fn s_to_t_topp2(s: &[f64], a: &[f64], t0: f64) -> (f64, Vec<f64>) {
 /// Returns sampled `s(t)` values according to `mode`.
 ///
 /// # Errors
-/// This function does not return `Result`; invalid input or invalid `mode` settings
-/// are mapped to empty output.
+/// Returns [`CoppError::InvalidInput`](crate::diag::CoppError::InvalidInput) when dimensions, monotonicity, positivity,
+/// or numeric finiteness requirements are violated.
 ///
 /// # Contract
 /// - preserves requested sample order;
-/// - never panics for malformed user input (falls back to empty vector).
-pub fn t_to_s_topp2(s: &[f64], a: &[f64], t_s: &[f64], mode: InterpolationMode<'_>) -> Vec<f64> {
-    if s.len() < 2
-        || a.len() != s.len()
-        || t_s.len() != s.len()
-        || t_s.windows(2).any(|w| w[0] >= w[1])
-    {
-        return vec![];
-    }
+/// - malformed input is reported as [`CoppError::InvalidInput`](crate::diag::CoppError::InvalidInput).
+pub fn t_to_s_topp2(
+    s: &[f64],
+    a: &[f64],
+    t_s: &[f64],
+    mode: InterpolationMode<'_>,
+) -> Result<Vec<f64>, CoppError> {
+    check_topp2_sa("t_to_s_topp2", s, a)?;
+    check_topp2_time_denominator("t_to_s_topp2", a)?;
+    check_input_len_equal(
+        "t_to_s_topp2",
+        "`t_s.len()`",
+        t_s.len(),
+        "`s.len()`",
+        s.len(),
+    )?;
+    check_input_slice_not_nan_infinite("t_to_s_topp2", "t_s", t_s)?;
+    check_input_strictly_increasing("t_to_s_topp2", "t_s", t_s)?;
     match mode {
         InterpolationMode::UniformTimeGrid(t0, dt, include_final) => {
+            check_input_not_nan_infinite("t_to_s_topp2", "t0", t0)?;
+            check_input_not_nan_infinite("t_to_s_topp2", "dt", dt)?;
             if dt <= 0.0 {
-                return vec![];
+                return Err(CoppError::InvalidInput(
+                    "t_to_s_topp2".into(),
+                    format!("`dt` = {dt} must be positive"),
+                ));
             }
             // num_t * dt + t0 <= t_final
             let num_t = ((t_s.last().unwrap() - t0) / dt).floor() as usize;
@@ -135,19 +163,58 @@ pub fn t_to_s_topp2(s: &[f64], a: &[f64], t_s: &[f64], mode: InterpolationMode<'
                     s_t.push(*s.last().unwrap());
                 }
             }
-            s_t
+            Ok(s_t)
         }
         InterpolationMode::NonUniformTimeGrid(t_sample) => {
-            if t_sample.is_empty() || t_sample.windows(2).any(|w| w[0] >= w[1]) {
-                // Empty or non-increasing sample sequence is invalid.
-                return vec![];
-            }
-            t_to_s_topp2_core(s, a, t_s, t_sample.iter().cloned(), t_sample.len())
+            check_input_not_empty("t_to_s_topp2", "`t_sample`", t_sample.len())?;
+            check_input_slice_not_nan_infinite("t_to_s_topp2", "t_sample", t_sample)?;
+            check_input_strictly_increasing("t_to_s_topp2", "t_sample", t_sample)?;
+            Ok(t_to_s_topp2_core(
+                s,
+                a,
+                t_s,
+                t_sample.iter().cloned(),
+                t_sample.len(),
+            ))
         }
     }
 }
 
-/// Core inverse interpolation kernel for `t_to_s_topp2`.
+/// Check the shared TOPP2 profile shape and station-ordering contract.
+///
+/// The second-order interpolation routines all require a node-based `a(s)`
+/// profile sampled on the same strictly increasing station grid `s`.
+fn check_topp2_sa(function_name: &str, s: &[f64], a: &[f64]) -> Result<(), CoppError> {
+    check_input_len_at_least(function_name, "`s.len()`", s.len(), 2)?;
+    check_input_len_equal(function_name, "`a.len()`", a.len(), "`s.len()`", s.len())?;
+    check_input_slice_not_nan_infinite(function_name, "s", s)?;
+    check_input_slice_not_nan_infinite(function_name, "a", a)?;
+    check_input_strictly_increasing(function_name, "s", s)
+}
+
+/// Check the TOPP2 time-integration denominator.
+///
+/// The mapping from `s` to `t` divides by
+/// `sqrt(a[i]) + sqrt(a[i + 1])`; this helper rejects negative `a` values and
+/// zero-speed intervals before the integration loop.
+fn check_topp2_time_denominator(function_name: &str, a: &[f64]) -> Result<(), CoppError> {
+    check_input_slice_non_negative(function_name, "a", a)?;
+    if let Some((index, _pair)) = a.windows(2).enumerate().find(|(_, pair)| {
+        let denominator = pair[0].sqrt() + pair[1].sqrt();
+        !denominator.is_finite() || denominator <= 0.0
+    }) {
+        return Err(CoppError::InvalidInput(
+            function_name.into(),
+            format!(
+                "`sqrt(a[{index}]) + sqrt(a[{}])` must be finite and positive",
+                index + 1
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Core inverse interpolation kernel for [`t_to_s_topp2`](crate::solver::topp2_ra::t_to_s_topp2).
 ///
 /// It consumes increasing `t_sample` values and emits corresponding `s(t)` by
 /// segment-wise inversion with quadratic-in-`a` local model.

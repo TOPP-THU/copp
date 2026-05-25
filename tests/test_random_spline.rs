@@ -5,7 +5,7 @@
 //! - `test_copp`: convex-objective comparison (time + thermal energy).
 //!
 //! Both tests generate deterministic random spline paths/constraints with a fixed seed,
-//! then report summary statistics in the form of mean ± std.
+//! then report summary statistics in the form of mean +/- std.
 
 use copp::diag::CoppError;
 use copp::path::{Path, SplineConfig};
@@ -135,7 +135,7 @@ fn thermal_energy_2(
     a: &[f64],
 ) -> Result<f64, CoppError> {
     let s = robot.constraints.s_vec(0, robot.constraints.len())?;
-    let t_s = s_to_t_topp2(&s, a, 0.0).1;
+    let t_s = s_to_t_topp2(&s, a, 0.0)?.1;
     let path_derivs = path.evaluate_up_to_2nd(&s)?;
     let dim = robot.dim();
     let robot_torque = robot.dim();
@@ -143,7 +143,7 @@ fn thermal_energy_2(
     let mut tau_right = vec![0.0; dim];
     let mut dqt = vec![0.0; dim];
     let mut ddqt = vec![0.0; dim];
-    let b = a_to_b_topp2(&s, a);
+    let b = a_to_b_topp2(&s, a)?;
     let mut energy = 0.0;
     for (k, (t_pair, a_pair, &b)) in izip!(t_s.windows(2), a.windows(2), b.iter()).enumerate() {
         let a_left = a_pair[0];
@@ -184,7 +184,7 @@ fn thermal_energy_2(
             &dqt,
             &ddqt,
             &mut tau_left,
-        );
+        )?;
 
         for (dqt, &dqs) in dqt.iter_mut().zip(
             path_derivs
@@ -222,7 +222,7 @@ fn thermal_energy_2(
             &dqt,
             &ddqt,
             &mut tau_right,
-        );
+        )?;
 
         let dt = t_pair[1] - t_pair[0];
         for (tau_left, tau_right, normalize) in izip!(&tau_left, &tau_right, normalize.iter()) {
@@ -248,7 +248,7 @@ fn thermal_energy_3(
     num_stationary: (usize, usize),
 ) -> Result<f64, CoppError> {
     let s = robot.constraints.s_vec(0, robot.constraints.len())?;
-    let t_s = s_to_t_topp3(&s, a, b, num_stationary, 0.0).1;
+    let t_s = s_to_t_topp3(&s, (a, b, num_stationary), 0.0)?.1;
     let path_derivs = path.evaluate_up_to_2nd(&s)?;
     let dim = robot.dim();
     let robot_torque = robot.dim();
@@ -300,7 +300,7 @@ fn thermal_energy_3(
             &dqt,
             &ddqt,
             &mut tau_left,
-        );
+        )?;
 
         for (dqt, &dqs) in dqt.iter_mut().zip(
             path_derivs
@@ -338,7 +338,7 @@ fn thermal_energy_3(
             &dqt,
             &ddqt,
             &mut tau_right,
-        );
+        )?;
 
         let dt = t_pair[1] - t_pair[0];
         for (tau_left, tau_right, normalize) in izip!(&tau_left, &tau_right, normalize.iter()) {
@@ -418,7 +418,7 @@ mod tests {
                 topp2_ra(&problem, &options)?
             };
             let tc_topp2_ra = start.elapsed();
-            let tf_topp2_ra = s_to_t_topp2(&s, &a_topp2_ra, 0.0).0;
+            let tf_topp2_ra = s_to_t_topp2(&s, &a_topp2_ra, 0.0)?.0;
 
             // Test COPP2-SOCP
             let start = Instant::now();
@@ -434,7 +434,7 @@ mod tests {
                 copp2_socp(&problem, &options)?
             };
             let tc_copp2_socp = start.elapsed();
-            let tf_copp2_socp = s_to_t_topp2(&s, &a_copp2_socp, 0.0).0;
+            let tf_copp2_socp = s_to_t_topp2(&s, &a_copp2_socp, 0.0)?.0;
 
             // Test TOPP3-LP
             let start = Instant::now();
@@ -453,10 +453,11 @@ mod tests {
                     .allow_max_iterations(true)
                     .allow_insufficient_progress(true)
                     .build()?;
-                topp3_lp(&problem, &options)?
+                topp3_lp(&problem, &options)?.into_parts()
             };
             let tc_topp3_lp = tc_topp2_ra + start.elapsed();
-            let tf_topp3_lp = s_to_t_topp3(&s, &a_topp3_lp, &b_topp3_lp, num_stat_topp3_lp, 0.0).0;
+            let tf_topp3_lp =
+                s_to_t_topp3(&s, (&a_topp3_lp, &b_topp3_lp, num_stat_topp3_lp), 0.0)?.0;
 
             // Test TOPP3-SOCP
             let start = Instant::now();
@@ -475,11 +476,11 @@ mod tests {
                     .allow_max_iterations(true)
                     .allow_insufficient_progress(true)
                     .build()?;
-                topp3_socp(&problem, &options)?
+                topp3_socp(&problem, &options)?.into_parts()
             };
             let tc_topp3_socp = tc_topp2_ra + start.elapsed();
             let tf_topp3_socp =
-                s_to_t_topp3(&s, &a_topp3_socp, &b_topp3_socp, num_stat_topp3_socp, 0.0).0;
+                s_to_t_topp3(&s, (&a_topp3_socp, &b_topp3_socp, num_stat_topp3_socp), 0.0)?.0;
 
             // Test COPP3-SOCP
             let start = Instant::now();
@@ -499,11 +500,11 @@ mod tests {
                     .allow_max_iterations(true)
                     .allow_insufficient_progress(true)
                     .build()?;
-                copp3_socp(&problem, &options)?
+                copp3_socp(&problem, &options)?.into_parts()
             };
             let tc_copp3_socp = tc_topp2_ra + start.elapsed();
             let tf_copp3_socp =
-                s_to_t_topp3(&s, &a_copp3_socp, &b_copp3_socp, num_stat_copp3_socp, 0.0).0;
+                s_to_t_topp3(&s, (&a_copp3_socp, &b_copp3_socp, num_stat_copp3_socp), 0.0)?.0;
 
             println!("Experiment {}/{}:", i_exp + 1, config.n_exp);
             println!(
@@ -623,7 +624,7 @@ mod tests {
                 topp2_ra(&problem, &options)?
             };
             let tc_topp2_ra = start.elapsed();
-            let tf_topp2_ra = s_to_t_topp2(&s, &a_topp2_ra, 0.0).0;
+            let tf_topp2_ra = s_to_t_topp2(&s, &a_topp2_ra, 0.0)?.0;
             let energy_topp2_ra = thermal_energy_2(&robot, &path, &normalize, &a_topp2_ra)?;
             let obj_topp2_ra = tf_topp2_ra + weight_energy * energy_topp2_ra;
 
@@ -641,7 +642,7 @@ mod tests {
                 copp2_socp(&problem, &options)?
             };
             let tc_copp2_socp = start.elapsed();
-            let tf_copp2_socp = s_to_t_topp2(&s, &a_copp2_socp, 0.0).0;
+            let tf_copp2_socp = s_to_t_topp2(&s, &a_copp2_socp, 0.0)?.0;
             let energy_copp2_socp = thermal_energy_2(&robot, &path, &normalize, &a_copp2_socp)?;
             let obj_copp2_socp = tf_copp2_socp + weight_energy * energy_copp2_socp;
 
@@ -662,10 +663,11 @@ mod tests {
                     .allow_max_iterations(true)
                     .allow_insufficient_progress(true)
                     .build()?;
-                topp3_lp(&problem, &options)?
+                topp3_lp(&problem, &options)?.into_parts()
             };
             let tc_topp3_lp = tc_topp2_ra + start.elapsed();
-            let tf_topp3_lp = s_to_t_topp3(&s, &a_topp3_lp, &b_topp3_lp, num_stat_topp3_lp, 0.0).0;
+            let tf_topp3_lp =
+                s_to_t_topp3(&s, (&a_topp3_lp, &b_topp3_lp, num_stat_topp3_lp), 0.0)?.0;
             let energy_topp3_lp = thermal_energy_3(
                 &robot,
                 &path,
@@ -693,11 +695,11 @@ mod tests {
                     .allow_max_iterations(true)
                     .allow_insufficient_progress(true)
                     .build()?;
-                topp3_socp(&problem, &options)?
+                topp3_socp(&problem, &options)?.into_parts()
             };
             let tc_topp3_socp = tc_topp2_ra + start.elapsed();
             let tf_topp3_socp =
-                s_to_t_topp3(&s, &a_topp3_socp, &b_topp3_socp, num_stat_topp3_socp, 0.0).0;
+                s_to_t_topp3(&s, (&a_topp3_socp, &b_topp3_socp, num_stat_topp3_socp), 0.0)?.0;
             let energy_topp3_socp = thermal_energy_3(
                 &robot,
                 &path,
@@ -726,11 +728,11 @@ mod tests {
                     .allow_max_iterations(true)
                     .allow_insufficient_progress(true)
                     .build()?;
-                copp3_socp(&problem, &options)?
+                copp3_socp(&problem, &options)?.into_parts()
             };
             let tc_copp3_socp = tc_topp2_ra + start.elapsed();
             let tf_copp3_socp =
-                s_to_t_topp3(&s, &a_copp3_socp, &b_copp3_socp, num_stat_copp3_socp, 0.0).0;
+                s_to_t_topp3(&s, (&a_copp3_socp, &b_copp3_socp, num_stat_copp3_socp), 0.0)?.0;
             let energy_copp3_socp = thermal_energy_3(
                 &robot,
                 &path,

@@ -17,10 +17,16 @@
 //! - `num_stationary = (head, tail)` indicates stationary boundary counts at start/end.
 
 use crate::copp::InterpolationMode;
+use crate::copp::copp3::{Topp3ProfileMut, Topp3ProfileRef};
+use crate::diag::{
+    CoppError, check_input_len_at_least, check_input_len_equal, check_input_non_negative,
+    check_input_not_empty, check_input_not_nan_infinite, check_input_slice_non_negative,
+    check_input_slice_not_nan_infinite, check_input_strictly_increasing,
+};
 use crate::math::numerical::{EPS_ZERO, solve_2x2};
 use itertools::izip;
 
-/// Compute cumulative time profile `t(s)` from TOPP3/COPP3 profiles `a(s), b(s)`.
+/// Compute cumulative time profile `t(s)` from a TOPP3/COPP3 profile.
 ///
 /// # Semantics
 /// - `t_s[i]` is the time at station `s[i]`.
@@ -28,30 +34,29 @@ use itertools::izip;
 /// - returns `(t_final, t_s)` where `t_final == *t_s.last().unwrap()`.
 ///
 /// # Input contract
-/// - valid when `s.len() >= 2 + num_stationary.0 + num_stationary.1`;
-/// - requires `a.len() == s.len()` and `b.len() == s.len()`;
-/// - invalid input returns `(NaN, empty)`.
+/// - valid when `s.len() >= 2 + profile.2.0 + profile.2.1`;
+/// - requires `profile.0.len() == s.len()` and `profile.1.len() == s.len()`;
+/// - all inputs must contain only finite values;
+/// - `s` must be strictly increasing.
 ///
 /// # Returns
 /// Returns `(t_final, t_s)` where `t_s[i]` is cumulative time at `s[i]`.
 ///
 /// # Errors
-/// This function does not return `Result`; invalid inputs are mapped to `(NaN, vec![])`.
+/// Returns [`CoppError::InvalidInput`](crate::diag::CoppError::InvalidInput) when dimensions, stationary counts,
+/// monotonicity, positivity, or numeric finiteness requirements are violated.
 ///
 /// # Contract
 /// - `t_s.len() == s.len()` on valid input.
 /// - `t_s[0] == t0` on valid input.
 pub fn s_to_t_topp3(
     s: &[f64],
-    a: &[f64],
-    b: &[f64],
-    num_stationary: (usize, usize),
+    profile: Topp3ProfileRef<'_>,
     t0: f64,
-) -> (f64, Vec<f64>) {
-    if s.len() < 2 + num_stationary.0 + num_stationary.1 || a.len() != s.len() || b.len() != s.len()
-    {
-        return (f64::NAN, vec![]);
-    }
+) -> Result<(f64, Vec<f64>), CoppError> {
+    check_topp3_sab("s_to_t_topp3", s, profile)?;
+    check_input_not_nan_infinite("s_to_t_topp3", "t0", t0)?;
+    let (a, b, num_stationary) = profile;
     let mut t_s = Vec::<f64>::with_capacity(s.len()); // t_s[i] = t(s[i]), begin from t0
     let mut t_prev = t0;
     let n = s.len() - 1;
@@ -93,7 +98,15 @@ pub fn s_to_t_topp3(
         }
     }
 
-    (*t_s.last().unwrap(), t_s)
+    let t_final = *t_s.last().unwrap();
+    if !t_final.is_finite() || t_s.iter().any(|value| !value.is_finite()) {
+        return Err(CoppError::InvalidInput(
+            "s_to_t_topp3".into(),
+            "computed time profile contains NaN or infinity".into(),
+        ));
+    }
+    check_input_strictly_increasing("s_to_t_topp3", "t_s", &t_s)?;
+    Ok((t_final, t_s))
 }
 
 /// Compute definite integral of reciprocal-square-root quadratic polynomial:
@@ -121,16 +134,16 @@ fn integral_rsrqp(c0: f64, c1: f64, c2: f64, x_left: f64, x_right: f64) -> f64 {
     }
 }
 
-/// Interpolate inverse mapping `s(t)` from `a(s)`, `b(s)`, and sampled `t(s)`.
+/// Interpolate inverse mapping `s(t)` from a TOPP3/COPP3 profile and sampled `t(s)`.
 ///
 /// # Modes
-/// - `UniformTimeGrid(t0, dt, include_final)`: generate uniform time samples;
+/// - [`UniformTimeGrid`](crate::InterpolationMode::UniformTimeGrid)`(t0, dt, include_final)`: generate uniform time samples;
 /// - `NonUniformTimeGrid(t_sample)`: use caller-provided increasing samples.
 ///
 /// # Input contract
-/// - requires `s.len() >= 2`, `a.len() == s.len()`, `b.len() == s.len()`, `t_s.len() == s.len()`;
+/// - requires `s.len() >= 2`, profile slice lengths equal to `s.len()`, and `t_s.len() == s.len()`;
 /// - requires `t_s` strictly increasing;
-/// - invalid input returns empty vector.
+/// - all profile and time-grid values must be finite.
 ///
 /// # Output semantics
 /// - output length matches requested sample count in each mode;
@@ -140,39 +153,43 @@ fn integral_rsrqp(c0: f64, c1: f64, c2: f64, x_left: f64, x_right: f64) -> f64 {
 /// Returns sampled `s(t)` values under the requested interpolation `mode`.
 ///
 /// # Errors
-/// This function does not return `Result`; malformed inputs are mapped to empty output.
+/// Returns [`CoppError::InvalidInput`](crate::diag::CoppError::InvalidInput) when dimensions, stationary counts,
+/// monotonicity, positivity, or numeric finiteness requirements are violated.
 ///
 /// # Contract
 /// - preserves caller time-sample ordering.
-/// - never panics on invalid user data paths (returns empty vector).
+/// - malformed input is reported as [`CoppError::InvalidInput`](crate::diag::CoppError::InvalidInput).
 pub fn t_to_s_topp3(
     s: &[f64],
-    a: &[f64],
-    b: &[f64],
-    num_stationary: (usize, usize),
+    profile: Topp3ProfileRef<'_>,
     t_s: &[f64],
     mode: InterpolationMode<'_>,
-) -> Vec<f64> {
-    if s.len() < 2
-        || a.len() != s.len()
-        || b.len() != s.len()
-        || t_s.len() != s.len()
-        || t_s.windows(2).any(|w| w[0] >= w[1])
-    {
-        return vec![];
-    }
+) -> Result<Vec<f64>, CoppError> {
+    check_topp3_sab("t_to_s_topp3", s, profile)?;
+    check_input_len_equal(
+        "t_to_s_topp3",
+        "`t_s.len()`",
+        t_s.len(),
+        "`s.len()`",
+        s.len(),
+    )?;
+    check_input_slice_not_nan_infinite("t_to_s_topp3", "t_s", t_s)?;
+    check_input_strictly_increasing("t_to_s_topp3", "t_s", t_s)?;
     match mode {
         InterpolationMode::UniformTimeGrid(t0, dt, include_final) => {
+            check_input_not_nan_infinite("t_to_s_topp3", "t0", t0)?;
+            check_input_not_nan_infinite("t_to_s_topp3", "dt", dt)?;
             if dt <= 0.0 {
-                return vec![];
+                return Err(CoppError::InvalidInput(
+                    "t_to_s_topp3".into(),
+                    format!("`dt` = {dt} must be positive"),
+                ));
             }
             // num_t * dt + t0 <= t_final
             let num_t = ((t_s.last().unwrap() - t0) / dt).floor() as usize;
             let mut s_t = t_to_s_topp3_core(
                 s,
-                a,
-                b,
-                num_stationary,
+                profile,
                 t_s,
                 (0..num_t).map(|i| t0 + i as f64 * dt),
                 num_t,
@@ -187,37 +204,36 @@ pub fn t_to_s_topp3(
                     s_t.push(*s.last().unwrap());
                 }
             }
-            s_t
+            Ok(s_t)
         }
         InterpolationMode::NonUniformTimeGrid(t_sample) => {
-            if t_sample.is_empty() || t_sample.windows(2).any(|w| w[0] >= w[1]) {
-                // Exclude the case where t_sample.len() == 1
-                return vec![];
-            }
-            t_to_s_topp3_core(
+            check_input_not_empty("t_to_s_topp3", "`t_sample`", t_sample.len())?;
+            check_input_slice_not_nan_infinite("t_to_s_topp3", "t_sample", t_sample)?;
+            check_input_strictly_increasing("t_to_s_topp3", "t_sample", t_sample)?;
+            Ok(t_to_s_topp3_core(
                 s,
-                a,
-                b,
-                num_stationary,
+                profile,
                 t_s,
                 t_sample.iter().cloned(),
                 t_sample.len(),
-            )
+            ))
         }
     }
 }
 
+/// Core inverse interpolation kernel for [`t_to_s_topp3`](crate::solver::topp3_lp::t_to_s_topp3).
+///
+/// The public wrapper validates dimensions, finiteness, station ordering, and
+/// sample ordering before calling this routine. This core then walks the time
+/// samples once and maps each sample into the corresponding station interval.
 fn t_to_s_topp3_core(
     s: &[f64],
-    a: &[f64],
-    b: &[f64],
-    num_stationary: (usize, usize),
+    profile: Topp3ProfileRef<'_>,
     t_s: &[f64],
     mut t_sample: impl Iterator<Item = f64>,
     len_t_sample: usize,
 ) -> Vec<f64> {
-    // Core inverse interpolation kernel for `t_to_s_topp3`.
-    // It consumes increasing `t_sample` values and emits corresponding `s(t)`.
+    let (a, b, num_stationary) = profile;
     // Map t to s
     let &t_start = t_s.first().unwrap();
     let &t_final = t_s.last().unwrap();
@@ -344,7 +360,7 @@ fn inverse_rsrqp(c0: f64, c1: f64, c2: f64, x_left: f64, dt: f64) -> f64 {
     }
 }
 
-/// Post-process `(a, b)` so that interpolated `a(s)` stays strictly positive per interval.
+/// Post-process a mutable `(a, b)` profile so that interpolated `a(s)` stays strictly positive per interval.
 ///
 /// This is a numerical safety utility for downstream timing integration on
 /// profiles that may be very close to zero due to finite precision.
@@ -353,41 +369,42 @@ fn inverse_rsrqp(c0: f64, c1: f64, c2: f64, x_left: f64, dt: f64) -> f64 {
 /// Returns `true` when in-place adjustment succeeds, otherwise `false`.
 ///
 /// # Errors
-/// This function does not return `Result`; invalid inputs are reported by `false`
-/// with diagnostic prints.
+/// Returns [`CoppError::InvalidInput`](crate::diag::CoppError::InvalidInput) when dimensions, station ordering, profile
+/// positivity, stationary counts, or numeric finiteness requirements are violated.
 ///
 /// # Contract
 /// - requires `a.len() == b.len() == s.len()` and `s.len() >= 4`;
 /// - requires endpoint `a` values to be nonnegative.
 pub fn force_positive_a(
-    a: &mut [f64],
-    b: &mut [f64],
+    profile: Topp3ProfileMut<'_>,
     s: &[f64],
-    num_stationary: (usize, usize),
     a_min: f64,
-) -> bool {
+) -> Result<bool, CoppError> {
+    let (a, b, num_stationary) = profile;
     let n = s.len();
     if a.len() != n || b.len() != n {
-        crate::verbosity_log!(
-            crate::diag::Verbosity::Debug,
-            "force_positive_a: a, b, s should have the same length"
-        );
-        return false;
+        return Err(CoppError::InvalidInput(
+            "force_positive_a".into(),
+            format!(
+                "`a.len()` = {} and `b.len()` = {} must equal `s.len()` = {}",
+                a.len(),
+                b.len(),
+                n
+            ),
+        ));
     }
     if n < 4 {
-        crate::verbosity_log!(
-            crate::diag::Verbosity::Debug,
-            "force_positive_a: the length of a, b, s should be at least 4"
-        );
-        return false;
+        return Err(CoppError::InvalidInput(
+            "force_positive_a".into(),
+            format!("`s.len()` = {n} must be at least 4"),
+        ));
     }
-    if a.iter().any(|&a| a < 0.0) {
-        crate::verbosity_log!(
-            crate::diag::Verbosity::Debug,
-            "force_positive_a: a should be non-negative at each end point"
-        );
-        return false;
-    }
+    check_stationary_counts("force_positive_a", n, num_stationary)?;
+    check_input_slice_not_nan_infinite("force_positive_a", "s", s)?;
+    check_input_slice_non_negative("force_positive_a", "a", a)?;
+    check_input_slice_not_nan_infinite("force_positive_a", "b", b)?;
+    check_input_non_negative("force_positive_a", "a_min", a_min)?;
+    check_input_strictly_increasing("force_positive_a", "s", s)?;
     // Now we have a(s[i]) >= 0, and we would like to modify a(s) > 0 for s in (s[i], s[i+1]) if a(s) can be negative for some s in (s[i], s[i+1]).
     let mut flag_succeed = true;
     for i in (num_stationary.0 + 1)..(n - 2 - num_stationary.1) {
@@ -524,5 +541,57 @@ pub fn force_positive_a(
         }
     }
 
-    flag_succeed
+    Ok(flag_succeed)
+}
+
+/// Check the shared TOPP3 profile shape, station counts, and station ordering.
+///
+/// TOPP3/COPP3 interpolation uses node-based `a(s)` and `b(s)` profiles on the
+/// same grid, with optional stationary head/tail sections. This helper keeps
+/// those preconditions together before any timing integration is attempted.
+fn check_topp3_sab(
+    function_name: &str,
+    s: &[f64],
+    profile: Topp3ProfileRef<'_>,
+) -> Result<(), CoppError> {
+    let (a, b, num_stationary) = profile;
+    check_stationary_counts(function_name, s.len(), num_stationary)?;
+    if a.len() != s.len() || b.len() != s.len() {
+        return Err(CoppError::InvalidInput(
+            function_name.into(),
+            format!(
+                "`a.len()` = {} and `b.len()` = {} must equal `s.len()` = {}",
+                a.len(),
+                b.len(),
+                s.len()
+            ),
+        ));
+    }
+    check_input_slice_not_nan_infinite(function_name, "s", s)?;
+    check_input_slice_non_negative(function_name, "a", a)?;
+    check_input_slice_not_nan_infinite(function_name, "b", b)?;
+    check_input_strictly_increasing(function_name, "s", s)
+}
+
+/// Check that stationary head/tail counts leave at least one motion interval.
+///
+/// The minimum station count is `2 + num_stationary.0 + num_stationary.1`;
+/// checked arithmetic is used so pathological `usize` inputs are rejected as
+/// invalid input instead of overflowing.
+fn check_stationary_counts(
+    function_name: &str,
+    s_len: usize,
+    num_stationary: (usize, usize),
+) -> Result<(), CoppError> {
+    let Some(min_len) = num_stationary
+        .0
+        .checked_add(num_stationary.1)
+        .and_then(|sum| sum.checked_add(2))
+    else {
+        return Err(CoppError::InvalidInput(
+            function_name.into(),
+            "`num_stationary` overflowed while checking dimensions".into(),
+        ));
+    };
+    check_input_len_at_least(function_name, "`s.len()`", s_len, min_len)
 }

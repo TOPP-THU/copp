@@ -10,24 +10,28 @@
 //! - `a[k]` denotes $\dot{s}_k^2$;
 //! - `b[k]` denotes $\ddot{s}_k$;
 //! - decision vector starts with `x = [a[0..=n], b[0..=n], x_others]`, where
-//!   `x_others` are auxiliary variables introduced by objectives (`Time`,
-//!   `ThermalEnergy`, `TotalVariationTorque`, `Linear`).
+//!   `x_others` are auxiliary variables introduced by objectives ([`Time`](crate::prelude::CoppObjective::Time),
+//!   [`ThermalEnergy`](crate::prelude::CoppObjective::ThermalEnergy), [`TotalVariationTorque`](crate::prelude::CoppObjective::TotalVariationTorque), [`Linear`](crate::prelude::CoppObjective::Linear)).
 //!
 //! # High-level pipeline
 //! 1. Validate interval/boundary/objective contract.
 //! 2. Assemble standard TOPP3 conic constraints.
 //! 3. Add COPP3 objective-induced variables/cones.
 //! 4. Build sparse matrices `A`, `P`, vector `q`, and solve by Clarabel.
-//! 5. Apply status acceptance policy (`ClarabelOptions::is_allow`) and extract
+//! 5. Apply status acceptance policy ([`ClarabelOptions::is_allow`](crate::solver::copp2_socp::ClarabelOptions::is_allow)) and extract
 //!    `(a,b)` only when accepted.
 //!
 //! # API layering
-//! - `copp3_socp`: strict/normal API, returns only accepted `(a,b,num_stationary)`.
-//! - `copp3_socp_expert`: expert API returning `(Option<Copp3Result>, DefaultSolution<f64>)`.
+//! - [`copp3_socp`](crate::solver::copp3_socp::copp3_socp): strict/normal API, returns only accepted [`Topp3Profile`](crate::solver::copp3_socp::Topp3Profile).
+//! - [`copp3_socp_expert`](crate::solver::copp3_socp::copp3_socp_expert): expert API returning `(Option<Topp3Profile>, DefaultSolution<f64>)`.
+//! - [`copp3_socp_expert_with_info`](crate::solver::copp3_socp::copp3_socp_expert_with_info): expert API plus Clarabel linear-solver
+//!   metadata for wrappers that need solver-side diagnostics.
 
 use crate::copp::clarabel_backend::{ConstraintsClarabel, ObjConsClarabel};
-use crate::copp::copp3::Copp3Result;
+use crate::copp::copp3::Topp3Profile;
+use crate::copp::copp3::Topp3ProfileRef;
 use crate::copp::copp3::formulation::{Copp3Problem, get_weight_a_copp3, get_weight_a_topp3};
+use crate::copp::copp3::opt3::ClarabelExpertInfor3rd;
 use crate::copp::copp3::opt3::clarabel_constraints::{
     clarabel_standard_capacity_topp3, clarabel_standard_constraint_topp3,
 };
@@ -49,27 +53,27 @@ use nalgebra::{DMatrix, DVectorView};
 /// Strict COPP3-SOCP API for production use.
 ///
 /// # Purpose
-/// Use this entry when caller only needs a valid profile `(a,b,num_stationary)` and treats
+/// Use this entry when caller only needs a valid [`Topp3Profile`](crate::solver::copp3_socp::Topp3Profile) and treats
 /// non-accepted solver statuses as hard failures.
 ///
 /// # Contract
-/// - Internally calls [`copp3_socp_expert`].
-/// - Returns `Ok((a,b,num_stationary))` **iff** `options.is_allow(solution.status)` is `true`.
+/// - Internally calls [`copp3_socp_expert`](crate::solver::copp3_socp::copp3_socp_expert).
+/// - Returns `Ok(Topp3Profile { .. })` **iff** `options.is_allow(solution.status)` is `true`.
 /// - Returns [`Err(CoppError::ClarabelSolverStatus(...))`](CoppError::ClarabelSolverStatus) when status is not accepted.
 ///
 /// # Returns
-/// Returns accepted COPP3 profile `(a, b, num_stationary)`.
+/// Returns accepted COPP3 profile.
 ///
 /// # Errors
-/// Returns `CoppError` on model/solver failures and non-accepted solver status.
+/// Returns [`CoppError`](crate::diag::CoppError) on model/solver failures and non-accepted solver status.
 ///
 /// # Notes
 /// For workflows requiring low-level diagnostics (`status` and raw Clarabel solution fields),
-/// prefer [`copp3_socp_expert`].
+/// prefer [`copp3_socp_expert`](crate::solver::copp3_socp::copp3_socp_expert).
 pub fn copp3_socp<'a, M: RobotTorque>(
     problem: &Copp3Problem<'a, M>,
     options: &ClarabelOptions,
-) -> Result<Copp3Result, CoppError> {
+) -> Result<Topp3Profile, CoppError> {
     let (result, solution) = copp3_socp_expert(problem, options)?;
     result.ok_or_else(|| CoppError::ClarabelSolverStatus("copp3_socp".into(), solution.status))
 }
@@ -82,10 +86,10 @@ pub fn copp3_socp<'a, M: RobotTorque>(
 /// - `Err(...)`: input/model/solver-construction runtime failures.
 ///
 /// # Returns
-/// Returns tuple `(Option<Copp3Result>, DefaultSolution<f64>)` for diagnostic use.
+/// Returns tuple `(Option<Topp3Profile>, DefaultSolution<f64>)` for diagnostic use.
 ///
 /// # Errors
-/// Returns [`CoppError`] only for true runtime failures.
+/// Returns [`CoppError`](crate::diag::CoppError) only for true runtime failures.
 ///
 /// # Contract
 /// - caller must handle `None` profile for non-accepted statuses;
@@ -100,7 +104,21 @@ pub fn copp3_socp<'a, M: RobotTorque>(
 pub fn copp3_socp_expert<'a, M: RobotTorque>(
     problem: &Copp3Problem<'a, M>,
     options: &ClarabelOptions,
-) -> Result<(Option<Copp3Result>, DefaultSolution<f64>), CoppError> {
+) -> Result<(Option<Topp3Profile>, DefaultSolution<f64>), CoppError> {
+    let info = copp3_socp_expert_with_info(problem, options)?;
+    let _ = &info.linsolver;
+    Ok((info.result, info.solution))
+}
+
+/// Expert COPP3-SOCP API with Clarabel solution and linear-solver diagnostics.
+///
+/// Use this variant when callers need more than
+/// [`DefaultSolution`](clarabel::solver::DefaultSolution), because Clarabel stores linear-solver metadata on the
+/// solver `info` object rather than inside the returned solution.
+pub fn copp3_socp_expert_with_info<'a, M: RobotTorque>(
+    problem: &Copp3Problem<'a, M>,
+    options: &ClarabelOptions,
+) -> Result<ClarabelExpertInfor3rd, CoppError> {
     match options.verbosity() {
         Verbosity::Silent => copp3_socp_core(problem, (options, SilentVerboser)),
         Verbosity::Summary => copp3_socp_core(problem, (options, SummaryVerboser::new())),
@@ -119,11 +137,11 @@ pub fn copp3_socp_expert<'a, M: RobotTorque>(
 /// # Invariants
 /// - decision-variable layout always starts with contiguous `a[0..=n]` and `b[0..=n]`;
 /// - `q_object.len()` is treated as final `n_var` before solver build;
-/// - extracted `(a,b)` is produced only through `clarabel_to_copp3_solution` when status is accepted.
+/// - extracted `(a,b)` is produced only through [`clarabel_to_copp3_solution`](crate::solver::copp3_socp::clarabel_to_copp3_solution) when status is accepted.
 fn copp3_socp_core<'a, M: RobotTorque>(
     problem: &Copp3Problem<'a, M>,
     options_verboser: (&ClarabelOptions, impl Verboser),
-) -> Result<(Option<Copp3Result>, DefaultSolution<f64>), CoppError> {
+) -> Result<ClarabelExpertInfor3rd, CoppError> {
     let (options, mut verboser) = options_verboser;
     let idx_s_start = problem.idx_s_start;
     let a_boundary = problem.a_boundary;
@@ -338,6 +356,7 @@ fn copp3_socp_core<'a, M: RobotTorque>(
     let mut solver = DefaultSolver::<f64>::new(&p_object, &q_object, &a_csc, &b, &cones, settings)
         .map_err(|e| CoppError::ClarabelSolverError("copp3_socp".into(), e))?;
     solver.solve();
+    let linsolver = solver.info.linsolver.clone();
     let solution = solver.solution;
     if verboser.is_enabled(Verbosity::Summary) {
         crate::verbosity_log!(
@@ -357,9 +376,11 @@ fn copp3_socp_core<'a, M: RobotTorque>(
         );
     }
     let result = if options.is_allow(solution.status) {
-        let (a, b) =
-            clarabel_to_copp3_solution(&solution.x.as_slice()[0..2 * (n + 1)], &s, num_stationary);
-        Some((a, b, num_stationary))
+        Some(clarabel_to_copp3_solution(
+            &solution.x.as_slice()[0..2 * (n + 1)],
+            &s,
+            num_stationary,
+        ))
     } else {
         None
     };
@@ -369,13 +390,17 @@ fn copp3_socp_core<'a, M: RobotTorque>(
             "copp3_socp: allow(status)={}, extracted_profile={}",
             options.is_allow(solution.status),
             if result.is_some() {
-                "Some((a,b,num_stationary))"
+                "Some(Topp3Profile)"
             } else {
                 "None"
             }
         );
     }
-    Ok((result, solution))
+    Ok(ClarabelExpertInfor3rd {
+        result,
+        solution,
+        linsolver,
+    })
 }
 
 /// Determine the length of xi[k] = sqrt(a[k + k_skip]) in the decision variable x.
@@ -390,10 +415,10 @@ fn skip_a_for_xi(num_stationary_start: usize) -> usize {
     num_stationary_start.max(1)
 }
 
-/// Add the constraints for sqrt(a) >= xi in COPP3 optimization.  
+/// Add the constraints for sqrt(a) >= xi in COPP3 optimization.
 /// x = [a[0,...,n], b[0,...,n], xi[0,...,len_xi-1], ...] \in R^{2*(n+1)+len_xi+...}.
-/// sqrt(a[k]) >= xi[k] >= 0  
-/// num_val <= 4*n, num_b <= 4*n, num_cones <= n  
+/// sqrt(a[k]) >= xi[k] >= 0
+/// num_val <= 4*n, num_b <= 4*n, num_cones <= n
 /// Return the len of the new x: n+1 or 2*(n+1)
 fn clarabel_sqrt_a_copp3(
     n: usize,
@@ -423,11 +448,8 @@ fn clarabel_sqrt_a_copp3(
                 val.resize(val.len() + 3 * len_xi, -1.0);
                 cones.resize(cones.len() + len_xi, SecondOrderConeT(3));
                 for k in 0..len_xi {
-                    // row.extend(b.len()..b.len() + 3);
                     col.extend([k + n_skip, k + n_skip, 2 * (n + 1) + k]);
-                    // val.resize(val.len() + 3, -1.0);
                     b.extend([0.25, -0.25, 0.0]);
-                    // cones.push(SecondOrderConeT(3));
                 }
                 return 2 * (n + 1) + len_xi;
             }
@@ -523,7 +545,7 @@ fn clarabel_objective_copp3<M: RobotTorque>(
         )
     }) {
         // shape: (dim, n) since there are n+1 a and n b.
-        problem.robot.torque_coeff(problem.idx_s_start, n + 1)
+        problem.robot.torque_coeff(problem.idx_s_start, n + 1)?
     } else {
         (
             DMatrix::<f64>::zeros(0, 0),
@@ -596,7 +618,7 @@ fn clarabel_objective_copp3<M: RobotTorque>(
     Ok(())
 }
 
-/// Add the constraints and objective for Time in COPP3 optimization.  
+/// Add the constraints and objective for Time in COPP3 optimization.
 /// num_val <= 5*n, num_b <= 4*n, num_cones <= n, n_var <= n
 fn clarabel_objective_time_copp3(
     s: &[f64],
@@ -653,7 +675,7 @@ fn clarabel_objective_time_copp3(
     true
 }
 
-/// Add the constraints and objective for ThermalEnergy in COPP3 optimization.  
+/// Add the constraints and objective for ThermalEnergy in COPP3 optimization.
 /// num_val <= (4+2*dim)*(n+1), num_b <= (2+dim)*(n+1), num_cones <= n+1, n_var <= n+1
 fn clarabel_objective_thermal_energy_copp3(
     weight_a: &[f64],
@@ -822,7 +844,7 @@ fn clarabel_objective_thermal_energy_copp3(
     true
 }
 
-/// Add the constraints and objective for TotalVariationTorque in COPP3 optimization.  
+/// Add the constraints and objective for TotalVariationTorque in COPP3 optimization.
 /// num_val <= 10*n*dim, num_b <= 2*n*dim, num_cones <= 1, n_var <= n*dim
 fn clarabel_objective_tv_torque_copp3(
     weight: f64,
@@ -1030,9 +1052,8 @@ fn clarabel_objective_linear_copp3(
     true
 }
 
-/// Compute the time value in COPP3 optimization.  
-/// Input: a_sqrt_down = 1 / sqrt(a)  
-#[cfg(test)]
+/// Compute the time value in COPP3 optimization.
+/// Input: a_sqrt_down = 1 / sqrt(a)
 #[inline(always)]
 fn objective_value_time_copp3(
     a_sqrt_down: &[f64],
@@ -1056,7 +1077,6 @@ fn objective_value_time_copp3(
 }
 
 /// Compute the thermal energy value in COPP3 optimization.
-#[cfg(test)]
 #[inline(always)]
 fn objective_value_thermal_energy_copp3(
     a_sqrt_down: &[f64],
@@ -1110,7 +1130,6 @@ fn objective_value_thermal_energy_copp3(
 }
 
 /// Compute the thermal energy value in COPP3 optimization.
-#[cfg(test)]
 #[inline(always)]
 fn objective_value_tv_torque_copp3(
     torque: &DMatrix<f64>,
@@ -1159,7 +1178,6 @@ fn objective_value_tv_torque_copp3(
 }
 
 /// Compute the objective value for Linear in COPP3 optimization.
-#[cfg(test)]
 #[inline(always)]
 fn objective_value_linear_copp3(
     a_profile: &[f64],
@@ -1181,13 +1199,11 @@ fn objective_value_linear_copp3(
 }
 
 /// Compute the objective value for COPP3 optimization.
-#[cfg(test)]
 pub(crate) fn objective_value_copp3_opt<M: RobotTorque>(
     problem: &Copp3Problem<M>,
-    a_profile: &[f64],
-    b_profile: &[f64],
-    num_stationary: (usize, usize),
+    profile: Topp3ProfileRef<'_>,
 ) -> (f64, Vec<f64>) {
+    let (a_profile, b_profile, num_stationary) = profile;
     let s = problem
         .robot
         .constraints
@@ -1351,16 +1367,11 @@ mod tests {
             let mut robot = Robot::with_capacity(dim, n);
 
             let mut rng = rand::rng();
-            let (s, derivs, omega, phi) =
+            let (s, path, omega, phi) =
                 lissajous_path_for_test(dim, n, &mut rng).expect("random range is valid");
-            robot.with_s(&s.as_view())?;
-            robot.with_q(
-                &derivs.q.as_view(),
-                &derivs.dq.as_ref().unwrap().as_view(),
-                &derivs.ddq.as_ref().unwrap().as_view(),
-                derivs.dddq.as_ref().map(|m| m.as_view()).as_ref(),
-                0,
-            )?;
+            robot
+                .with_s(&s.as_view())?
+                .with_q_from_path_3rd(&path, 0, n)?;
             add_symmetric_axial_limits_for_test(&mut robot, 1.0, 1.0, Some(5.0))?;
 
             let topp2_problem = Topp2ProblemBuilder::new(&robot, (0, n - 1), (0.0, 0.0)).build()?;
@@ -1373,7 +1384,7 @@ mod tests {
                 .build()?;
             let a_ra0 = topp2_ra(&topp2_problem, &options_ra0)?;
             let tc_ra0 = start.elapsed().as_secs_f64() * 1E3;
-            let (tf_ra0, _) = s_to_t_topp2(s.as_slice(), &a_ra0, 0.0);
+            let (tf_ra0, _) = s_to_t_topp2(s.as_slice(), &a_ra0, 0.0)?;
 
             let objectives = [CoppObjective::Linear(
                 1.0,
@@ -1395,7 +1406,7 @@ mod tests {
 
             // Step 2. Test Copp3-SOCP
             let start = Instant::now();
-            let (a_copp, b_copp, num_stationary_copp) = {
+            let profile_copp = {
                 let mut settings = default_clarabel_settings();
                 settings.tol_gap_rel = 1E-6;
                 let options = ClarabelOptionsBuilder::with_clarabel_setting(settings)
@@ -1413,23 +1424,20 @@ mod tests {
             };
             let tc_copp = start.elapsed().as_secs_f64() * 1E3;
             // Test time profile generation
-            let (tf_copp, _) =
-                s_to_t_topp3(s.as_slice(), &a_copp, &b_copp, num_stationary_copp, 0.0);
+            let (tf_copp, _) = s_to_t_topp3(s.as_slice(), profile_copp.as_parts(), 0.0)?;
 
             // Step 3. Test Topp3-LP
             let options_lp = ClarabelOptionsBuilder::new()
                 .allow_almost_solved(true)
                 .build()?;
             let start = Instant::now();
-            let (a_lp, b_lp, _) = topp3_lp(&copp3_problem.as_topp3_problem(), &options_lp)?;
+            let profile_lp = topp3_lp(&copp3_problem.as_topp3_problem(), &options_lp)?;
             let tc_lp = start.elapsed().as_secs_f64() * 1E3;
             // Test time profile generation
-            let (tf_lp, _) = s_to_t_topp3(s.as_slice(), &a_lp, &b_lp, num_stationary_copp, 0.0);
+            let (tf_lp, _) = s_to_t_topp3(s.as_slice(), profile_lp.as_parts(), 0.0)?;
 
-            let (obj_lp, _) =
-                objective_value_copp3_opt(&copp3_problem, &a_lp, &b_lp, num_stationary_copp);
-            let (obj_copp, _) =
-                objective_value_copp3_opt(&copp3_problem, &a_copp, &b_copp, num_stationary_copp);
+            let (obj_lp, _) = objective_value_copp3_opt(&copp3_problem, profile_lp.as_parts());
+            let (obj_copp, _) = objective_value_copp3_opt(&copp3_problem, profile_copp.as_parts());
 
             if flag_print_step {
                 crate::verbosity_log!(
@@ -1503,16 +1511,11 @@ mod tests {
             let mut robot = Robot::with_capacity(dim, n);
 
             let mut rng = rand::rng();
-            let (s, derivs, omega, phi) =
+            let (s, path, omega, phi) =
                 lissajous_path_for_test(dim, n, &mut rng).expect("random range is valid");
-            robot.with_s(&s.as_view())?;
-            robot.with_q(
-                &derivs.q.as_view(),
-                &derivs.dq.as_ref().unwrap().as_view(),
-                &derivs.ddq.as_ref().unwrap().as_view(),
-                derivs.dddq.as_ref().map(|m| m.as_view()).as_ref(),
-                0,
-            )?;
+            robot
+                .with_s(&s.as_view())?
+                .with_q_from_path_3rd(&path, 0, n)?;
             add_symmetric_axial_limits_for_test(&mut robot, 1.0, 1.0, Some(5.0))?;
 
             let topp2_problem = Topp2ProblemBuilder::new(&robot, (0, n - 1), (0.0, 0.0)).build()?;
@@ -1525,7 +1528,7 @@ mod tests {
                 .build()?;
             let a_ra0 = topp2_ra(&topp2_problem, &options_ra0)?;
             let tc_ra0 = start.elapsed().as_secs_f64() * 1E3;
-            let (tf_ra0, _) = s_to_t_topp2(s.as_slice(), &a_ra0, 0.0);
+            let (tf_ra0, _) = s_to_t_topp2(s.as_slice(), &a_ra0, 0.0)?;
 
             let objective = [CoppObjective::Time(1.0)];
             let copp3_problem =
@@ -1534,7 +1537,7 @@ mod tests {
 
             // Step 2. Test Copp3-SOCP
             let start = Instant::now();
-            let (a_copp, b_copp, num_stationary_copp) = {
+            let profile_copp = {
                 let mut settings = default_clarabel_settings();
                 settings.tol_gap_rel = 1E-6;
                 let options = ClarabelOptionsBuilder::with_clarabel_setting(settings)
@@ -1562,23 +1565,20 @@ mod tests {
             };
             let tc_copp = start.elapsed().as_secs_f64() * 1E3;
             // Test time profile generation
-            let (tf_copp, _) =
-                s_to_t_topp3(s.as_slice(), &a_copp, &b_copp, num_stationary_copp, 0.0);
+            let (tf_copp, _) = s_to_t_topp3(s.as_slice(), profile_copp.as_parts(), 0.0)?;
 
             // Step 3. Test Topp3-LP
             let start = Instant::now();
             let options_qp = ClarabelOptionsBuilder::new()
                 .allow_almost_solved(true)
                 .build()?;
-            let (a_qp, b_qp, _) = topp3_socp(&copp3_problem.as_topp3_problem(), &options_qp)?;
+            let profile_qp = topp3_socp(&copp3_problem.as_topp3_problem(), &options_qp)?;
             let tc_qp = start.elapsed().as_secs_f64() * 1E3;
             // Test time profile generation
-            let (tf_qp, _) = s_to_t_topp3(s.as_slice(), &a_qp, &b_qp, num_stationary_copp, 0.0);
+            let (tf_qp, _) = s_to_t_topp3(s.as_slice(), profile_qp.as_parts(), 0.0)?;
 
-            let (obj_qp, _) =
-                objective_value_copp3_opt(&copp3_problem, &a_qp, &b_qp, num_stationary_copp);
-            let (obj_copp, _) =
-                objective_value_copp3_opt(&copp3_problem, &a_copp, &b_copp, num_stationary_copp);
+            let (obj_qp, _) = objective_value_copp3_opt(&copp3_problem, profile_qp.as_parts());
+            let (obj_copp, _) = objective_value_copp3_opt(&copp3_problem, profile_copp.as_parts());
 
             if flag_print_step {
                 crate::verbosity_log!(
@@ -1661,28 +1661,8 @@ mod tests {
             let mut robot = Robot::with_capacity(dim, n);
 
             let mut rng = rand::rng();
-            let (s, derivs, omega, phi) =
+            let (s, path, omega, phi) =
                 lissajous_path_for_test(dim, n, &mut rng).expect("random range is valid");
-            // let omega: Vec<f64> = [
-            //     4.723299430689122,
-            //     1.2937933921386273,
-            //     3.163544832429868,
-            //     2.554983998551911,
-            //     3.1752440065420076,
-            //     6.036677287860053,
-            //     5.4585988904049145,
-            // ]
-            // .into();
-            // let phi: Vec<f64> = [
-            //     0.3140306040123813,
-            //     5.341058950177041,
-            //     4.076168494444343,
-            //     5.801150775658696,
-            //     2.306341572703676,
-            //     0.2550634807632447,
-            //     3.986342358667442,
-            // ]
-            // .into();
 
             if flag_print_step {
                 crate::verbosity_log!(
@@ -1690,14 +1670,9 @@ mod tests {
                     "omega = {omega:?}\nphi = {phi:?}"
                 );
             }
-            robot.with_s(&s.as_view())?;
-            robot.with_q(
-                &derivs.q.as_view(),
-                &derivs.dq.as_ref().unwrap().as_view(),
-                &derivs.ddq.as_ref().unwrap().as_view(),
-                derivs.dddq.as_ref().map(|m| m.as_view()).as_ref(),
-                0,
-            )?;
+            robot
+                .with_s(&s.as_view())?
+                .with_q_from_path_3rd(&path, 0, n)?;
             add_symmetric_axial_limits_for_test(&mut robot, 1.0, 1.0, Some(5.0))?;
 
             let topp2_problem = Topp2ProblemBuilder::new(&robot, (0, n - 1), (0.0, 0.0)).build()?;
@@ -1737,7 +1712,7 @@ mod tests {
                     .build()?;
                 let (result, solution) = copp3_socp_expert(&copp3_problem, &options)?;
                 if let Some(result) = result {
-                    result
+                    result.into_parts()
                 } else {
                     crate::verbosity_log!(
                         crate::diag::Verbosity::Debug,
@@ -1761,7 +1736,7 @@ mod tests {
                     (0.0, 0.0),
                 )
                 .build_with_linearization()?;
-                objective_value_copp3_opt(&copp3_problem, &a_case0, &b_case0, num_stationary)
+                objective_value_copp3_opt(&copp3_problem, (&a_case0, &b_case0, num_stationary))
             };
 
             // Case 1: Time and ThermalEnergy
@@ -1787,7 +1762,7 @@ mod tests {
                     .build()?;
                 let (result, solution) = copp3_socp_expert(&copp3_problem, &options)?;
                 if let Some(result) = result {
-                    result
+                    result.into_parts()
                 } else {
                     crate::verbosity_log!(
                         crate::diag::Verbosity::Debug,
@@ -1811,11 +1786,11 @@ mod tests {
                     (0.0, 0.0),
                 )
                 .build_with_linearization()?;
-                objective_value_copp3_opt(&copp3_problem, &a_case1, &b_case1, num_stationary)
+                objective_value_copp3_opt(&copp3_problem, (&a_case1, &b_case1, num_stationary))
             };
             if obj_case1[0] < obj_case0[0] - 1E-3 || obj_case1[1] - 1E-3 > obj_case0[1] {
-                let (tf_case0, _) = s_to_t_topp2(s.as_slice(), &a_case0, 0.0);
-                let (tf_case1, _) = s_to_t_topp2(s.as_slice(), &a_case1, 0.0);
+                let (tf_case0, _) = s_to_t_topp2(s.as_slice(), &a_case0, 0.0)?;
+                let (tf_case1, _) = s_to_t_topp2(s.as_slice(), &a_case1, 0.0)?;
                 crate::verbosity_log!(
                     crate::diag::Verbosity::Summary,
                     "omega = {omega:?}\nphi = {phi:?}"
@@ -1863,7 +1838,7 @@ mod tests {
                     .build()?;
                 let (result, solution) = copp3_socp_expert(&copp3_problem, &options)?;
                 if let Some(result) = result {
-                    result
+                    result.into_parts()
                 } else {
                     crate::verbosity_log!(
                         crate::diag::Verbosity::Debug,
@@ -1887,7 +1862,7 @@ mod tests {
                     (0.0, 0.0),
                 )
                 .build_with_linearization()?;
-                objective_value_copp3_opt(&copp3_problem, &a_case2, &b_case2, num_stationary)
+                objective_value_copp3_opt(&copp3_problem, (&a_case2, &b_case2, num_stationary))
             };
             if obj_case2[0] < obj_case1[0] - 1E-3 || obj_case2[1] - 1E-3 > obj_case1[1] {
                 crate::verbosity_log!(
@@ -1935,7 +1910,7 @@ mod tests {
                     .build()?;
                 let (result, solution) = copp3_socp_expert(&copp3_problem, &options)?;
                 if let Some(result) = result {
-                    result
+                    result.into_parts()
                 } else {
                     crate::verbosity_log!(
                         crate::diag::Verbosity::Debug,
@@ -1959,7 +1934,7 @@ mod tests {
                     (0.0, 0.0),
                 )
                 .build_with_linearization()?;
-                objective_value_copp3_opt(&copp3_problem, &a_case3, &b_case3, num_stationary)
+                objective_value_copp3_opt(&copp3_problem, (&a_case3, &b_case3, num_stationary))
             };
             if obj_case3[1] < obj_case1[1] - 1E-3 || obj_case3[2] - 1E-3 > obj_case1[2] {
                 crate::verbosity_log!(
@@ -2009,7 +1984,7 @@ mod tests {
                     .build()?;
                 let (result, solution) = copp3_socp_expert(&copp3_problem, &options)?;
                 if let Some(result) = result {
-                    result
+                    result.into_parts()
                 } else {
                     crate::verbosity_log!(
                         crate::diag::Verbosity::Debug,
@@ -2033,7 +2008,7 @@ mod tests {
                     (0.0, 0.0),
                 )
                 .build_with_linearization()?;
-                objective_value_copp3_opt(&copp3_problem, &a_case4, &b_case4, num_stationary)
+                objective_value_copp3_opt(&copp3_problem, (&a_case4, &b_case4, num_stationary))
             };
             if obj_case4[1] < obj_case1[1] - 1E-3 || obj_case4[3] - 1E-3 > obj_case1[3] {
                 crate::verbosity_log!(

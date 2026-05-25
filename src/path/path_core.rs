@@ -2,13 +2,87 @@ use crate::diag::PathError;
 use crate::path::OutOfRangeMode;
 use crate::path::autodiff::Jet3;
 use crate::path::spline::{SplineConfig, SplinePath};
-use nalgebra::DMatrix;
+use nalgebra::{DMatrix, DMatrixView};
 use rayon::prelude::*;
 use std::sync::Arc;
 
 const EPS_RANGE: f64 = 1e-12;
 
+/// Shared analytic path function used by [`Path::from_parametric`].
+///
+/// The input is a seeded [`Jet3`] scalar representing path parameter `s`, and
+/// the returned vector contains one [`Jet3`] per path dimension.
 pub type ParametricFn = Arc<dyn Fn(Jet3) -> Vec<Jet3> + Send + Sync>;
+
+/// User-provided path evaluator with explicit derivatives up to second order.
+///
+/// Implement this trait when path derivatives are already available from an
+/// external model, library, or hand-written analytic formula. Unlike
+/// [`Path::from_parametric`], no automatic differentiation is performed: the
+/// evaluator writes `q`, `dq`, and `ddq` directly into pre-allocated
+/// column-major buffers.
+///
+/// Buffer layout is always `dim x s.len()` in column-major order:
+/// `buffer[row + col * dim]` corresponds to path dimension `row` at sample
+/// `s[col]`. Empty `s` slices are valid no-ops.
+pub trait PathEvaluator2nd: Send + Sync {
+    /// Return the path dimension.
+    ///
+    /// The dimension must remain stable for the lifetime of the evaluator and
+    /// must be greater than zero.
+    fn dim(&self) -> usize;
+
+    /// Evaluate position only.
+    ///
+    /// The default implementation calls [`PathEvaluator2nd::evaluate_up_to_2nd`]
+    /// with temporary derivative buffers. Override this method if computing
+    /// only `q` is substantially cheaper for the evaluator.
+    fn evaluate_q(&self, s: &[f64], q: &mut [f64]) -> Result<(), PathError> {
+        let mut dq = vec![0.0; q.len()];
+        let mut ddq = vec![0.0; q.len()];
+        self.evaluate_up_to_2nd(s, q, &mut dq, &mut ddq)
+    }
+
+    /// Evaluate `q`, `dq`, and `ddq` at all supplied path parameters.
+    ///
+    /// All output buffers have length `dim() * s.len()` and use column-major
+    /// layout.
+    fn evaluate_up_to_2nd(
+        &self,
+        s: &[f64],
+        q: &mut [f64],
+        dq: &mut [f64],
+        ddq: &mut [f64],
+    ) -> Result<(), PathError>;
+}
+
+/// User-provided path evaluator with explicit derivatives up to third order.
+///
+/// This extends [`PathEvaluator2nd`] with jerk-level path derivatives. Use it
+/// when the path will be sampled by TOPP3/COPP3 workflows or any API that calls
+/// [`Path::evaluate_up_to_3rd`].
+pub trait PathEvaluator3rd: PathEvaluator2nd {
+    /// Evaluate `q`, `dq`, `ddq`, and `dddq` at all supplied path parameters.
+    ///
+    /// All output buffers have length `dim() * s.len()` and use column-major
+    /// layout.
+    fn evaluate_up_to_3rd(
+        &self,
+        s: &[f64],
+        q: &mut [f64],
+        dq: &mut [f64],
+        ddq: &mut [f64],
+        dddq: &mut [f64],
+    ) -> Result<(), PathError>;
+}
+
+/// Compatibility alias for third-order explicit path evaluators.
+///
+/// New code should prefer [`PathEvaluator2nd`] or [`PathEvaluator3rd`] to make
+/// the supported derivative order explicit.
+pub trait PathEvaluator: PathEvaluator3rd {}
+
+impl<T: PathEvaluator3rd + ?Sized> PathEvaluator for T {}
 
 /// Output of path evaluation.
 ///
@@ -16,9 +90,13 @@ pub type ParametricFn = Arc<dyn Fn(Jet3) -> Vec<Jet3> + Send + Sync>;
 /// (e.g. `evaluate_q` only fills `q`; `evaluate_up_to_2nd` fills `q/dq/ddq`).
 #[derive(Debug)]
 pub struct PathDerivatives {
+    /// Position samples with shape `(dim, s.len())`.
     pub q: DMatrix<f64>,
+    /// First derivative samples `dq/ds`, populated by second- and third-order evaluation.
     pub dq: Option<DMatrix<f64>>,
+    /// Second derivative samples `d^2q/ds^2`, populated by second- and third-order evaluation.
     pub ddq: Option<DMatrix<f64>>,
+    /// Third derivative samples `d^3q/ds^3`, populated only by third-order evaluation.
     pub dddq: Option<DMatrix<f64>>,
 }
 
@@ -30,13 +108,16 @@ enum Order {
     Three, // q, dq, ddq, dddq
 }
 
-/// Unified path abstraction over parametric and spline representations.
+/// Unified path abstraction over parametric, spline, and evaluator representations.
 ///
-/// Construct via [`Path::from_parametric`] or [`Path::from_waypoints`], then
+/// Construct via [`Path::from_parametric`](crate::path::Path::from_parametric),
+/// [`Path::from_waypoints`](crate::path::Path::from_waypoints),
+/// [`Path::from_evaluator_2nd`](crate::path::Path::from_evaluator_2nd), or
+/// [`Path::from_evaluator_3rd`](crate::path::Path::from_evaluator_3rd), then
 /// query a batch of parameter values with the `evaluate_*` family of methods.
 ///
 /// The valid parameter domain is `[s_min, s_max]` (set at construction time).
-/// Out-of-range behaviour is controlled by [`OutOfRangeMode`]: the default is to
+/// Out-of-range behaviour is controlled by [`OutOfRangeMode`](crate::path::OutOfRangeMode): the default is to
 /// return an error; it can be changed to silent clamping.
 pub struct Path {
     dim: usize,
@@ -51,12 +132,16 @@ enum PathRepr {
     Parametric(ParametricFn),
     /// Piecewise-polynomial path built from waypoints.
     Spline(SplinePath),
+    /// User-provided path evaluator with explicit derivatives up to second order.
+    Evaluator2nd(Arc<dyn PathEvaluator2nd>),
+    /// User-provided path evaluator with explicit derivatives up to third order.
+    Evaluator3rd(Arc<dyn PathEvaluator3rd>),
 }
 
 impl Path {
     /// Build a parametric path from an analytic closure.
     ///
-    /// Derivatives up to third order are computed automatically via [`Jet3`]
+    /// Derivatives up to third order are computed automatically via [`Jet3`](crate::path::Jet3)
     /// forward-mode AD.  The closure only needs to express `q(s)` symbolically;
     /// no manual differentiation is required.
     ///
@@ -66,8 +151,8 @@ impl Path {
     /// - `s_max` : upper bound of the path parameter (`s_max > s_min` required)
     ///
     /// # Errors
-    /// - [`PathError::InvalidRange`]     : `s_min >= s_max` or either value is non-finite
-    /// - [`PathError::InvalidDimension`] : closure returned an empty vector
+    /// - [`PathError::InvalidRange`](crate::diag::PathError::InvalidRange)     : `s_min >= s_max` or either value is non-finite
+    /// - [`PathError::InvalidDimension`](crate::diag::PathError::InvalidDimension) : closure returned an empty vector
     pub fn from_parametric<F>(q_fn: F, s_min: f64, s_max: f64) -> Result<Self, PathError>
     where
         F: Fn(Jet3) -> Vec<Jet3> + Send + Sync + 'static,
@@ -89,24 +174,157 @@ impl Path {
         })
     }
 
+    /// Build a path from an evaluator that provides explicit derivatives up to second order.
+    ///
+    /// Use this constructor when derivatives are already available from an
+    /// external source and automatic differentiation is not desired. The
+    /// evaluator is owned by the returned [`Path`] through an internal
+    /// [`Arc`], so the path can be passed around without borrowing the original
+    /// value.
+    ///
+    /// # Arguments
+    /// - `evaluator`: object that writes column-major derivative buffers
+    /// - `s_min`: lower bound of the path parameter
+    /// - `s_max`: upper bound of the path parameter (`s_max > s_min` required)
+    ///
+    /// # Errors
+    /// - [`PathError::InvalidRange`](crate::diag::PathError::InvalidRange): `s_min >= s_max` or either value is non-finite
+    /// - [`PathError::InvalidDimension`](crate::diag::PathError::InvalidDimension): evaluator dimension is zero
+    pub fn from_evaluator_2nd<E>(evaluator: E, s_min: f64, s_max: f64) -> Result<Self, PathError>
+    where
+        E: PathEvaluator2nd + 'static,
+    {
+        Self::from_shared_evaluator_2nd(Arc::new(evaluator), s_min, s_max)
+    }
+
+    /// Build a path from a shared explicit-derivative evaluator up to second order.
+    ///
+    /// This is the same representation as [`Path::from_evaluator_2nd`], but accepts
+    /// an already shared evaluator. It is useful when multiple paths or
+    /// application components need to hold the same evaluator object.
+    ///
+    /// # Errors
+    /// - [`PathError::InvalidRange`](crate::diag::PathError::InvalidRange): `s_min >= s_max` or either value is non-finite
+    /// - [`PathError::InvalidDimension`](crate::diag::PathError::InvalidDimension): evaluator dimension is zero
+    pub fn from_shared_evaluator_2nd(
+        evaluator: Arc<dyn PathEvaluator2nd>,
+        s_min: f64,
+        s_max: f64,
+    ) -> Result<Self, PathError> {
+        validate_range(s_min, s_max)?;
+
+        let dim = evaluator.dim();
+        if dim == 0 {
+            return Err(PathError::InvalidDimension { dim });
+        }
+
+        Ok(Self {
+            dim,
+            s_min,
+            s_max,
+            out_of_range_mode: OutOfRangeMode::Error,
+            repr: PathRepr::Evaluator2nd(evaluator),
+        })
+    }
+
+    /// Build a path from an evaluator that provides explicit derivatives up to third order.
+    ///
+    /// This is the constructor to use when the path will be evaluated by
+    /// third-order APIs such as TOPP3/COPP3 sampling.  For TOPP2/COPP2-only
+    /// usage, [`Path::from_evaluator_2nd`] avoids requiring a third derivative
+    /// implementation.
+    ///
+    /// # Errors
+    /// - [`PathError::InvalidRange`](crate::diag::PathError::InvalidRange): `s_min >= s_max` or either value is non-finite
+    /// - [`PathError::InvalidDimension`](crate::diag::PathError::InvalidDimension): evaluator dimension is zero
+    pub fn from_evaluator_3rd<E>(evaluator: E, s_min: f64, s_max: f64) -> Result<Self, PathError>
+    where
+        E: PathEvaluator3rd + 'static,
+    {
+        Self::from_shared_evaluator_3rd(Arc::new(evaluator), s_min, s_max)
+    }
+
+    /// Build a path from a shared explicit-derivative evaluator up to third order.
+    ///
+    /// # Errors
+    /// - [`PathError::InvalidRange`](crate::diag::PathError::InvalidRange): `s_min >= s_max` or either value is non-finite
+    /// - [`PathError::InvalidDimension`](crate::diag::PathError::InvalidDimension): evaluator dimension is zero
+    pub fn from_shared_evaluator_3rd(
+        evaluator: Arc<dyn PathEvaluator3rd>,
+        s_min: f64,
+        s_max: f64,
+    ) -> Result<Self, PathError> {
+        validate_range(s_min, s_max)?;
+
+        let dim = evaluator.dim();
+        if dim == 0 {
+            return Err(PathError::InvalidDimension { dim });
+        }
+
+        Ok(Self {
+            dim,
+            s_min,
+            s_max,
+            out_of_range_mode: OutOfRangeMode::Error,
+            repr: PathRepr::Evaluator3rd(evaluator),
+        })
+    }
+
+    /// Build a path from a third-order explicit-derivative evaluator.
+    ///
+    /// This compatibility constructor is equivalent to
+    /// [`Path::from_evaluator_3rd`]. New code should prefer
+    /// [`Path::from_evaluator_2nd`] or [`Path::from_evaluator_3rd`] to make the
+    /// supported derivative order explicit.
+    pub fn from_evaluator<E>(evaluator: E, s_min: f64, s_max: f64) -> Result<Self, PathError>
+    where
+        E: PathEvaluator3rd + 'static,
+    {
+        Self::from_evaluator_3rd(evaluator, s_min, s_max)
+    }
+
+    /// Build a path from a shared third-order explicit-derivative evaluator.
+    ///
+    /// This compatibility constructor is equivalent to
+    /// [`Path::from_shared_evaluator_3rd`].
+    pub fn from_shared_evaluator(
+        evaluator: Arc<dyn PathEvaluator3rd>,
+        s_min: f64,
+        s_max: f64,
+    ) -> Result<Self, PathError> {
+        Self::from_shared_evaluator_3rd(evaluator, s_min, s_max)
+    }
+
     /// Build a spline path by interpolating a waypoint matrix.
     ///
     /// Internally solves the Hermite spline system with an O(N) block-Thomas
     /// algorithm; all dimensions are solved in parallel.
-    /// The default configuration ([`SplineConfig::default`]) uses a quintic
-    /// (order-5) spline with `s ∈ [0, 1]`.
+    /// The default configuration ([`SplineConfig::default`](crate::path::SplineConfig::default)) uses a quintic
+    /// (order-5) spline with `s in [0, 1]`.
     ///
     /// # Arguments
     /// - `waypoints` : matrix of shape `(dim, n_points)`; each column is one waypoint
     /// - `cfg`       : spline configuration (order, parameter range, boundary derivatives, out-of-range mode)
     ///
     /// # Errors
-    /// - [`PathError::InvalidDimension`]   : `waypoints` has zero rows
-    /// - [`PathError::NotEnoughWaypoints`] : fewer than 2 columns
-    /// - [`PathError::InvalidOrder`]       : `order < 3`
-    /// - [`PathError::InvalidRange`]       : invalid parameter range
-    /// - [`PathError::SingularSystem`]     : spline system is singular (extremely rare)
+    /// - [`PathError::InvalidDimension`](crate::diag::PathError::InvalidDimension)   : `waypoints` has zero rows
+    /// - [`PathError::NotEnoughWaypoints`](crate::diag::PathError::NotEnoughWaypoints) : fewer than 2 columns
+    /// - [`PathError::InvalidOrder`](crate::diag::PathError::InvalidOrder)       : `order < 3`
+    /// - [`PathError::InvalidRange`](crate::diag::PathError::InvalidRange)       : invalid parameter range
+    /// - [`PathError::SingularSystem`](crate::diag::PathError::SingularSystem)     : spline system is singular (extremely rare)
     pub fn from_waypoints(waypoints: &DMatrix<f64>, cfg: SplineConfig) -> Result<Self, PathError> {
+        Self::from_waypoints_view(waypoints.as_view(), cfg)
+    }
+
+    /// Build a spline path from a borrowed waypoint matrix view.
+    ///
+    /// This accepts nalgebra views such as `waypoints.as_view()` and compatible
+    /// strided column-major views. See [`Path::from_waypoints`] for the full
+    /// interpolation semantics, configuration, and error conditions.
+    pub fn from_waypoints_view(
+        waypoints: DMatrixView<'_, f64>,
+        cfg: SplineConfig,
+    ) -> Result<Self, PathError> {
         if waypoints.nrows() == 0 {
             return Err(PathError::InvalidDimension {
                 dim: waypoints.nrows(),
@@ -122,7 +340,7 @@ impl Path {
         }
         validate_range(cfg.s_min, cfg.s_max)?;
 
-        let spline = SplinePath::from_waypoints(waypoints, &cfg)?;
+        let spline = SplinePath::from_waypoints_view(waypoints, &cfg)?;
 
         Ok(Self {
             dim: waypoints.nrows(),
@@ -151,7 +369,7 @@ impl Path {
     /// - `s` : one-dimensional parameter samples (length `N`)
     ///
     /// # Returns
-    /// [`PathDerivatives`] with `dq / ddq / dddq` all `None`;
+    /// [`PathDerivatives`](crate::path::PathDerivatives) with `dq / ddq / dddq` all `None`;
     /// `q` has shape `(dim, N)`.
     ///
     /// # Errors
@@ -166,7 +384,7 @@ impl Path {
     /// - `s` : one-dimensional parameter samples (length `N`)
     ///
     /// # Returns
-    /// [`PathDerivatives`] with `dddq = None`;
+    /// [`PathDerivatives`](crate::path::PathDerivatives) with `dddq = None`;
     /// `q / dq / ddq` each have shape `(dim, N)`.
     pub fn evaluate_up_to_2nd(&self, s: &[f64]) -> Result<PathDerivatives, PathError> {
         self.evaluate_impl(s, Order::Two)
@@ -181,15 +399,16 @@ impl Path {
     /// - `s` : one-dimensional parameter samples (length `N`)
     ///
     /// # Returns
-    /// [`PathDerivatives`] with all four fields populated; each matrix has shape `(dim, N)`.
+    /// [`PathDerivatives`](crate::path::PathDerivatives) with all four fields populated; each matrix has shape `(dim, N)`.
     ///
     /// # Errors
     /// - [`PathError::OutOfRangeS`] : a query value is out of range
     ///
     /// # Example
-    /// ```rust
-    /// # use copp::path::{Path, sin, cos};
-    /// # use copp::path::autodiff::Jet3;
+    /// ```rust, no_run
+    /// use copp::path::{Path, sin, cos};
+    /// use copp::path::autodiff::Jet3;
+    ///
     /// let path = Path::from_parametric(
     ///     |s: Jet3| vec![sin(s), cos(s)],
     ///     0.0, 1.0,
@@ -200,9 +419,9 @@ impl Path {
     ///
     /// let dq   = out.dq.as_ref().unwrap();
     /// let dddq = out.dddq.as_ref().unwrap();
-    /// // dim 0 is sin(s); its first derivative is cos(s), evaluated at s[0]=0.0
-    /// assert!((dq[(0, 0)] - 0.0_f64.cos()).abs() < 1e-10);
-    /// // dim 1 is cos(s); its third derivative is sin(s), evaluated at s[0]=0.0
+    /// // dim 0 is sin(s); its first derivative is cos(s)
+    /// assert!((dq[(0, 0)] - 1.0_f64.cos()).abs() < 1e-10);
+    /// // dim 1 is cos(s); its third derivative is sin(s)
     /// assert!((dddq[(1, 0)] - 0.0_f64.sin()).abs() < 1e-10);
     /// ```
     ///
@@ -234,6 +453,22 @@ impl Path {
             }
             PathRepr::Spline(spline) => {
                 eval_spline(spline, self, dim, (s, &mut q, &mut dq, &mut ddq, &mut dddq))?;
+            }
+            PathRepr::Evaluator2nd(evaluator) => {
+                eval_evaluator_2nd(
+                    evaluator.as_ref(),
+                    self,
+                    dim,
+                    (s, &mut q, &mut dq, &mut ddq, &mut dddq),
+                )?;
+            }
+            PathRepr::Evaluator3rd(evaluator) => {
+                eval_evaluator_3rd(
+                    evaluator.as_ref(),
+                    self,
+                    dim,
+                    (s, &mut q, &mut dq, &mut ddq, &mut dddq),
+                )?;
             }
         }
 
@@ -339,11 +574,11 @@ fn eval_parametric(
 
 /// Evaluate spline representation into pre-allocated column-major buffers.
 ///
-/// Dispatches to `SplinePath::eval_at::<ORDER>` with the minimum derivative
-/// order that satisfies the request — zero run-time branching per sample:
-///   - `Order::Zero`  → `eval_at::<0>` (q only)
-///   - `Order::Two`   → `eval_at::<2>` (q, dq, ddq)
-///   - `Order::Three` → `eval_at::<3>` (q, dq, ddq, dddq)
+/// Dispatches to [`SplinePath::eval_at`](crate::path::spline::SplinePath::eval_at)`::<ORDER>` with the minimum derivative
+/// order that satisfies the request: zero run-time branching per sample:
+///   - [`Order::Zero`](Order::Zero) => `eval_at::<0>` (q only)
+///   - [`Order::Two`](Order::Two) => `eval_at::<2>` (q, dq, ddq)
+///   - [`Order::Three`](Order::Three) => `eval_at::<3>` (q, dq, ddq, dddq)
 fn eval_spline(
     spline: &SplinePath,
     path: &Path,
@@ -415,6 +650,77 @@ fn eval_spline(
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+/// Evaluate a user-provided second-order explicit-derivative evaluator.
+///
+/// The evaluator receives already validated/clamped path parameters. It is
+/// called once for the whole batch so custom evaluators can use their own
+/// vectorized implementation.
+fn eval_evaluator_2nd(
+    evaluator: &dyn PathEvaluator2nd,
+    path: &Path,
+    dim: usize,
+    input_eval: EvalInput,
+) -> Result<(), PathError> {
+    let (s_values, q, dq, ddq, dddq) = input_eval;
+    let s_valid = s_values
+        .iter()
+        .enumerate()
+        .map(|(j, &s)| path.validate_s(s, j))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    if evaluator.dim() != dim {
+        return Err(PathError::DimensionMismatch);
+    }
+
+    match (dq.as_deref_mut(), ddq.as_deref_mut(), dddq.as_deref_mut()) {
+        (None, None, None) => evaluator.evaluate_q(&s_valid, q),
+        (Some(dq_buf), Some(ddq_buf), None) => {
+            evaluator.evaluate_up_to_2nd(&s_valid, q, dq_buf, ddq_buf)
+        }
+        (Some(_), Some(_), Some(_)) => Err(PathError::UnsupportedDerivativeOrder {
+            requested: 3,
+            available: 2,
+        }),
+        // Unreachable: evaluate_impl only produces the three patterns above.
+        _ => unreachable!("unexpected dq/ddq/dddq combination"),
+    }
+}
+
+/// Evaluate a user-provided third-order explicit-derivative evaluator.
+///
+/// The evaluator receives already validated/clamped path parameters. It is
+/// called once for the whole batch so custom evaluators can use their own
+/// vectorized implementation.
+fn eval_evaluator_3rd(
+    evaluator: &dyn PathEvaluator3rd,
+    path: &Path,
+    dim: usize,
+    input_eval: EvalInput,
+) -> Result<(), PathError> {
+    let (s_values, q, dq, ddq, dddq) = input_eval;
+    let s_valid = s_values
+        .iter()
+        .enumerate()
+        .map(|(j, &s)| path.validate_s(s, j))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    if evaluator.dim() != dim {
+        return Err(PathError::DimensionMismatch);
+    }
+
+    match (dq.as_deref_mut(), ddq.as_deref_mut(), dddq.as_deref_mut()) {
+        (None, None, None) => evaluator.evaluate_q(&s_valid, q),
+        (Some(dq_buf), Some(ddq_buf), None) => {
+            evaluator.evaluate_up_to_2nd(&s_valid, q, dq_buf, ddq_buf)
+        }
+        (Some(dq_buf), Some(ddq_buf), Some(dddq_buf)) => {
+            evaluator.evaluate_up_to_3rd(&s_valid, q, dq_buf, ddq_buf, dddq_buf)
+        }
+        // Unreachable: evaluate_impl only produces the three patterns above.
+        _ => unreachable!("unexpected dq/ddq/dddq combination"),
+    }
+}
+
 fn validate_range(s_min: f64, s_max: f64) -> Result<(), PathError> {
     if !s_min.is_finite() || !s_max.is_finite() || s_max <= s_min {
         return Err(PathError::InvalidRange { s_min, s_max });
@@ -425,8 +731,11 @@ fn validate_range(s_min: f64, s_max: f64) -> Result<(), PathError> {
 #[cfg(test)]
 mod tests {
     use super::PathDerivatives;
-    use crate::path::{Jet3, Path as PathModel, PathError, SplineConfig, cos, exp, sin};
-    use nalgebra::DMatrix;
+    use crate::path::{
+        Jet3, Path as PathModel, PathError, PathEvaluator2nd, PathEvaluator3rd, SplineConfig, cos,
+        exp, sin,
+    };
+    use nalgebra::{Const, DMatrix, DMatrixView, Dyn};
     use plotters::prelude::*;
     use rand::RngExt;
     use std::error::Error;
@@ -458,6 +767,87 @@ mod tests {
         )
     }
 
+    struct PolynomialEvaluator;
+    struct QuadraticEvaluator2nd;
+
+    impl PathEvaluator2nd for PolynomialEvaluator {
+        fn dim(&self) -> usize {
+            2
+        }
+
+        fn evaluate_up_to_2nd(
+            &self,
+            s: &[f64],
+            q: &mut [f64],
+            dq: &mut [f64],
+            ddq: &mut [f64],
+        ) -> Result<(), PathError> {
+            if q.len() != 2 * s.len() || dq.len() != q.len() || ddq.len() != q.len() {
+                return Err(PathError::DimensionMismatch);
+            }
+
+            for (j, &x) in s.iter().enumerate() {
+                let col = 2 * j;
+                q[col] = x * x * x;
+                dq[col] = 3.0 * x * x;
+                ddq[col] = 6.0 * x;
+
+                q[col + 1] = x * x + 1.0;
+                dq[col + 1] = 2.0 * x;
+                ddq[col + 1] = 2.0;
+            }
+            Ok(())
+        }
+    }
+
+    impl PathEvaluator3rd for PolynomialEvaluator {
+        fn evaluate_up_to_3rd(
+            &self,
+            s: &[f64],
+            q: &mut [f64],
+            dq: &mut [f64],
+            ddq: &mut [f64],
+            dddq: &mut [f64],
+        ) -> Result<(), PathError> {
+            self.evaluate_up_to_2nd(s, q, dq, ddq)?;
+            if dddq.len() != 2 * s.len() {
+                return Err(PathError::DimensionMismatch);
+            }
+
+            for j in 0..s.len() {
+                let col = 2 * j;
+                dddq[col] = 6.0;
+                dddq[col + 1] = 0.0;
+            }
+            Ok(())
+        }
+    }
+
+    impl PathEvaluator2nd for QuadraticEvaluator2nd {
+        fn dim(&self) -> usize {
+            1
+        }
+
+        fn evaluate_up_to_2nd(
+            &self,
+            s: &[f64],
+            q: &mut [f64],
+            dq: &mut [f64],
+            ddq: &mut [f64],
+        ) -> Result<(), PathError> {
+            if q.len() != s.len() || dq.len() != q.len() || ddq.len() != q.len() {
+                return Err(PathError::DimensionMismatch);
+            }
+
+            for (j, &x) in s.iter().enumerate() {
+                q[j] = x * x + 1.0;
+                dq[j] = 2.0 * x;
+                ddq[j] = 2.0;
+            }
+            Ok(())
+        }
+    }
+
     fn make_waypoints(n_pts: usize) -> DMatrix<f64> {
         let mut rng = rand::rng();
         // Random-walk waypoints: each row is one DOF, each column is a waypoint.
@@ -470,6 +860,94 @@ mod tests {
             }
         }
         waypoints
+    }
+
+    #[test]
+    fn test_waypoints_view_interpolates_padded_column_major() -> Result<(), PathError> {
+        const DIM_LOCAL: usize = 2;
+        const N_PTS: usize = 4;
+        const LEADING_DIM: usize = 3;
+        let data = [
+            0.0, 1.0, -99.0, //
+            0.5, 1.5, -99.0, //
+            1.0, 2.0, -99.0, //
+            1.5, 2.5, -99.0,
+        ];
+        let waypoints = DMatrixView::from_slice_with_strides_generic(
+            &data,
+            Dyn(DIM_LOCAL),
+            Dyn(N_PTS),
+            Const::<1>,
+            Dyn(LEADING_DIM),
+        );
+
+        let path = PathModel::from_waypoints_view(waypoints, SplineConfig::default())?;
+        let s = [0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0];
+        let out = path.evaluate_q(&s)?;
+
+        for j in 0..N_PTS {
+            assert!((out.q[(0, j)] - data[j * LEADING_DIM]).abs() < 1e-10);
+            assert!((out.q[(1, j)] - data[j * LEADING_DIM + 1]).abs() < 1e-10);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_evaluator_path_explicit_derivatives() -> Result<(), PathError> {
+        let path = PathModel::from_evaluator_3rd(PolynomialEvaluator, -1.0, 1.0)?;
+        let s = [-1.0, 0.0, 0.5];
+
+        let out = path.evaluate_up_to_3rd(&s)?;
+        let dq = out.dq.as_ref().unwrap();
+        let ddq = out.ddq.as_ref().unwrap();
+        let dddq = out.dddq.as_ref().unwrap();
+
+        for (j, &x) in s.iter().enumerate() {
+            assert!((out.q[(0, j)] - x.powi(3)).abs() < 1e-12);
+            assert!((dq[(0, j)] - 3.0 * x * x).abs() < 1e-12);
+            assert!((ddq[(0, j)] - 6.0 * x).abs() < 1e-12);
+            assert!((dddq[(0, j)] - 6.0).abs() < 1e-12);
+
+            assert!((out.q[(1, j)] - (x * x + 1.0)).abs() < 1e-12);
+            assert!((dq[(1, j)] - 2.0 * x).abs() < 1e-12);
+            assert!((ddq[(1, j)] - 2.0).abs() < 1e-12);
+            assert!(dddq[(1, j)].abs() < 1e-12);
+        }
+
+        let q_only = path.evaluate_q(&s)?;
+        assert!(q_only.dq.is_none());
+        assert!(q_only.ddq.is_none());
+        assert!(q_only.dddq.is_none());
+        assert!((q_only.q[(0, 2)] - 0.125).abs() < 1e-12);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_evaluator_path_2nd_does_not_require_3rd() -> Result<(), PathError> {
+        let path = PathModel::from_evaluator_2nd(QuadraticEvaluator2nd, -1.0, 1.0)?;
+        let s = [-1.0, 0.0, 0.5];
+
+        let out = path.evaluate_up_to_2nd(&s)?;
+        let dq = out.dq.as_ref().unwrap();
+        let ddq = out.ddq.as_ref().unwrap();
+
+        assert!(out.dddq.is_none());
+        assert!((out.q[(0, 2)] - 1.25).abs() < 1e-12);
+        assert!((dq[(0, 2)] - 1.0).abs() < 1e-12);
+        assert!((ddq[(0, 2)] - 2.0).abs() < 1e-12);
+
+        let err = path.evaluate_up_to_3rd(&s).unwrap_err();
+        match err {
+            PathError::UnsupportedDerivativeOrder {
+                requested: 3,
+                available: 2,
+            } => {}
+            other => panic!("unexpected error: {other}"),
+        }
+
+        Ok(())
     }
 
     #[test]
@@ -638,7 +1116,8 @@ mod tests {
             black_box(out.q[(0, 0)]);
         }
         let tc_eval_param = start.elapsed().as_secs_f64() * 1e3 / n_repeat as f64;
-        println!(
+        crate::verbosity_log!(
+            crate::diag::Verbosity::Summary,
             "[bench][parametric][dim=6] build={tc_build_param:.3} ms eval={tc_eval_param:.3} ms (N={n_eval})"
         );
 
@@ -656,7 +1135,8 @@ mod tests {
             }
             let tc_eval = start.elapsed().as_secs_f64() * 1e3 / n_repeat as f64;
 
-            println!(
+            crate::verbosity_log!(
+                crate::diag::Verbosity::Summary,
                 "[bench][spline][dim=6][n_pts={n_pts}] build={tc_build:.3} ms eval={tc_eval:.3} ms"
             );
         }
@@ -665,7 +1145,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "plotting"]
     fn test_plot_parametric_and_spline_derivatives() -> Result<(), Box<dyn Error>> {
         let dir = "data/path_plots";
         create_dir_all(dir)?;

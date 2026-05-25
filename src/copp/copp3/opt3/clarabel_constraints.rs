@@ -32,8 +32,8 @@ use core::f64;
 /// 6. Final nonnegative cone packing for all inequality rows added after dynamic equalities.
 ///
 /// # Logging behavior
-/// - `Debug`: emits stage-by-stage matrix/vector/cone sizes.
-/// - `Trace`: no extra output in this function yet; Trace currently inherits Debug visibility.
+/// - [`Debug`](crate::diag::Verbosity::Debug): emits stage-by-stage matrix/vector/cone sizes.
+/// - [`Trace`](crate::diag::Verbosity::Trace): no extra output in this function yet; Trace currently inherits Debug visibility.
 pub(crate) fn clarabel_standard_constraint_topp3(
     problem: &Topp3Problem,
     s: &[f64],
@@ -113,7 +113,7 @@ pub(crate) fn clarabel_standard_constraint_topp3(
 /// Upper-bound estimate: `num_val<=6*count_jerk_constraints`,
 /// `num_b<=2*count_jerk_constraints`, `num_cone<=1`.
 ///
-/// If `modify_cones=true`, a single `NonnegativeConeT` is appended for all added rows.
+/// If `modify_cones=true`, a single [`NonnegativeConeT`](clarabel::solver::SupportedConeT::NonnegativeConeT) is appended for all added rows.
 fn clarabel_3order_constraint_topp3(
     problem: &Topp3Problem,
     s: &[f64],
@@ -191,7 +191,7 @@ fn clarabel_3order_constraint_topp3(
 /// Upper-bound estimate: `num_val<=2*count_acc_constraints`,
 /// `num_b<=count_acc_constraints`, `num_cone<=1`.
 ///
-/// If `modify_cones=true`, a single `NonnegativeConeT` is appended for all added rows.
+/// If `modify_cones=true`, a single [`NonnegativeConeT`](clarabel::solver::SupportedConeT::NonnegativeConeT) is appended for all added rows.
 fn clarabel_2order_constraint_topp3(
     problem: &Topp3Problem,
     s: &[f64],
@@ -233,7 +233,7 @@ fn clarabel_2order_constraint_topp3(
 ///
 /// Returns `false` when stationary-endpoint bounds are infeasible.
 ///
-/// If `modify_cones=true`, a single `NonnegativeConeT` is appended for all added rows.
+/// If `modify_cones=true`, a single [`NonnegativeConeT`](clarabel::solver::SupportedConeT::NonnegativeConeT) is appended for all added rows.
 fn clarabel_1order_constraint_topp3(
     problem: &Topp3Problem,
     s: &[f64],
@@ -322,13 +322,6 @@ fn clarabel_1order_constraint_topp3(
     col.extend(amax_constraint.iter().map(|(col_, _)| *col_));
     val.resize(val.len() + amax_constraint.len(), 1.0);
     b.extend(amax_constraint.iter().map(|(_, b_)| *b_));
-    // clarabel_1order_constraint_topp2(
-    //     constraints,
-    //     idx_s_start + num_stationary.0,
-    //     n - num_stationary.0 - num_stationary.1,
-    //     (row, col, val, b, cones),
-    //     false,
-    // );
 
     if modify_cones {
         cones.push(NonnegativeConeT(b.len() - n_b_old));
@@ -340,7 +333,7 @@ fn clarabel_1order_constraint_topp3(
 ///
 /// Upper-bound estimate: `num_val==4`, `num_b==4`, `num_cone<=1`.
 ///
-/// If `modify_cones=true`, appends `ZeroConeT(4)` for the newly added rows.
+/// If `modify_cones=true`, appends [`ZeroConeT`](clarabel::solver::SupportedConeT::ZeroConeT) for the newly added rows.
 fn clarabel_boundary_constraint_topp3(
     n: usize,
     a_boundary: (f64, f64),
@@ -366,7 +359,7 @@ fn clarabel_boundary_constraint_topp3(
 ///
 /// Upper-bound estimate: `num_val<=4*n`, `num_b<=n`, `num_cone<=1`.
 ///
-/// If `modify_cones=true`, appends one `ZeroConeT` that covers all rows added by this routine.
+/// If `modify_cones=true`, appends one [`ZeroConeT`](clarabel::solver::SupportedConeT::ZeroConeT) that covers all rows added by this routine.
 fn clarabel_dynamic_constraint_topp3(
     s: &[f64],
     num_stationary: (usize, usize),

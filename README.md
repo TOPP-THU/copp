@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## <font color="#C00000">C</font>onvex-<font color="#C00000">O</font>bjective <font color="#C00000">P</font>ath <font color="#C00000">P</font>arameterization (Rust)
+## <font color="#C00000">C</font>onvex-<font color="#C00000">O</font>bjective <font color="#C00000">P</font>ath <font color="#C00000">P</font>arameterization (Rust/C)
 
 This library targets **Optimal Path Parameterization (OPP)** for robotic trajectory generation. Typical application domains include robotic motion planning and CNC machining.
 
@@ -37,7 +37,7 @@ The resulting taxonomy is summarized below.
 
 ## Algorithm availability
 
-This section focuses on open-source algorithms. If you need the best possible performance for difficult large-scale problems, please see [Pro](#pro).
+This section focuses on open-source algorithms. If you need the best possible performance for difficult large-scale problems, please see [PRO](#pro).
 
 | Problem class | Algorithm  | Notes                                                                                                                                                                        |
 | ------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -52,9 +52,9 @@ This section focuses on open-source algorithms. If you need the best possible pe
 | Scenario / primary priority                               | Recommended algorithm                                               | Why this is recommended                                                             | Typical caveat                                         | Alternative                                             |
 | --------------------------------------------------------- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------ | ------------------------------------------------------- |
 | 2nd-order, time-optimal planning with very low runtime    | TOPP2-RA                                                            | Excellent speed-performance trade-off; near-global-optimal in benchmarks            | Objective is fixed to minimum-time style               |                                                         |
-| 2nd-order, convex objective with strong global guarantees | COPP2-SOCP                                                          | Convex conic formulation with global optimality under model assumptions             | Higher runtime than RA-style methods                   | See [Pro](#pro) for higher-performance solvers          |
-| 3rd-order, best open-source optimality quality            | TOPP3-SOCP (time objective) / COPP3-SOCP (general convex objective) | Strong KKT-quality solutions and broad applicability                                | On specific datasets, computational cost may be higher | TOPP3-LP or higher-performance solvers in [Pro](#pro)   |
-| 3rd-order, faster open-source approximation               | TOPP3-LP                                                            | Use this only when your own path-dataset benchmark shows better runtime/performance | May become sub-optimal under tight jerk bounds         | TOPP3-SOCP or higher-performance solvers in [Pro](#pro) |
+| 2nd-order, convex objective with strong global guarantees | COPP2-SOCP                                                          | Convex conic formulation with global optimality under model assumptions             | Higher runtime than RA-style methods                   | See [PRO](#pro) for higher-performance solvers          |
+| 3rd-order, best open-source optimality quality            | TOPP3-SOCP (time objective) / COPP3-SOCP (general convex objective) | Strong KKT-quality solutions and broad applicability                                | On specific datasets, computational cost may be higher | TOPP3-LP or higher-performance solvers in [PRO](#pro)   |
+| 3rd-order, faster open-source approximation               | TOPP3-LP                                                            | Use this only when your own path-dataset benchmark shows better runtime/performance | May become sub-optimal under tight jerk bounds         | TOPP3-SOCP or higher-performance solvers in [PRO](#pro) |
 
 ### Benchmark
 
@@ -113,6 +113,17 @@ If your work uses the open-source TOPP3/COPP3 functionalities, please cite:
 }
 ```
 
+If your work uses RDDP methods from the PRO release, please cite:
+
+```tex
+@article{wang2026reachability,
+  title={Reachability-augmented dual dynamic programming for optimal path parameterization},
+  author={Wang, Yunan and Yan, Jizhou and Hu, Chuxiong and Li, Zeyang},
+  journal={arXiv preprint arXiv:2605.19089},
+  year={2026}
+}
+```
+
 For other use cases, please cite:
 
 ```tex
@@ -130,13 +141,34 @@ For other use cases, please cite:
 ### General workflow
 
 + **Inputs**
-    + path grid $0=s_0<s_1<\dots<s_N=s_\text{f}$;
-    + path information on the grid (via analytical expressions or sampled values of $\boldsymbol{q}$, $\frac{\mathrm{d}\boldsymbol{q}}{\mathrm{d}s}$, $\frac{\mathrm{d}^2\boldsymbol{q}}{\mathrm{d}s^2}$, and for 3rd-order problems additionally $\frac{\mathrm{d}^3\boldsymbol{q}}{\mathrm{d}s^3}$);
-    + constraint forms and bounds, e.g., standard APIs such as `with_axial_velocity`, `with_axial_acceleration`, `with_axial_torque` (plus `with_axial_jerk` for 3rd-order), or more general custom forms. Asymmetric and non-constant limits are supported;
-    + for COPP, an objective specification (standard terms or linear combinations, e.g., `Time`, `ThermalEnergy`, `TotalVariationTorque`, `Linear`). In COPP-Pro, user-defined objectives are also supported through trait-based interfaces (algorithm-dependent information such as values and derivatives).
-+ **Outputs**
-    + the optimal timing map $t=t(s)$, including total traversal time $t_\text{f}$ and grid arrival times $t_k=t(s_k)$;
-    + the inverse time parameterization $s=s(t)$, together with interpolation results for user-defined sampling times $\lbrace t_i\rbrace_{i=0}^{I}$, producing $s_i=s(t_i)$ and positions $\boldsymbol{q}(s(t_i))$. These interpolated position/velocity/acceleration references can be streamed to low-level servo controllers in practical deployment.
+    + path grid: prepare a strictly increasing station grid $0=s_0<s_1<\dots<s_{n-1}=s_\text{f}$;
+    + path data: provide path derivatives through `Path` evaluators or sampled matrices. 2nd-order problems use $\boldsymbol{q}$, $\frac{\mathrm{d}\boldsymbol{q}}{\mathrm{d}s}$, and $\frac{\mathrm{d}^2\boldsymbol{q}}{\mathrm{d}s^2}$; 3rd-order problems additionally use $\frac{\mathrm{d}^3\boldsymbol{q}}{\mathrm{d}s^3}$;
+    + robot and constraints: create a `Robot`, attach the station grid with `with_s`, then fill path data with `with_q_from_path_2nd` or `with_q_from_path_3rd`. Standard constraint APIs include `with_axial_velocity`, `with_axial_acceleration`, `with_axial_torque`, and `with_axial_jerk` for 3rd-order problems. Asymmetric and station-dependent limits are supported;
+    + objective: TOPP solvers use traversal time as the objective. COPP solvers take a list of built-in `CoppObjective` terms, such as `CoppObjective::Time`, `CoppObjective::ThermalEnergy`, `CoppObjective::TotalVariationTorque`, and `CoppObjective::Linear`.
++ **Problem construction**
+    + 2nd-order: build a `Topp2Problem` or `Copp2Problem` with `Topp2ProblemBuilder` or `Copp2ProblemBuilder`;
+    + 3rd-order: first prepare a feasible linearization profile `a_linearization`, commonly from `topp2_ra`. Optionally use `robot.constraints.amax_substitute(...)` to tighten the first-order upper bound. Then build the problem with `Topp3ProblemBuilder::build_with_linearization` or `Copp3ProblemBuilder::build_with_linearization`.
++ **Solving**
+    + choose the solver namespace according to the problem class and algorithm, for example `solver::topp2_ra`, `solver::copp2_socp`, `solver::topp3_lp`, `solver::topp3_socp`, or `solver::copp3_socp`;
+    + build solver options with the corresponding options builder, then call the solver function.
++ **Outputs and post-processing**
+    + 2nd-order solvers return an `a` profile, where $a(s)=\dot{s}^2$;
+    + 3rd-order solvers return a `Topp3Profile`, containing `a`, `b`, and stationary-boundary metadata;
+    + convert path-domain profiles to timing data with `s_to_t_topp2` or `s_to_t_topp3`. For a `Topp3Profile`, pass `profile.as_parts()`;
+    + convert timing data to sampled inverse parameterization `s(t)` with `t_to_s_topp2` or `t_to_s_topp3`;
+    + evaluate the original path at `s(t)` to generate position, velocity, and acceleration references for downstream controllers.
+
+### Documentation
+
+The latest documentation for the published crate is available at <https://docs.rs/copp/latest/copp/>. For unreleased updates on the main branch, we recommend generating the documentation locally:
+
+```shell
+git clone https://github.com/TOPP-THU/copp.git
+cd ./copp
+cargo doc --no-deps --open
+```
+
+The generated docs include mathematical foundations, path/constraint construction methods, logging and output conventions, error definitions, and solver interfaces.
 
 ### Rust
 
@@ -147,10 +179,13 @@ To use the Rust API, add the crate dependency in your Cargo manifest:
 copp = "*"
 ```
 
-Complete runnable examples are available in [the examples directory](./examples/). A [quick example](./examples/topp2_ra.rs) is as follows:
+Complete runnable examples are available in [the examples directory](./examples/). A [quick example (2nd-order)](./examples/topp2_ra.rs) is as follows:
 
 ```rust
-use std::f64::consts::PI;
+//! This example uses [`topp2_ra`] to convert an analytic path into a second-order
+//! time-optimal trajectory whose axial velocity and acceleration both stay within
+//! `[-1, 1]`.
+
 use copp::InterpolationMode;
 use copp::diag::CoppError;
 use copp::path::{Jet3, Path, sin};
@@ -158,6 +193,7 @@ use copp::robot::Robot;
 use copp::solver::topp2_ra::{
     ReachSet2OptionsBuilder, Topp2ProblemBuilder, s_to_t_topp2, t_to_s_topp2, topp2_ra,
 };
+use std::f64::consts::PI;
 
 fn main() -> Result<(), CoppError> {
     // 1) Deterministic 3-axis Lissajous path q(s), s in [0, 1]
@@ -176,27 +212,21 @@ fn main() -> Result<(), CoppError> {
     // `n` is the number of path samples (s_i) to build robot constraints on.
     let n = 1001;
     let s: Vec<f64> = (0..n).map(|j| j as f64 / (n - 1) as f64).collect();
-    let derivs = path.evaluate_up_to_2nd(&s)?;
 
-    // 2) Build robot constraints (3-axis), then apply symmetric limits v/a = 1
+    // 2) Build robot constraints (3-axis), then apply symmetric limits vel/acc = 1
     const DIM: usize = 3;
     let mut robot = Robot::with_capacity(DIM, n);
-    robot.with_s(s.as_slice())?;
-    robot.with_q(
-        &derivs.q.as_view(),
-        &derivs.dq.as_ref().unwrap().as_view(),
-        &derivs.ddq.as_ref().unwrap().as_view(),
-        None,
-        0,
-    )?;
-    // The axial velocity is -1 <= v <= 1 for each axis in this example
+    // The axial velocity is -1 <= vel <= 1 for each axis in this example
     let vel_max = vec![1.0; DIM];
     let vel_min = vec![-1.0; DIM];
-    robot.with_axial_velocity((vel_max.as_slice(), n), (vel_min.as_slice(), n), 0)?;
-    // The axial acceleration is -1 <= a <= 1 for each axis in this example.
+    // The axial acceleration is -1 <= acc <= 1 for each axis in this example.
     let acc_max = vec![1.0; DIM];
     let acc_min = vec![-1.0; DIM];
-    robot.with_axial_acceleration((acc_max.as_slice(), n), (acc_min.as_slice(), n), 0)?;
+    robot
+        .with_s(s.as_slice())?
+        .with_q_from_path_2nd(&path, 0, n)?
+        .with_axial_velocity((vel_max.as_slice(), n), (vel_min.as_slice(), n), 0)?
+        .with_axial_acceleration((acc_max.as_slice(), n), (acc_min.as_slice(), n), 0)?;
 
     // 3) Solve TOPP2-RA
     let idx_s_interval = (0, n - 1); // 0 <= k <= n-1
@@ -206,10 +236,10 @@ fn main() -> Result<(), CoppError> {
 
     let a_ra = topp2_ra(&problem, &options)?;
 
-    // 4) Post-process TOPP2-RA results: a(s) -> -> t(s) -> s(t)
+    // 4) Post-process TOPP2-RA results: a(s) -> t(s) -> s(t)
     // t_final is the traversal time of the path.
     // t_s[i] is the time at which the path parameter s_i is reached.
-    let (t_final, t_s) = s_to_t_topp2(&s, &a_ra, 0.0);
+    let (t_final, t_s) = s_to_t_topp2(&s, &a_ra, 0.0)?;
     // s_t is a uniform time grid of s(t) with dt = 1e-3s. This is useful for plotting and downstream control.
     let dt = 1e-3;
     let s_t = t_to_s_topp2(
@@ -217,7 +247,7 @@ fn main() -> Result<(), CoppError> {
         &a_ra,
         &t_s,
         InterpolationMode::UniformTimeGrid(0.0, dt, true),
-    );
+    )?;
 
     // 5) Print some results. More detailed results and plots can be achieved by the user.
     println!("TOPP2-RA done.");
@@ -230,48 +260,41 @@ fn main() -> Result<(), CoppError> {
 }
 ```
 
-Comprehensive API documentation is also available. The generated docs include mathematical foundations, path/constraint construction methods, logging and output conventions, error definitions, and solver interfaces. You can generate and view the documentation locally with:
+### API for Other languages
 
-```shell
-git clone https://github.com/TOPP-THU/copp.git
-cd ./copp
-cargo doc --no-deps
-```
+- C: Please refer to [README.md for C](./bindings/c/README.md).
+- Bindings for other languages are under active development. Planned targets include C++, Python, and MATLAB. If you have suggestions for these language interfaces, please feel free to [contact us](#contact-us).
 
-### Other languages
+## PRO
 
-Bindings for other languages are under active development. Planned targets include C, C++, Python, and MATLAB. If you have suggestions for these language interfaces, please feel free to [contact us](#contact-us).
+### Open-source vs <font color="#C00000">**PRO**</font>
 
-## Pro
-
-### Open-source vs <font color="#C00000">**Pro**</font>
-
-The open-source release and Pro release provide complementary solvers for the above problem classes. Performance evaluations for each method are documented in the corresponding Rust test/example source files and summarized below. For challenging third-order trajectory-planning tasks that require both high solution quality and robust numerical behavior, we recommend the Pro solvers. If you are interested in COPP-Pro licensing or collaboration, please see [Contact Us](#contact-us).
+The open-source release and PRO release provide complementary solvers for the above problem classes. Performance evaluations for each method are documented in the corresponding Rust test/example source files and summarized below. For challenging trajectory-planning tasks that require both high solution quality and robust numerical behavior, we recommend the PRO solvers. If you are interested in COPP PRO licensing or collaboration, please see [Contact Us](#contact-us).
 
 | Problem class | Algorithm  | Availability                         | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | ------------- | ---------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | TOPP2         | TOPP2-RA   | Open-source                          | Ultra-fast reachability-analysis-based method; near-global-optimal in common benchmarks, with relative error typically below $10^{-4}$ versus global optimization baselines.                                                                                                                                                                                                                                                                                                                                                                |
 | COPP2         | COPP2-SOCP | Open-source                          | Solved as an SOCP using `clarabel`; globally optimal under the convex formulation, with moderate-to-high runtime cost.                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| COPP2         | COPP2-ARDP | <font color="#C00000">**Pro**</font> | Ultra-fast original method; globally optimal and substantially faster than COPP2-SOCP.                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| COPP2         | COPP2-RDDP | <font color="#C00000">**PRO**</font> | Ultra-fast original method; globally optimal and substantially faster than COPP2-SOCP.                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | TOPP3         | TOPP3-SOCP | Open-source                          | `clarabel`-based conic formulation; returns KKT solutions with strong optimality quality, and may incur higher computational cost on specific datasets.                                                                                                                                                                                                                                                                                                                                                                                     |
 | TOPP3         | TOPP3-LP   | Open-source                          | Linear-objective approximation of TOPP3-SOCP; usually faster, but can become sub-optimal under tight jerk constraints (recommended mainly when jerk bounds are loose).                                                                                                                                                                                                                                                                                                                                                                      |
-| TOPP3         | TOPP3-RA   | <font color="#C00000">**Pro**</font> | Ultra-fast reachability-analysis-based method; may be sub-optimal under tight jerk constraints (recommended mainly when jerk bounds are loose).                                                                                                                                                                                                                                                                                                                                                                                             |
+| TOPP3         | TOPP3-RA   | <font color="#C00000">**PRO**</font> | Ultra-fast reachability-analysis-based method; may be sub-optimal under tight jerk constraints (recommended mainly when jerk bounds are loose).                                                                                                                                                                                                                                                                                                                                                                                             |
 | COPP3         | COPP3-SOCP | Open-source                          | `clarabel`-based conic formulation; returns KKT solutions with strong practical optimality, at relatively high computational cost.                                                                                                                                                                                                                                                                                                                                                                                                          |
-| COPP3         | COPP3-ARDP | <font color="#C00000">**Pro**</font> | Fast original method; returns KKT-quality solutions comparable to TOPP3-SOCP while running substantially faster than TOPP3-SOCP, TOPP3-LP, and COPP3-SOCP. COPP3-ARDP can also be used as a TOPP3 solver, with significantly better time-optimality than TOPP3-RA and TOPP3-LP in many cases. For very long paths, COPP3-ARDP may even exhibit better practical optimality and numerical stability than COPP3-SOCP, since large-scale conic optimization can become limited by convergence behavior and computational-resource constraints. |
+| COPP3         | COPP3-RDDP | <font color="#C00000">**PRO**</font> | Fast original method; returns KKT-quality solutions comparable to TOPP3-SOCP while running substantially faster than TOPP3-SOCP, TOPP3-LP, and COPP3-SOCP. COPP3-RDDP can also be used as a TOPP3 solver, with significantly better time-optimality than TOPP3-RA and TOPP3-LP in many cases. For very long paths, COPP3-RDDP may even exhibit better practical optimality and numerical stability than COPP3-SOCP, since large-scale conic optimization can become limited by convergence behavior and computational-resource constraints. |
 
 ### Algorithm Selection Guide
 
 | Scenario / primary priority                                                | Recommended algorithm                                               | Availability                         | Why this is recommended                                                                           | Typical caveat                                         | Alternative                            |
 | -------------------------------------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------ | -------------------------------------- |
 | 2nd-order, time-optimal planning with very low runtime                     | TOPP2-RA                                                            | Open-source                          | Excellent speed-performance trade-off; near-global-optimal in typical benchmarks                  | Objective is fixed to minimum-time style               |                                        |
-| 2nd-order, convex objective with strong global guarantees                  | COPP2-SOCP                                                          | Open-source                          | Convex conic formulation with global optimality under model assumptions                           | Higher runtime than RA/ARDP methods                    | COPP2-ARDP (Pro) for major speed gains |
-| 2nd-order, convex objective with maximum efficiency                        | COPP2-ARDP                                                          | <font color="#C00000">**Pro**</font> | Global-optimal quality with substantially improved speed                                          | Pro license required                                   | COPP2-SOCP (Open-source)               |
-| 3rd-order, best open-source optimality quality                             | TOPP3-SOCP (time objective) / COPP3-SOCP (general convex objective) | Open-source                          | Strong KKT-quality solutions and broad applicability                                              | On specific datasets, computational cost may be higher | COPP3-ARDP (Pro) for major speed gains |
-| 3rd-order, faster open-source approximation                                | TOPP3-LP                                                            | Open-source                          | Use this only when your own path-dataset benchmark shows better runtime/performance               | May become sub-optimal under tight jerk bounds         | COPP3-ARDP (Pro) for major speed gains |
-| 3rd-order, ultra-fast RA-style method under loose jerk bounds              | TOPP3-RA                                                            | <font color="#C00000">**Pro**</font> | Very low computational cost                                                                       | Can be sub-optimal when jerk constraints are tight     | COPP3-ARDP or TOPP3-SOCP               |
-| 3rd-order, high-quality + high-stability planning for difficult long paths | COPP3-ARDP                                                          | <font color="#C00000">**Pro**</font> | Strong practical optimality with significantly better runtime; often robust on very long horizons | Pro license required                                   | COPP3-SOCP (Open-source)               |
+| 2nd-order, convex objective with strong global guarantees                  | COPP2-SOCP                                                          | Open-source                          | Convex conic formulation with global optimality under model assumptions                           | Higher runtime than RA/RDDP methods                    | COPP2-RDDP (PRO) for major speed gains |
+| 2nd-order, convex objective with maximum efficiency                        | COPP2-RDDP                                                          | <font color="#C00000">**PRO**</font> | Global-optimal quality with substantially improved speed                                          | PRO license required                                   | COPP2-SOCP (Open-source)               |
+| 3rd-order, best open-source optimality quality                             | TOPP3-SOCP (time objective) / COPP3-SOCP (general convex objective) | Open-source                          | Strong KKT-quality solutions and broad applicability                                              | On specific datasets, computational cost may be higher | COPP3-RDDP (PRO) for major speed gains |
+| 3rd-order, faster open-source approximation                                | TOPP3-LP                                                            | Open-source                          | Use this only when your own path-dataset benchmark shows better runtime/performance               | May become sub-optimal under tight jerk bounds         | COPP3-RDDP (PRO) for major speed gains |
+| 3rd-order, ultra-fast RA-style method under loose jerk bounds              | TOPP3-RA                                                            | <font color="#C00000">**PRO**</font> | Very low computational cost                                                                       | Can be sub-optimal when jerk constraints are tight     | COPP3-RDDP or TOPP3-SOCP               |
+| 3rd-order, high-quality + high-stability planning for difficult long paths | COPP3-RDDP                                                          | <font color="#C00000">**PRO**</font> | Strong practical optimality with significantly better runtime; often robust on very long horizons | PRO license required                                   | COPP3-SOCP (Open-source)               |
 
-### Benchmark-Pro
+### Benchmark-PRO
 
 All settings are the same as those in [benchmark](#benchmark).
 
@@ -283,7 +306,7 @@ All metrics are listed in the form of "mean ± std".
 | ------------------------------------------------------- | -----------------------: | -----------------------: |
 | TOPP2-RA                                                |      0.615425 ± 0.244409 |     40.903420 ± 1.378671 |
 | COPP2-SOCP                                              |    149.969964 ± 9.364334 |     40.900039 ± 1.378613 |
-| <font color="#C00000">**COPP2-ARDP**</font>             |  **5.436142** ± 0.465495 | **40.900135** ± 1.378613 |
+| <font color="#C00000">**COPP2-RDDP**</font>             |  **5.436142** ± 0.465495 | **40.900135** ± 1.378613 |
 | TOPP3-LP                                                |   327.074029 ± 28.893341 |     41.422945 ± 1.381874 |
 | TOPP3-SOCP                                              |   289.654071 ± 12.862133 |     41.418608 ± 1.381202 |
 | COPP3-SOCP                                              |   285.004302 ± 13.471264 |     41.418608 ± 1.381202 |
@@ -298,19 +321,19 @@ In this test, TOPP methods still use traversal time as the optimization objectiv
 | ------------------------------------------- | -----------------------: | -----------------------: |
 | TOPP2-RA                                    |      0.534700 ± 0.069296 |   217.444861 ± 12.462360 |
 | COPP2-SOCP                                  |   270.059250 ± 52.073677 |     96.517354 ± 3.641154 |
-| <font color="#C00000">**COPP2-ARDP**</font> | **12.667700** ± 0.429214 | **96.525785** ± 3.639733 |
+| <font color="#C00000">**COPP2-RDDP**</font> | **12.667700** ± 0.429214 | **96.525785** ± 3.639733 |
 | TOPP3-LP                                    |    348.000000 ± 9.326314 |   211.611085 ± 12.367224 |
 | TOPP3-SOCP                                  |   301.227000 ± 12.938498 |   211.974066 ± 12.323865 |
 | COPP3-SOCP                                  |   301.227000 ± 12.938498 |     96.634962 ± 3.613264 |
-| <font color="#C00000">**COPP3-ARDP**</font> | **65.823050** ± 0.087893 | **98.708998** ± 3.354004 |
+| <font color="#C00000">**COPP3-RDDP**</font> | **65.823050** ± 0.087893 | **98.708998** ± 3.354004 |
 
 ## Contact Us
 
-For COPP-Pro licensing, commercial collaboration, or technical consulting, please contact:
+For COPP PRO licensing, commercial collaboration, or technical consulting, please contact:
 
 + [Mr. Yunan Wang](https://scholar.google.com/citations?user=RXaTo_kAAAAJ): wang-yn22@mails.tsinghua.edu.cn
 + [Dr. Suqin He](https://github.com/hsqthu2012): hsq_thu2012@163.com
 + [Dr. Shize Lin](https://github.com/thume4zzzz): linszthume@gmail.com
 + [Prof. Chuxiong Hu](https://www.me.tsinghua.edu.cn/en/info/1275/2062.htm): cxhu@tsinghua.edu.cn
 
-Furthermore, we thank [Jizhou Yan](https://github.com/yixing312) for his expertise on Rust.
+Furthermore, we thank [Jizhou Yan](https://github.com/yixing312) for his expertise on Rust and robotics.

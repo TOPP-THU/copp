@@ -1,17 +1,21 @@
 //! Third-order forward-mode automatic differentiation primitives.
 //!
-//! `Jet3` carries value and derivatives up to the 3rd order with respect
+//! [`Jet3`] carries value and derivatives up to the 3rd order with respect
 //! to a single scalar seed variable, and supports common arithmetic plus
-//! elementary functions (`sin`, `cos`, `exp`, `ln`, `sqrt`, `powi`).
+//! elementary functions ([`sin`], [`cos`], [`exp`], [`ln`], [`sqrt`], [`powi`]).
 
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
 /// Third-order forward-mode automatic differentiation scalar.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Jet3 {
+    /// Function value.
     pub v: f64,
+    /// First derivative with respect to the seed variable.
     pub d1: f64,
+    /// Second derivative with respect to the seed variable.
     pub d2: f64,
+    /// Third derivative with respect to the seed variable.
     pub d3: f64,
 }
 
@@ -38,6 +42,7 @@ impl Jet3 {
         }
     }
 
+    /// Apply sine and propagate derivatives up to third order.
     #[inline(always)]
     pub fn sin(self) -> Self {
         let sv = self.v.sin();
@@ -49,6 +54,7 @@ impl Jet3 {
         Self { v: sv, d1, d2, d3 }
     }
 
+    /// Apply cosine and propagate derivatives up to third order.
     #[inline(always)]
     pub fn cos(self) -> Self {
         let sv = self.v.sin();
@@ -60,6 +66,7 @@ impl Jet3 {
         Self { v: cv, d1, d2, d3 }
     }
 
+    /// Apply exponential and propagate derivatives up to third order.
     #[inline(always)]
     pub fn exp(self) -> Self {
         let ev = self.v.exp();
@@ -70,6 +77,7 @@ impl Jet3 {
         Self { v: ev, d1, d2, d3 }
     }
 
+    /// Apply natural logarithm and propagate derivatives up to third order.
     #[inline(always)]
     pub fn ln(self) -> Self {
         let v = self.v.ln();
@@ -83,6 +91,9 @@ impl Jet3 {
         Self { v, d1, d2, d3 }
     }
 
+    /// Apply square root and propagate derivatives up to third order.
+    ///
+    /// The value component should be positive for finite real derivatives.
     #[inline(always)]
     pub fn sqrt(self) -> Self {
         let sqrtv = self.v.sqrt();
@@ -102,6 +113,7 @@ impl Jet3 {
         }
     }
 
+    /// Raise the value to an integer power and propagate derivatives.
     #[inline(always)]
     pub fn powi(self, n: i32) -> Self {
         if n == 0 {
@@ -140,31 +152,37 @@ impl Jet3 {
     }
 }
 
+/// Function-style wrapper for [`Jet3::sin`].
 #[inline(always)]
 pub fn sin(x: Jet3) -> Jet3 {
     x.sin()
 }
 
+/// Function-style wrapper for [`Jet3::cos`].
 #[inline(always)]
 pub fn cos(x: Jet3) -> Jet3 {
     x.cos()
 }
 
+/// Function-style wrapper for [`Jet3::exp`].
 #[inline(always)]
 pub fn exp(x: Jet3) -> Jet3 {
     x.exp()
 }
 
+/// Function-style wrapper for [`Jet3::ln`].
 #[inline(always)]
 pub fn ln(x: Jet3) -> Jet3 {
     x.ln()
 }
 
+/// Function-style wrapper for [`Jet3::sqrt`].
 #[inline(always)]
 pub fn sqrt(x: Jet3) -> Jet3 {
     x.sqrt()
 }
 
+/// Function-style wrapper for [`Jet3::powi`].
 #[inline(always)]
 pub fn powi(x: Jet3, n: i32) -> Jet3 {
     x.powi(n)

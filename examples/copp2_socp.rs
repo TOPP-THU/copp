@@ -29,31 +29,25 @@ fn main() -> Result<(), CoppError> {
     // `n` is the number of path samples (s_i) to build robot constraints on.
     let n = 1001;
     let s: Vec<f64> = (0..n).map(|j| j as f64 / (n - 1) as f64).collect();
-    let derivs = path.evaluate_up_to_2nd(&s)?;
 
-    // 2) Build robot constraints (3-axis), then apply symmetric limits v/a = 1
+    // 2) Build robot constraints (3-axis), then apply symmetric limits vel/acc = 1
     const DIM: usize = 3;
     let mut robot = Robot::with_capacity(DIM, n);
-    robot.with_s(s.as_slice())?;
-    robot.with_q(
-        &derivs.q.as_view(),
-        &derivs.dq.as_ref().unwrap().as_view(),
-        &derivs.ddq.as_ref().unwrap().as_view(),
-        None,
-        0,
-    )?;
-    // The axial velocity is -1 <= v <= 1 for each axis in this example
+    // The axial velocity is -1 <= vel <= 1 for each axis in this example
     let vel_max = vec![1.0; DIM];
     let vel_min = vec![-1.0; DIM];
-    robot.with_axial_velocity((vel_max.as_slice(), n), (vel_min.as_slice(), n), 0)?;
-    // The axial acceleration is -1 <= a <= 1 for each axis in this example.
+    // The axial acceleration is -1 <= acc <= 1 for each axis in this example.
     let acc_max = vec![1.0; DIM];
     let acc_min = vec![-1.0; DIM];
-    robot.with_axial_acceleration((acc_max.as_slice(), n), (acc_min.as_slice(), n), 0)?;
+    robot
+        .with_s(s.as_slice())?
+        .with_q_from_path_2nd(&path, 0, n)?
+        .with_axial_velocity((vel_max.as_slice(), n), (vel_min.as_slice(), n), 0)?
+        .with_axial_acceleration((acc_max.as_slice(), n), (acc_min.as_slice(), n), 0)?;
 
     // 3) Build COPP2 problem and solve COPP2-SOCP (Clarabel backend)
-    // Here we use a objective: 1.0 * time + 0.1 * thermal energy.
-    // The torque `tau` is represented by the acceleration `ddq` in this example since we use `usize` as a trivial robot model (`tau = ddq`).
+    // Here we use a hybrid objective: 1.0 * time + 0.1 * thermal energy.
+    // We use `usize` as a trivial point-mass robot model (inverse dynamics: `tau = ddq`) in this example.
     // The user should replace this with their real robot model where traits `RobotBasic` and `RobotTorque` are implemented.
     let objectives = [
         CoppObjective::Time(1.0),
@@ -72,7 +66,7 @@ fn main() -> Result<(), CoppError> {
     // 4) Post-process COPP2-SOCP results: a(s) -> t(s) -> s(t)
     // t_final is the traversal time of the path.
     // t_s[i] is the time at which the path parameter s_i is reached.
-    let (t_final, t_s) = s_to_t_topp2(&s, &a_socp, 0.0);
+    let (t_final, t_s) = s_to_t_topp2(&s, &a_socp, 0.0)?;
     // s_t is a uniform time grid of s(t) with dt = 1e-3s. This is useful for plotting and downstream control.
     let dt = 1e-3;
     let s_t = t_to_s_topp2(
@@ -80,7 +74,7 @@ fn main() -> Result<(), CoppError> {
         &a_socp,
         &t_s,
         InterpolationMode::UniformTimeGrid(0.0, dt, true),
-    );
+    )?;
 
     // 5) Print some results. More detailed results and plots can be achieved by the user.
     println!("COPP2-SOCP done.");

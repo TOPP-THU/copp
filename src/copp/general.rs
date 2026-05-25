@@ -71,8 +71,11 @@ pub(crate) enum ApproxOrdering {
 /// A non-negative scalar used as symmetric comparison band around zero for
 /// `dx = x1 - x2`.
 ///
+/// # Naming note
+/// Function name keeps historical spelling (`threhold_approx`) for API
+/// compatibility.
 #[inline(always)]
-pub(crate) fn threshold_approx(x1: f64, x2: f64, abs_tol: f64, rel_tol: f64) -> f64 {
+pub(crate) fn threhold_approx(x1: f64, x2: f64, abs_tol: f64, rel_tol: f64) -> f64 {
     abs_tol.max(rel_tol * x1.abs().max(x2.abs()))
 }
 
@@ -80,7 +83,7 @@ pub(crate) fn threshold_approx(x1: f64, x2: f64, abs_tol: f64, rel_tol: f64) -> 
 ///
 /// # Decision rule
 /// Let `dx = x1 - x2` and
-/// `threshold = threshold_approx(x1, x2, abs_tol, rel_tol)`.
+/// `threshold = threhold_approx(x1, x2, abs_tol, rel_tol)`.
 ///
 /// - return [`ApproxOrdering::Greater`] if `dx > threshold`;
 /// - return [`ApproxOrdering::Less`] if `dx < -threshold`;
@@ -95,7 +98,7 @@ pub(crate) fn threshold_approx(x1: f64, x2: f64, abs_tol: f64, rel_tol: f64) -> 
 /// Tolerance-aware ordering relation between `x1` and `x2`.
 #[inline(always)]
 pub(crate) fn approx_order(x1: f64, x2: f64, abs_tol: f64, rel_tol: f64) -> ApproxOrdering {
-    let threshold = threshold_approx(x1, x2, abs_tol, rel_tol);
+    let threshold = threhold_approx(x1, x2, abs_tol, rel_tol);
     let dx = x1 - x2;
     if dx > threshold {
         ApproxOrdering::Greater

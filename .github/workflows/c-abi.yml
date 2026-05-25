@@ -1,0 +1,242 @@
+name: C ABI
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: c-abi-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-C target-cpu=generic"
+
+jobs:
+  build-package:
+    name: ${{ matrix.platform }} / ${{ matrix.link }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-x86_64-gnu
+            link: dynamic
+            static_flag: OFF
+          - os: ubuntu-24.04
+            platform: linux-x86_64-gnu
+            link: static
+            static_flag: ON
+          - os: windows-2022
+            platform: windows-x86_64-msvc
+            link: dynamic
+            static_flag: OFF
+          - os: windows-2022
+            platform: windows-x86_64-msvc
+            link: static
+            static_flag: ON
+          - os: macos-15
+            platform: macos-aarch64
+            link: dynamic
+            static_flag: OFF
+          - os: macos-15
+            platform: macos-aarch64
+            link: static
+            static_flag: ON
+          - os: macos-15-intel
+            platform: macos-x86_64
+            link: dynamic
+            static_flag: OFF
+          - os: macos-15-intel
+            platform: macos-x86_64
+            link: static
+            static_flag: ON
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare package metadata
+        shell: pwsh
+        run: |
+          $refName = "${{ github.ref_name }}"
+          if ("${{ github.event_name }}" -eq "pull_request") {
+            $refName = "pr-${{ github.event.pull_request.number }}"
+          }
+          $safeRefName = $refName -replace '[^A-Za-z0-9._-]', '-'
+          "COPP_PACKAGE_NAME=copp-c-$safeRefName-${{ matrix.platform }}-${{ matrix.link }}" >> $env:GITHUB_ENV
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libfontconfig1-dev
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: c-abi-${{ matrix.platform }}-${{ matrix.link }}
+
+      - name: Install cbindgen
+        run: cargo install cbindgen
+
+      - name: Build Rust native library
+        run: cargo build --release --lib
+
+      - name: Generate C headers
+        shell: pwsh
+        run: ./bindings/c/scripts/generate_headers.ps1
+
+      - name: Check generated C headers are committed
+        shell: pwsh
+        run: |
+          $changes = git status --porcelain -- bindings/c/include/copp
+          if ($changes) {
+            git diff -- bindings/c/include/copp
+            $changes
+            exit 1
+          }
+
+      - name: Configure C tests and examples
+        shell: pwsh
+        run: |
+          cmake -S bindings/c -B bindings/c/build-c-abi `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCOPP_LINK_STATIC=${{ matrix.static_flag }} `
+            -DCOPP_BUILD_TESTS=ON `
+            -DCOPP_BUILD_EXAMPLES=ON `
+            -DCOPP_TEST_EXAMPLES=ON `
+            -DCOPP_BUILD_INSTALL_TESTS=ON
+
+      - name: Build C tests and examples
+        run: cmake --build bindings/c/build-c-abi --config Release --parallel
+
+      - name: Run C tests, examples, and install smoke tests
+        run: ctest --test-dir bindings/c/build-c-abi --output-on-failure -C Release
+
+      - name: Install C SDK package
+        shell: pwsh
+        run: |
+          $prefix = Join-Path "dist" $env:COPP_PACKAGE_NAME
+          cmake --install bindings/c/build-c-abi --config Release --prefix $prefix
+
+          Copy-Item README.md (Join-Path $prefix "README.md")
+          Copy-Item CHANGELOG.md (Join-Path $prefix "CHANGELOG.md")
+          Copy-Item bindings/c/README.md (Join-Path $prefix "C-README.md")
+          Copy-Item bindings/c/examples (Join-Path $prefix "examples") -Recurse
+
+          $license = Get-ChildItem -Path . -File |
+            Where-Object { $_.Name -match '^(LICENSE|COPYING)(\..*)?$' } |
+            Select-Object -First 1
+          if ($license) {
+            Copy-Item $license.FullName (Join-Path $prefix $license.Name)
+          }
+
+      - name: Archive C SDK package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release-artifacts | Out-Null
+          $archive = Join-Path "release-artifacts" "$env:COPP_PACKAGE_NAME.zip"
+
+          Push-Location dist
+          cmake -E tar cfv "../$archive" --format=zip $env:COPP_PACKAGE_NAME
+          Pop-Location
+
+          $hash = Get-FileHash $archive -Algorithm SHA256
+          "$($hash.Hash.ToLower())  $(Split-Path $archive -Leaf)" |
+            Set-Content -Path "$archive.sha256" -NoNewline
+
+      - name: Smoke test archived package
+        shell: pwsh
+        run: |
+          $archive = Join-Path "release-artifacts" "$env:COPP_PACKAGE_NAME.zip"
+          $extractRoot = Join-Path "release-smoke" "extract"
+          $buildDir = Join-Path "release-smoke" "build"
+
+          New-Item -ItemType Directory -Force $extractRoot | Out-Null
+          Push-Location $extractRoot
+          cmake -E tar xf "../../$archive"
+          Pop-Location
+
+          $prefix = Resolve-Path (Join-Path $extractRoot $env:COPP_PACKAGE_NAME)
+          cmake -S bindings/c/tests/package_consumer -B $buildDir `
+            -DCMAKE_PREFIX_PATH="$prefix" `
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build $buildDir --config Release --parallel
+          ctest --test-dir $buildDir --output-on-failure -C Release
+
+      - name: Upload release package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.COPP_PACKAGE_NAME }}
+          path: |
+            release-artifacts/${{ env.COPP_PACKAGE_NAME }}.zip
+            release-artifacts/${{ env.COPP_PACKAGE_NAME }}.zip.sha256
+          if-no-files-found: error
+
+  publish-draft:
+    name: Create Draft GitHub Release
+    needs: build-package
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download release package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Create or update draft GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $assetPaths = @(
+            Get-ChildItem release-assets -Recurse -File |
+              Where-Object { $_.Name -like "*.zip" -or $_.Name -like "*.zip.sha256" } |
+              Sort-Object Name |
+              ForEach-Object { $_.FullName }
+          )
+          if ($assetPaths.Count -eq 0) {
+            throw "No release assets were downloaded."
+          }
+
+          $notesFile = "release-notes.md"
+          @'
+          Prebuilt C ABI SDK packages are attached below.
+
+          Each package contains the generated C headers, the Release native library, examples, and the CMake package files needed for `find_package(copp CONFIG REQUIRED)`.
+
+          See CHANGELOG.md in this tag for API changes and breaking changes.
+          '@ | Set-Content -Path $notesFile -NoNewline
+
+          gh release view $env:RELEASE_TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            & gh release upload $env:RELEASE_TAG @assetPaths --clobber
+            & gh release edit $env:RELEASE_TAG `
+              --draft `
+              --title $env:RELEASE_TAG `
+              --notes-file $notesFile
+          } else {
+            & gh release create $env:RELEASE_TAG @assetPaths `
+              --draft `
+              --verify-tag `
+              --title $env:RELEASE_TAG `
+              --notes-file $notesFile
+          }

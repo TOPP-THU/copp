@@ -28,10 +28,12 @@ use crate::math::numerical::{
 };
 use core::f64;
 
-/// Reachable intervals of $a(s)=\dot{s}^2$ for TOPP2/COPP2.  
+/// Reachable intervals of $a(s)=\dot{s}^2$ for TOPP2/COPP2.
 /// For each point `s[k]`, the reachable set is `a_min[k] <= a[k] <= a_max[k]`.
 pub struct ReachSet2 {
+    /// Upper reachable bound `a_max[k]` at each station.
     pub a_max: Vec<f64>,
+    /// Lower reachable bound `a_min[k]` at each station.
     pub a_min: Vec<f64>,
 }
 
@@ -42,10 +44,10 @@ pub struct ReachSet2 {
 /// as an intermediate step before bidirectional analysis.
 ///
 /// # Returns
-/// [`ReachSet2`] with `a_min[k] <= a[k] <= a_max[k]` for every station.
+/// [`ReachSet2`](crate::solver::reach_set2::ReachSet2) with `a_min[k] <= a[k] <= a_max[k]` for every station.
 ///
 /// # Errors
-/// Returns `CoppError` when boundary states are infeasible, LP subproblems fail,
+/// Returns [`CoppError`](crate::diag::CoppError) when boundary states are infeasible, LP subproblems fail,
 /// or numerical comparisons violate configured tolerances.
 ///
 /// # Contract
@@ -70,10 +72,10 @@ pub fn reach_set2_backward(
 /// **both** the start and terminal boundary constraints simultaneously.
 ///
 /// # Returns
-/// [`ReachSet2`] with `a_min[k] <= a[k] <= a_max[k]` for every station.
+/// [`ReachSet2`](crate::solver::reach_set2::ReachSet2) with `a_min[k] <= a[k] <= a_max[k]` for every station.
 ///
 /// # Errors
-/// Returns `CoppError` when boundary states are infeasible, LP subproblems fail,
+/// Returns [`CoppError`](crate::diag::CoppError) when boundary states are infeasible, LP subproblems fail,
 /// or numerical comparisons violate configured tolerances.
 ///
 /// # Contract
@@ -93,9 +95,6 @@ pub fn reach_set2_bidirectional(
 }
 
 /// Core RA implementation with layered verbosity.
-/// # Mode
-/// - `BIDIRECTION = false`: backward reachable set only (terminal boundary constrained).
-/// - `BIDIRECTION = true`: bidirectional reachable set (both start and terminal boundaries constrained).
 fn reach_set2_core<const BIDIRECTION: bool>(
     problem: &Topp2Problem,
     options_verboser: (&ReachSet2Options, impl Verboser),
@@ -599,7 +598,7 @@ fn reach_set2_core<const BIDIRECTION: bool>(
     Ok(ReachSet2 { a_max, a_min })
 }
 
-/// Backward propagation to compute feasible `a[k]` bounds at the current step given the next step's `a[k+1]=a_next` bounds.  
+/// Backward propagation to compute feasible `a[k]` bounds at the current step given the next step's `a[k+1]=a_next` bounds.
 /// a_b.0 * a[k+1] + a_b.1 * a[k] <= a_b.2
 /// Returns (a_max_curr, a_min_curr)
 fn backward_bound_a_next<const MAX: bool, const MIN: bool>(
@@ -625,7 +624,7 @@ fn backward_bound_a_next<const MAX: bool, const MIN: bool>(
     };
 
     let a_curr_min = if MIN {
-        // Better than transform the sign in the lp_2d_incre function.
+        // Flip the current variable sign and reuse the max-y LP kernel.
         a_b.iter_mut().for_each(|(_, b, _)| {
             *b = -*b;
         });
@@ -642,7 +641,7 @@ fn backward_bound_a_next<const MAX: bool, const MIN: bool>(
     (a_curr_max, a_curr_min)
 }
 
-/// Builder for `ReachSet2Options`.
+/// Builder for [`ReachSet2Options`](crate::solver::reach_set2::ReachSet2Options).
 pub struct ReachSet2OptionsBuilder {
     /// Feasibility tolerance used by LP subproblems in reachable-set computation.
     pub lp_feas_tol: f64,
@@ -667,22 +666,22 @@ impl Default for ReachSet2OptionsBuilder {
 }
 
 impl ReachSet2OptionsBuilder {
-    /// Create a new `ReachSet2OptionsBuilder` with default values.
+    /// Create a new [`ReachSet2OptionsBuilder`](crate::solver::reach_set2::ReachSet2OptionsBuilder) with default values.
     pub fn new() -> Self {
         Default::default()
     }
 
-    /// Set the tolerance for checking the feasibility of the linear program.  
+    /// Set the tolerance for checking the feasibility of the linear program.
     /// The default value is 1E-8.
     pub fn lp_feas_tol(mut self, tol: f64) -> Self {
         self.lp_feas_tol = tol;
         self
     }
 
-    /// Set the absolute tolerance for comparing `a_max` and `a_min` to determine whether the reachable set is empty (`a_max < a_min`) or degenerated (`a_max == a_min`).  
-    /// Let `tol = max(a_cmp_abs_tol, a_cmp_rel_tol * max(|a_max|, |a_min|))`.  
-    /// + If `a_max < a_min - tol`, then the reachable set is empty.  
-    /// + If `a_max > a_min + tol`, then the reachable set is non-degenerated.  
+    /// Set the absolute tolerance for comparing `a_max` and `a_min` to determine whether the reachable set is empty (`a_max < a_min`) or degenerated (`a_max == a_min`).
+    /// Let `tol = max(a_cmp_abs_tol, a_cmp_rel_tol * max(|a_max|, |a_min|))`.
+    /// + If `a_max < a_min - tol`, then the reachable set is empty.
+    /// + If `a_max > a_min + tol`, then the reachable set is non-degenerated.
     /// + Otherwise, the reachable set is degenerated into a single point.
     ///
     /// The default value is 1E-8.
@@ -700,15 +699,15 @@ impl ReachSet2OptionsBuilder {
         self
     }
 
-    /// Set the verbosity level for logging. More details refer to `Verbosity`.  
-    /// The default value is `Verbosity::Silent`.
+    /// Set the verbosity level for logging. More details refer to [`Verbosity`](crate::diag::Verbosity).
+    /// The default value is [`Verbosity::Silent`](crate::diag::Verbosity::Silent).
     #[inline]
     pub fn verbosity(mut self, verbosity: Verbosity) -> Self {
         self.verbosity = verbosity;
         self
     }
 
-    /// Build the `ReachSet2Options` from the builder where the validity of the options is checked.
+    /// Build the [`ReachSet2Options`](crate::solver::reach_set2::ReachSet2Options) from the builder where the validity of the options is checked.
     #[inline]
     pub fn build(self) -> Result<ReachSet2Options, CoppError> {
         self.validate()?;
@@ -735,7 +734,7 @@ impl ReachSet2OptionsBuilder {
     }
 }
 
-/// The options for `reach_set2`.
+/// The options for [`reach_set2`](crate::solver::reach_set2).
 pub struct ReachSet2Options {
     pub(crate) lp_feas_tol: f64,
     pub(crate) a_cmp_abs_tol: f64,
@@ -745,18 +744,22 @@ pub struct ReachSet2Options {
 
 impl ReachSet2Options {
     #[inline]
+    /// Return the LP feasibility tolerance used by reachability subproblems.
     pub fn lp_feas_tol(&self) -> f64 {
         self.lp_feas_tol
     }
     #[inline]
+    /// Return the absolute tolerance used for comparing `a` bounds.
     pub fn a_cmp_abs_tol(&self) -> f64 {
         self.a_cmp_abs_tol
     }
     #[inline]
+    /// Return the relative tolerance used for comparing `a` bounds.
     pub fn a_cmp_rel_tol(&self) -> f64 {
         self.a_cmp_rel_tol
     }
     #[inline]
+    /// Return the verbosity level used for reach-set diagnostics.
     pub fn verbosity(&self) -> Verbosity {
         self.verbosity
     }
@@ -766,6 +769,7 @@ impl ReachSet2Options {
 mod tests {
     use super::*;
     use crate::copp::copp2::stable::basic::Topp2ProblemBuilder;
+    use crate::copp::copp2::stable::reach_set2::reach_set2_backward;
     use crate::copp::copp2::stable::topp2_ra::topp2_ra;
     use crate::path::{add_symmetric_axial_limits_for_test, lissajous_path_for_test};
     use crate::robot::robot_core::Robot;
@@ -785,40 +789,16 @@ mod tests {
         let mut robot = Robot::with_capacity(dim, n);
         let mut rng = rand::rng();
 
-        let (s, derivs, _, _) = lissajous_path_for_test(dim, n, &mut rng).map_err(|e| {
+        let (s, path, _, _) = lissajous_path_for_test(dim, n, &mut rng).map_err(|e| {
             CoppError::InvalidInput(
                 "test_reach_set2_with_path_helper".into(),
-                format!("failed to generate test path derivatives: {e}"),
+                format!("failed to generate test path: {e}"),
             )
         })?;
 
-        let dq = derivs.dq.as_ref().ok_or_else(|| {
-            CoppError::InvalidInput(
-                "test_reach_set2_with_path_helper".into(),
-                "missing dq in path derivatives".into(),
-            )
-        })?;
-        let ddq = derivs.ddq.as_ref().ok_or_else(|| {
-            CoppError::InvalidInput(
-                "test_reach_set2_with_path_helper".into(),
-                "missing ddq in path derivatives".into(),
-            )
-        })?;
-        let dddq = derivs.dddq.as_ref().ok_or_else(|| {
-            CoppError::InvalidInput(
-                "test_reach_set2_with_path_helper".into(),
-                "missing dddq in path derivatives".into(),
-            )
-        })?;
-
-        robot.with_s(&s.as_view())?;
-        robot.with_q(
-            &derivs.q.as_view(),
-            &dq.as_view(),
-            &ddq.as_view(),
-            Some(&dddq.as_view()),
-            0,
-        )?;
+        robot
+            .with_s(&s.as_view())?
+            .with_q_from_path_3rd(&path, 0, n)?;
 
         add_symmetric_axial_limits_for_test(&mut robot, 1.0, 1.0, Some(5.0)).map_err(|e| {
             CoppError::InvalidInput(

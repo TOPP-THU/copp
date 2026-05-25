@@ -17,22 +17,32 @@
 
 use crate::diag::PathError;
 use crate::path::OutOfRangeMode;
-use nalgebra::{DMatrix, DVector};
+use nalgebra::{DMatrix, DMatrixView, DVector};
 use rayon::prelude::*;
 
 // ── Public configuration ─────────────────────────────────────────────────────
 
+/// Parameter assignment policy for waypoint splines.
 #[derive(Clone, Copy, Debug)]
 pub enum Parametrization {
+    /// Assign waypoints uniformly over the configured parameter range.
     Uniform,
 }
 
+/// Configuration for waypoint-spline path construction.
+///
+/// The default is a quintic spline on `s in [0, 1]` with zero endpoint
+/// derivative boundary conditions and out-of-range errors.
 pub struct SplineConfig {
     /// Spline order: must be an odd number >= 3.
     pub order: usize,
+    /// Waypoint parameter assignment policy.
     pub parametrization: Parametrization,
+    /// Lower endpoint of the path parameter range.
     pub s_min: f64,
+    /// Upper endpoint of the path parameter range.
     pub s_max: f64,
+    /// Behavior when evaluating outside `[s_min, s_max]`.
     pub out_of_range_mode: OutOfRangeMode,
     /// Boundary derivatives at s_min: shape `(dim, m)` where `m = (order-1)/2`.
     /// Column r (0-indexed) = (r+1)-th derivative value.
@@ -65,9 +75,13 @@ impl Default for SplineConfig {
 /// `[dim0_seg0.., dim0_seg1.., ..., dim1_seg0.., ...]`.
 pub struct SplinePath {
     // ── Evaluation metadata (all cheap Copy types) ───────────────────────
+    /// Polynomial order used for each spline segment.
     pub order: usize,
+    /// Lower endpoint of the path parameter range.
     pub s_min: f64,
+    /// Upper endpoint of the path parameter range.
     pub s_max: f64,
+    /// Behavior when evaluating outside `[s_min, s_max]`.
     pub out_of_range_mode: OutOfRangeMode,
     n_coef: usize,
     n_segments: usize,
@@ -83,6 +97,18 @@ pub struct SplinePath {
 impl SplinePath {
     /// Build spline coefficients from a waypoint matrix of shape `(dim, n_points)`.
     pub fn from_waypoints(waypoints: &DMatrix<f64>, cfg: &SplineConfig) -> Result<Self, PathError> {
+        Self::from_waypoints_view(waypoints.as_view(), cfg)
+    }
+
+    /// Build spline coefficients from a borrowed waypoint matrix view.
+    ///
+    /// This accepts nalgebra views such as `waypoints.as_view()` and compatible
+    /// strided column-major views. See [`SplinePath::from_waypoints`] for the
+    /// owned-matrix convenience API and shared behavior.
+    pub fn from_waypoints_view(
+        waypoints: DMatrixView<'_, f64>,
+        cfg: &SplineConfig,
+    ) -> Result<Self, PathError> {
         let order = cfg.order;
         if order < 3 || order.is_multiple_of(2) {
             return Err(PathError::InvalidOrder { order });
@@ -130,7 +156,7 @@ impl SplinePath {
         (seg, scaled - seg as f64)
     }
 
-    /// Evaluate Horner polynomial and up to 3 derivatives at `t ∈ [0,1]`.
+    /// Evaluate Horner polynomial and up to 3 derivatives at `t in [0,1]`.
     ///
     /// Returns `(q, dq, ddq, dddq)`.  Specialised fast paths for degree 5 and 3
     /// (the two most common cases); falls back to the general Horner+derivative
@@ -309,7 +335,7 @@ struct BlockMatrices {
     c: DMatrix<f64>,
     /// R: m×2
     r: DMatrix<f64>,
-    /// shape (m+1) × (1+2m); row i ↔ a[m+1+i]
+    /// shape (m+1) × (1+2m); row i: a[m+1+i]
     h_coeff: DMatrix<f64>,
 }
 
@@ -565,7 +591,7 @@ impl BlockMatrices {
 /// `start_bd` and `end_bd` are flat `dim × m` arrays (row-major) containing
 /// the m boundary derivative values at the first and last waypoint respectively.
 fn solve_general_thomas(
-    waypoints: &DMatrix<f64>,
+    waypoints: DMatrixView<'_, f64>,
     order: usize,
     m: usize,
     start_bd: &[f64],
@@ -580,10 +606,11 @@ fn solve_general_thomas(
 
     let chunk_len = ns * n_coef;
     let mut coeffs = vec![0.0f64; dim * chunk_len];
+    let waypoints = &waypoints;
 
     coeffs.par_chunks_mut(chunk_len).enumerate().try_for_each(
         |(d, chunk)| -> Result<(), PathError> {
-            // Boundary derivative slices for this dimension — no allocation needed.
+            // Boundary derivative slices for this dimension: no allocation needed.
             let u_start = &start_bd[d * m..(d + 1) * m];
             let u_end = &end_bd[d * m..(d + 1) * m];
             thomas_row(
@@ -614,7 +641,7 @@ fn solve_general_thomas(
 /// Back substitution: u_{N-2} = B'_{N-2}^{-1} * r'_{N-2}
 ///   u_i = B'_i^{-1} * (r'_i - C * u_{i+1})
 fn thomas_row(
-    waypoints: &DMatrix<f64>,
+    waypoints: &DMatrixView<'_, f64>,
     (d, n, ns, m, n_coef): (usize, usize, usize, usize, usize),
     bm: &BlockMatrices,
     (u_start, u_end): (&[f64], &[f64]),

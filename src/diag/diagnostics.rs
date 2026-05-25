@@ -33,7 +33,7 @@ pub enum VerbosityOutput {
     /// ```rust,no_run
     /// use log::LevelFilter;
     /// use std::sync::Once;
-    /// use copp::prelude::{VerbosityOutput, set_verbosity_output};
+    /// use copp::diag::{VerbosityOutput, set_verbosity_output};
     ///
     /// static INIT: Once = Once::new();
     /// INIT.call_once(|| {
@@ -50,11 +50,11 @@ pub enum VerbosityOutput {
     ///
     /// Typical usage:
     /// ```rust,no_run
-    /// use copp::prelude::{VerbosityOutput, set_verbosity_output};
+    /// use copp::diag::{VerbosityOutput, set_verbosity_output};
     ///
     /// // Auto-creates parent directories and opens file in append mode.
     /// set_verbosity_output(VerbosityOutput::File("logs/copp/run.log".into()))?;
-    /// # Ok::<(), copp::prelude::CoppError>(())
+    /// # Ok::<(), copp::diag::CoppError>(())
     /// ```
     File(String),
 }
@@ -123,24 +123,24 @@ pub fn set_verbosity_log_file(path: impl AsRef<Path>) -> Result<(), CoppError> {
     Ok(())
 }
 
-/// The verbosity level for logging.  
-/// The default value is [`Silent`](`Verbosity::Silent`).  
-/// [`Trace`](`Verbosity::Trace`) > [`Debug`](`Verbosity::Debug`) > [`Summary`](`Verbosity::Summary`) > [`Silent`](`Verbosity::Silent`).
+/// The verbosity level for logging.
+/// The default value is [`Silent`](Verbosity::Silent).
+/// [`Trace`](Verbosity::Trace) > [`Debug`](Verbosity::Debug) > [`Summary`](Verbosity::Summary) > [`Silent`](Verbosity::Silent).
 #[repr(u8)]
 #[derive(Default, Eq, PartialEq, PartialOrd, Ord, Clone, Copy)]
 pub enum Verbosity {
     /// No log will be emitted.
     #[default]
     Silent = 0,
-    /// Only summary information will be emitted, including:  
-    /// + The beginning and end of each algorithm.  
-    /// + The total computation time of each algorithm.  
+    /// Only summary information will be emitted, including:
+    /// + The beginning and end of each algorithm.
+    /// + The total computation time of each algorithm.
     /// + The success or failure of each algorithm.
     Summary = 1,
-    /// Detailed debug information will be emitted, including:  
+    /// Detailed debug information will be emitted, including:
     /// + The failure or degeneration of each algorithm at each grid point.
     Debug = 2,
-    /// Very detailed trace information will be emitted, including:  
+    /// Very detailed trace information will be emitted, including:
     /// + The values of reachable sets, optimal profiles, and other intermediate variables at each step of each algorithm.
     Trace = 3,
 }
@@ -285,7 +285,7 @@ impl Verboser for TraceVerboser {
     }
 }
 
-/// Format a `Duration` into a human-readable string with appropriate units (ns, us, ms, s, min, h).
+/// Format a [`Duration`](std::time::Duration) into a human-readable string with appropriate units (ns, us, ms, s, min, h).
 pub(crate) fn format_duration_human(d: Duration) -> String {
     let secs = d.as_secs_f64();
 

@@ -27,27 +27,21 @@ fn main() -> Result<(), CoppError> {
     // `n` is the number of path samples (s_i) to build robot constraints on.
     let n = 1001;
     let s: Vec<f64> = (0..n).map(|j| j as f64 / (n - 1) as f64).collect();
-    let derivs = path.evaluate_up_to_2nd(&s)?;
 
-    // 2) Build robot constraints (3-axis), then apply symmetric limits v/a = 1
+    // 2) Build robot constraints (3-axis), then apply symmetric limits vel/acc = 1
     const DIM: usize = 3;
     let mut robot = Robot::with_capacity(DIM, n);
-    robot.with_s(s.as_slice())?;
-    robot.with_q(
-        &derivs.q.as_view(),
-        &derivs.dq.as_ref().unwrap().as_view(),
-        &derivs.ddq.as_ref().unwrap().as_view(),
-        None,
-        0,
-    )?;
-    // The axial velocity is -1 <= v <= 1 for each axis in this example
+    // The axial velocity is -1 <= vel <= 1 for each axis in this example
     let vel_max = vec![1.0; DIM];
     let vel_min = vec![-1.0; DIM];
-    robot.with_axial_velocity((vel_max.as_slice(), n), (vel_min.as_slice(), n), 0)?;
-    // The axial acceleration is -1 <= a <= 1 for each axis in this example.
+    // The axial acceleration is -1 <= acc <= 1 for each axis in this example.
     let acc_max = vec![1.0; DIM];
     let acc_min = vec![-1.0; DIM];
-    robot.with_axial_acceleration((acc_max.as_slice(), n), (acc_min.as_slice(), n), 0)?;
+    robot
+        .with_s(s.as_slice())?
+        .with_q_from_path_2nd(&path, 0, n)?
+        .with_axial_velocity((vel_max.as_slice(), n), (vel_min.as_slice(), n), 0)?
+        .with_axial_acceleration((acc_max.as_slice(), n), (acc_min.as_slice(), n), 0)?;
 
     // 3) Build TOPP2 problem and compute reachable sets
     let idx_s_interval = (0, n - 1); // 0 <= k <= n-1

@@ -1,4 +1,4 @@
-//! Diagnostics, error types, and verbosity utilities.
+//! Core shared types and utilities.
 //!
 //! Input: none (foundation module used by other public APIs).
 //! Output: common errors, verbosity/logging abstractions, and validation helpers.

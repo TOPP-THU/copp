@@ -85,96 +85,6 @@ impl LpToleranceOptions {
     }
 }
 
-/// Linear programming in 2D plane of extreme direction.  
-/// max w.0*X+w.1*Y, s.t. Ab[i].0*X+Ab[i].1*Y<=Ab[i].2  
-/// Given a x_opt=(x_opt,y_opt), determine the tangent direction v1, v2 on the 2D plane (x, y).  
-/// The cone defined by the **anticlockwise** transition from $v_1$ to $v_2$ contains **feasible** directions.
-#[cfg(test)]
-pub(crate) fn lp_2d_extreme_direction(
-    a_b: &[(f64, f64, f64)],
-    x_opt: (f64, f64),
-    w: (f64, f64),
-    tol: &LpToleranceOptions,
-) -> ((f64, f64), (f64, f64)) {
-    let epsilon = tol.feas_tol;
-    let a_b_act = a_b
-        .iter()
-        .filter_map(|&(a, b, c)| {
-            let norm = (a * a + b * b).sqrt();
-            if norm > EPS_ZERO && (a * x_opt.0 + b * x_opt.1 - c).abs() < epsilon * norm {
-                Some((a / norm, b / norm))
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<(f64, f64)>>();
-    if a_b_act.len() < 2 {
-        return ((-w.1, w.0), (w.1, -w.0));
-    }
-    let w_norm = (w.0 * w.0 + w.1 * w.1).sqrt();
-    let v0 = (-w.1 / w_norm, w.0 / w_norm); // 90 degree anticlockwise rotation
-    let mut cos_max: f64 = 1.0;
-    let mut cos_min: f64 = -1.0;
-    let mut v_max = v0;
-    let mut v_min = (-v0.0, -v0.1);
-    let mut func = |v: (f64, f64), upper_bound: bool| {
-        if cross_product_2d(v0, v) > 0.0 {
-            // anticlockwise
-            let cos_now = (v.0 * v0.0 + v.1 * v0.1) / (v.0 * v.0 + v.1 * v.1).sqrt();
-            if upper_bound {
-                if cos_now < cos_max {
-                    cos_max = cos_now;
-                    v_max = v;
-                }
-            } else if cos_now > cos_min {
-                cos_min = cos_now;
-                v_min = v;
-            }
-        }
-    };
-    for &(a1, b1) in a_b_act.iter() {
-        func((-b1, a1), true);
-        func((b1, -a1), false);
-    }
-    let vmax_norm = (v_max.0 * v_max.0 + v_max.1 * v_max.1).sqrt();
-    let vmin_norm = (v_min.0 * v_min.0 + v_min.1 * v_min.1).sqrt();
-
-    (
-        (v_max.0 / vmax_norm, v_max.1 / vmax_norm),
-        (v_min.0 / vmin_norm, v_min.1 / vmin_norm),
-    )
-}
-
-/// Linear programming in 2D plane based on geometric method.  
-/// max J:=w_x*X+w_y*Y, s.t. Ab[i].0*X+Ab[i].1*Y<=Ab[i].2  
-/// return (X,Y,J)
-#[cfg(test)]
-pub(crate) fn lp_2d_incre<W: WarmStartLp2d, const NORMALIZE: bool>(
-    a_b: &[(f64, f64, f64)],
-    w: (f64, f64),
-    warm_start: &W,
-    tol: &LpToleranceOptions,
-    buffer: &mut Vec<(f64, f64, f64)>,
-) -> (f64, f64, f64) {
-    let (w_x, w_y) = w;
-    if w_x.abs() < EPS_ZERO && w_y.abs() < EPS_ZERO {
-        return (f64::NAN, f64::NAN, 0.0);
-    }
-    let w = (w_x * w_x + w_y * w_y).sqrt();
-    let w_inv = 1.0 / w;
-    let w_x = w_x * w_inv;
-    let w_y = w_y * w_inv;
-
-    buffer.clear();
-    buffer.extend(
-        a_b.iter()
-            .map(|&(ax, ay, b)| (ax * w_y - ay * w_x, ax * w_x + ay * w_y, b)),
-    );
-    let (x, y) = lp_2d_incre_max_y::<_, NORMALIZE>(buffer, &warm_start.rotate((w_x, w_y)), tol);
-
-    (w_y * x + w_x * y, w_y * y - w_x * x, w * y)
-}
-
 #[inline(always)]
 /// Normalize 2D half-space rows by normal-vector magnitude.
 ///
@@ -191,7 +101,7 @@ pub(crate) fn normalize_lp2d(a_b: &mut [(f64, f64, f64)]) {
     }
 }
 
-/// Linear programming in 2D plane based on incremental method (only maximize Y).  
+/// Linear programming in 2D plane based on incremental method (only maximize Y).
 /// max Y, s.t. Ab[i].0*X+Ab[i].1*Y<=Ab[i].2
 /// return (X,Y)
 #[inline(always)]
@@ -311,15 +221,10 @@ fn lp_2d_incre_max_y_core<C: Lp2dIncCollector, W: WarmStartLp2d, const NORMALIZE
         }
     }
 
-    // y = if (y / BOUND - 1.0).abs() < epsilon {
-    //     f64::INFINITY
-    // } else {
-    //     y
-    // };
     (x, y)
 }
 
-/// Linear programming in 2D plane based on incremental method (only maximize Y).  
+/// Linear programming in 2D plane based on incremental method (only maximize Y).
 /// max Y, s.t. Ab[i].0*X+Ab[i].1*Y<=Ab[i].2
 /// return (X,Y)
 pub(crate) fn lp_2d_incre_max_y<W: WarmStartLp2d, const NORMALIZE: bool>(
@@ -330,8 +235,8 @@ pub(crate) fn lp_2d_incre_max_y<W: WarmStartLp2d, const NORMALIZE: bool>(
     lp_2d_incre_max_y_core::<_, _, NORMALIZE>(a_b, warm_start, tol, SilentLpIncCollector)
 }
 
-/// Linear programming in 1D line.  
-/// a_b[i].0 * x <= a_b[i].1  
+/// Linear programming in 1D line.
+/// a_b[i].0 * x <= a_b[i].1
 /// Return (xmax, xmin) if feasible; otherwise (NaN, NaN).
 #[inline(always)]
 fn lp_1d_core<C: Lp1dIncCollector, const AUTONAN: bool>(
@@ -380,8 +285,8 @@ fn lp_1d_core<C: Lp1dIncCollector, const AUTONAN: bool>(
     }
 }
 
-/// Linear programming in 1D line.  
-/// a_b[i].0 * x <= a_b[i].1  
+/// Linear programming in 1D line.
+/// a_b[i].0 * x <= a_b[i].1
 /// Return (xmax, xmin) if feasible; otherwise (NaN, NaN).
 #[inline(always)]
 pub(crate) fn lp_1d<const AUTONAN: bool>(
@@ -399,33 +304,6 @@ pub(crate) trait WarmStartLp2d {
     fn iter_skip<I>(&self, a_b: I) -> impl Iterator<Item = I::Item>
     where
         I: Iterator;
-    #[cfg(test)]
-    /// Rotate warm-start state under objective-space rotation.
-    fn rotate(&self, w: (f64, f64)) -> impl WarmStartLp2d;
-}
-
-/// 2D warm-start policy: always start from default point without skipping.
-#[cfg(test)]
-pub(crate) struct Lp2dNoWarmStart;
-#[cfg(test)]
-impl WarmStartLp2d for Lp2dNoWarmStart {
-    #[inline(always)]
-    fn get_initial_point(&self) -> (f64, f64) {
-        (0.0, LP_BOUND)
-    }
-    #[inline(always)]
-    fn iter_skip<I>(&self, a_b: I) -> impl Iterator<Item = I::Item>
-    where
-        I: Iterator,
-    {
-        a_b
-    }
-    #[allow(refining_impl_trait)]
-    #[inline(always)]
-    #[cfg(test)]
-    fn rotate(&self, _w: (f64, f64)) -> Lp2dNoWarmStart {
-        Lp2dNoWarmStart
-    }
 }
 /// 2D warm-start policy with explicit initial point and skip length.
 pub(crate) struct Lp2dWarmStart {
@@ -445,18 +323,6 @@ impl WarmStartLp2d for Lp2dWarmStart {
         I: Iterator,
     {
         a_b.skip(self.skip)
-    }
-    #[cfg(test)]
-    #[allow(refining_impl_trait)]
-    #[inline(always)]
-    fn rotate(&self, w: (f64, f64)) -> Lp2dWarmStart {
-        Lp2dWarmStart {
-            x0: (
-                w.1 * self.x0.0 - w.0 * self.x0.1,
-                w.0 * self.x0.0 + w.1 * self.x0.1,
-            ),
-            skip: self.skip,
-        }
     }
 }
 
@@ -558,365 +424,4 @@ pub(crate) fn solve_2x2(a: ((f64, f64), (f64, f64)), b: (f64, f64)) -> Option<(f
     let x1 = cross_product_2d((b.0, a.0.1), (b.1, a.1.1)) * det_inv;
     let x2 = cross_product_2d((a.0.0, b.0), (a.1.0, b.1)) * det_inv;
     Some((x1, x2))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use core::panic;
-    use rand::RngExt;
-    use std::time::Instant;
-
-    #[test]
-    fn test_lp_2d_extreme_direction() {
-        run_test_lp_2d_extreme_direction_repeated(1, false);
-    }
-
-    /// Average ratio over 100000 experiments: 0.4341553260581677
-    #[test]
-    #[ignore = "slow"]
-    fn test_lp_2d_extreme_direction_robust() {
-        run_test_lp_2d_extreme_direction_repeated(100000, true);
-    }
-
-    #[test]
-    fn test_lp_2d_warm_start() {
-        run_test_lp_2d_warm_start_repeated(1, false);
-    }
-
-    #[test]
-    #[ignore = "slow"]
-    fn test_lp_2d_warm_start_robust() {
-        run_test_lp_2d_warm_start_repeated(100000, true);
-    }
-
-    fn run_test_lp_2d_extreme_direction_repeated(n_exp: usize, flag_print_step: bool) {
-        let mut rng = rand::rng();
-
-        let mut ratio_sum = 0.0_f64;
-        let mut a_b_buffer = Vec::<(f64, f64, f64)>::with_capacity(106);
-
-        for i_exp in 0..n_exp {
-            // 1. Generate a_b, ensure (0,0,0) is feasible and bounded
-            let n = rng.random_range(0..100);
-            let mut time_sum_direction = 0.0;
-            let mut time_sum_lp2d = 0.0;
-            let mut n_w = 0;
-            let mut a_b: Vec<(f64, f64, f64)> = (0..n)
-                .map(|_| {
-                    (
-                        rng.random_range(-1.0..1.0),
-                        rng.random_range(-1.0..1.0),
-                        rng.random_range(0.1..2.0),
-                    )
-                })
-                .collect();
-            let bound = 1.0;
-            a_b.push((1.0, 0.0, bound));
-            a_b.push((-1.0, 0.0, bound));
-            a_b.push((0.0, 1.0, bound));
-            a_b.push((0.0, -1.0, bound));
-
-            if flag_print_step && (i_exp + 1) % 1000 == 0 {
-                crate::verbosity_log!(
-                    crate::diag::Verbosity::Summary,
-                    "Experiment #{}, num_constraints = {}",
-                    i_exp + 1,
-                    a_b.len()
-                );
-            }
-
-            // 2. Generate w in 18 directions
-            for i in 0..18 {
-                let angle =
-                    (i as f64) * std::f64::consts::PI * 2.0 / 18.0 + rng.random_range(-0.01..0.01);
-                let w_2d = (angle.cos(), angle.sin());
-
-                // Solve LP
-                let epsilon = 1e-9;
-                let start = std::time::Instant::now();
-                let (x, y, j_opt) = if i == 0 {
-                    lp_2d_incre::<_, true>(
-                        &a_b,
-                        w_2d,
-                        &Lp2dNoWarmStart,
-                        &LpToleranceOptions::with_feas_tol(epsilon),
-                        &mut a_b_buffer,
-                    )
-                } else {
-                    lp_2d_incre::<_, false>(
-                        &a_b,
-                        w_2d,
-                        &Lp2dNoWarmStart,
-                        &LpToleranceOptions::with_feas_tol(epsilon),
-                        &mut a_b_buffer,
-                    )
-                };
-                time_sum_lp2d += start.elapsed().as_secs_f64() * 1e9;
-                if j_opt.is_nan() || j_opt.is_infinite() {
-                    panic!("LP failed at exp {}, angle {}", i_exp, i);
-                }
-                let x_opt = (x, y);
-
-                // 3. Project Extremes
-                let start = std::time::Instant::now();
-                let (v1, v2) = lp_2d_extreme_direction(
-                    &a_b,
-                    x_opt,
-                    w_2d,
-                    &LpToleranceOptions::with_feas_tol(1e-6),
-                );
-                time_sum_direction += start.elapsed().as_secs_f64() * 1e9;
-                n_w += 1;
-
-                if v1.0.is_nan() || v2.0.is_nan() || v1.1.is_nan() || v2.1.is_nan() {
-                    crate::verbosity_log!(crate::diag::Verbosity::Summary, "a_b = {a_b:?}");
-                    crate::verbosity_log!(crate::diag::Verbosity::Summary, "w_2d = {w_2d:?}");
-                    crate::verbosity_log!(
-                        crate::diag::Verbosity::Summary,
-                        "v1 = {v1:?}, v2 = {v2:?}"
-                    );
-                    panic!(
-                        "Extreme direction NAN at exp {}, angle {}. x_opt={:?}",
-                        i_exp, i, x_opt
-                    );
-                }
-
-                // 4. Verification
-                for (k, &v) in [v1, v2].iter().enumerate() {
-                    // (1) Rotate 90 degree as optimization target direction, determine optimal value is same as x_opt
-                    let n1 = if k == 0 { (v.1, -v.0) } else { (-v.1, v.0) };
-                    let (_, _, j1) = lp_2d_incre::<_, false>(
-                        &a_b,
-                        n1,
-                        &Lp2dNoWarmStart,
-                        &LpToleranceOptions::with_feas_tol(epsilon),
-                        &mut a_b_buffer,
-                    );
-                    let val1 = n1.0 * x + n1.1 * y;
-
-                    // Ideally one of them matches exactly. Due to precision, check closeness.
-                    let diff = (j1 - val1).abs();
-                    if diff > 1e-5 {
-                        crate::verbosity_log!(crate::diag::Verbosity::Summary, "a_b = {a_b:?}");
-                        crate::verbosity_log!(crate::diag::Verbosity::Summary, "w_2d = {w_2d:?}");
-                        crate::verbosity_log!(
-                            crate::diag::Verbosity::Summary,
-                            "v1 = {v1:?}, v2 = {v2:?}"
-                        );
-                        crate::verbosity_log!(crate::diag::Verbosity::Summary, "x_opt = {x_opt:?}");
-                        panic!(
-                            "Rotation check failed for v{}: diff={}\nExp {}, angle {}, w={:?}, v={:?}",
-                            k, diff, i_exp, i, w_2d, v
-                        );
-                    }
-
-                    // (2) Use lp_1d to determine this direction is feasible
-                    // i.e. not NAN and v3max > 0.0
-                    let delta_max = a_b
-                        .iter()
-                        .map(|&(a, b, c)| c - a * x_opt.0 - b * x_opt.1)
-                        .fold(f64::INFINITY, f64::min)
-                        .abs();
-                    let iter = a_b.iter().map(|&(a, b, c)| {
-                        (a * v.0 + b * v.1, (c - a * x_opt.0 - b * x_opt.1).max(0.0))
-                    });
-                    let (tmax, _tmin) = lp_1d::<true>(
-                        iter,
-                        &LpToleranceOptions::with_feas_tol((1.1 * delta_max).max(1e-6)),
-                    );
-                    if !tmax.is_nan() && tmax <= 0.0 {
-                        crate::verbosity_log!(crate::diag::Verbosity::Summary, "a_b = {a_b:?}");
-                        crate::verbosity_log!(crate::diag::Verbosity::Summary, "w_2d = {w_2d:?}");
-                        let a_b_t12 = a_b
-                            .iter()
-                            .map(|&(a, b, c)| {
-                                (a * v.0 + b * v.1, (c - a * x_opt.0 - b * x_opt.1).max(0.0))
-                            })
-                            .collect::<Vec<(f64, f64)>>();
-                        crate::verbosity_log!(
-                            crate::diag::Verbosity::Summary,
-                            "a_b for t12 = {a_b_t12:?}"
-                        );
-                        crate::verbosity_log!(
-                            crate::diag::Verbosity::Summary,
-                            "delta for t12 constraints = {:?}",
-                            a_b_t12.iter().map(|(_, b)| *b).collect::<Vec<f64>>()
-                        );
-                        crate::verbosity_log!(crate::diag::Verbosity::Summary, "x_opt = {x_opt:?}");
-                        crate::verbosity_log!(
-                            crate::diag::Verbosity::Summary,
-                            "k = {k}, v1 = {v1:?}, v2 = {v2:?}"
-                        );
-                        crate::verbosity_log!(
-                            crate::diag::Verbosity::Summary,
-                            "tmin = {_tmin}, tmax = {tmax}"
-                        );
-                        panic!(
-                            "Direction v{} not feasible (lp_2d returned NAN). Exp {}, angle {}",
-                            k, i_exp, i
-                        )
-                    }
-                }
-            }
-            if flag_print_step && (i_exp + 1) % 1000 == 0 {
-                crate::verbosity_log!(
-                    crate::diag::Verbosity::Summary,
-                    "Exp {}: cal_time_lp2d: {} ns, cal_time_direction: {} ns, ratio: {}",
-                    i_exp + 1,
-                    time_sum_lp2d / n_w as f64,
-                    time_sum_direction / n_w as f64,
-                    time_sum_direction / time_sum_lp2d
-                );
-            }
-            ratio_sum += time_sum_direction / time_sum_lp2d;
-        }
-        crate::verbosity_log!(
-            crate::diag::Verbosity::Summary,
-            "Average ratio over {} experiments: {}",
-            n_exp,
-            ratio_sum / n_exp as f64
-        );
-    }
-
-    fn run_test_lp_2d_warm_start_repeated(n_exp: usize, flag_print_step: bool) {
-        let mut time_sum_warm = 0.0_f64;
-        let mut time_sum_cold = 0.0_f64;
-
-        let mut a_b_buffer = Vec::<(f64, f64, f64)>::with_capacity(106);
-
-        let epsilon = 1E-8;
-        for i in 0..n_exp {
-            let mut rng = rand::rng();
-            let n = rng.random_range(0..10); // number of constraints
-            let n_warm = rng.random_range(0..=n);
-            let a_b: Vec<(f64, f64, f64)> = (0..n)
-                .map(|_| {
-                    (
-                        rng.random_range(-1.0..1.0),
-                        rng.random_range(-1.0..1.0),
-                        rng.random_range(0.0..2.0),
-                    )
-                })
-                .collect();
-            let w = (rng.random_range(-1.0..1.0), rng.random_range(-1.0..1.0));
-
-            let start = Instant::now();
-            let (x_cold, y_cold, j_cold) = lp_2d_incre::<_, true>(
-                &a_b,
-                w,
-                &Lp2dNoWarmStart,
-                &LpToleranceOptions::with_feas_tol(epsilon),
-                &mut a_b_buffer,
-            );
-            let time_cold = start.elapsed().as_secs_f64() * 1E9; // ns
-            assert!(
-                j_cold.is_nan()
-                    || j_cold.is_infinite()
-                    || (w.0 * x_cold + w.1 * y_cold - j_cold).abs() < 1E-6
-            );
-
-            let start = Instant::now();
-            let (x_mid, y_mid, _j_mid) = lp_2d_incre::<_, false>(
-                &a_b[0..n_warm],
-                w,
-                &Lp2dNoWarmStart,
-                &LpToleranceOptions::with_feas_tol(epsilon),
-                &mut a_b_buffer,
-            );
-            let (x_warm, y_warm, j_warm) = if x_mid.is_nan() || y_mid.is_nan() {
-                lp_2d_incre::<_, false>(
-                    &a_b,
-                    w,
-                    &Lp2dNoWarmStart,
-                    &LpToleranceOptions::with_feas_tol(epsilon),
-                    &mut a_b_buffer,
-                )
-            } else {
-                lp_2d_incre::<_, false>(
-                    &a_b,
-                    w,
-                    &Lp2dWarmStart {
-                        x0: (x_mid, y_mid),
-                        skip: n_warm,
-                    },
-                    &LpToleranceOptions::with_feas_tol(epsilon),
-                    &mut a_b_buffer,
-                )
-            };
-            let time_warm = start.elapsed().as_secs_f64() * 1E9; // ns
-            assert!(
-                j_warm.is_nan()
-                    || j_warm.is_infinite()
-                    || (w.0 * x_warm + w.1 * y_warm - j_warm).abs() < 1E-6
-            );
-
-            if flag_print_step && (i + 1) % 1000 == 0 {
-                crate::verbosity_log!(
-                    crate::diag::Verbosity::Summary,
-                    "Exp #{}: time_cold/n: {:.3} ns, time_warm/n: {:.3} ns, j_cold: {:.3e}, j_warm: {:.3e}",
-                    i + 1,
-                    time_cold / n.max(1) as f64,
-                    time_warm / n.max(1) as f64,
-                    j_cold,
-                    j_warm,
-                );
-            }
-            time_sum_cold += time_cold / n.max(1) as f64;
-            time_sum_warm += time_warm / n.max(1) as f64;
-
-            let cold_failed =
-                j_cold.is_nan() || j_cold.is_infinite() || x_cold.abs() > 1E8 || y_cold.abs() > 1E8;
-            let warm_failed =
-                j_warm.is_nan() || j_warm.is_infinite() || x_warm.abs() > 1E8 || y_warm.abs() > 1E8;
-            let flag_assert =
-                (warm_failed != cold_failed) || (!warm_failed && ((j_warm - j_cold).abs() >= 1E-3));
-            let flag_assert = if flag_assert {
-                crate::verbosity_log!(crate::diag::Verbosity::Summary, "a_b = {a_b:?}");
-                crate::verbosity_log!(crate::diag::Verbosity::Summary, "w: {w:?}");
-                crate::verbosity_log!(crate::diag::Verbosity::Summary, "n_warm: {n_warm}");
-                crate::verbosity_log!(
-                    crate::diag::Verbosity::Summary,
-                    "j_warm-j_cold: {}",
-                    j_warm - j_cold,
-                );
-                crate::verbosity_log!(
-                    crate::diag::Verbosity::Summary,
-                    "x_warm = {x_warm:<10.3e}, x_inc = {x_cold:<10.3e}"
-                );
-                crate::verbosity_log!(
-                    crate::diag::Verbosity::Summary,
-                    "y_warm = {y_warm:<10.3e}, y_inc = {y_cold:<10.3e}"
-                );
-                if !warm_failed {
-                    let delta = a_b.iter().map(|(a, b, c)| c - a * x_cold - b * y_cold);
-                    let delta_min = delta.clone().fold(f64::INFINITY, |a, b| a.min(b));
-                    crate::verbosity_log!(
-                        crate::diag::Verbosity::Summary,
-                        "Minimum slackness at incremental solution: {delta_min}"
-                    );
-                    if delta_min < -epsilon {
-                        crate::verbosity_log!(
-                            crate::diag::Verbosity::Debug,
-                            "Incremental solution is infeasible!"
-                        );
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    true
-                }
-            } else {
-                false
-            };
-            assert!(!flag_assert);
-        }
-        crate::verbosity_log!(
-            crate::diag::Verbosity::Summary,
-            "Average time per constraint: warm = {:.3} ns, cold = {:.3} ns",
-            time_sum_warm / n_exp as f64,
-            time_sum_cold / n_exp as f64,
-        );
-    }
 }

@@ -15,15 +15,18 @@
 //! 1. Validate boundary/index contracts.
 //! 2. Assemble standard TOPP3 conic constraints.
 //! 3. Build sparse matrices `A`, `P`, vector `q`, and solve by Clarabel.
-//! 4. Apply status acceptance policy (`ClarabelOptions::is_allow`) and extract
-//!    `(a,b,num_stationary)` only when accepted.
+//! 4. Apply status acceptance policy ([`ClarabelOptions::is_allow`](crate::solver::copp2_socp::ClarabelOptions::is_allow)) and extract
+//!    a [`Topp3Profile`](crate::solver::topp3_lp::Topp3Profile) only when accepted.
 //!
 //! # API layering
-//! - [`topp3_lp`]: strict/normal API, returns only accepted `(a,b,num_stationary)`.
-//! - [`topp3_lp_expert`]: expert API returning `(Option<Copp3Result>, DefaultSolution<f64>)`.
+//! - [`topp3_lp`](crate::solver::topp3_lp::topp3_lp): strict/normal API, returns only accepted [`Topp3Profile`](crate::solver::topp3_lp::Topp3Profile).
+//! - [`topp3_lp_expert`](crate::solver::topp3_lp::topp3_lp_expert): expert API returning `(Option<Topp3Profile>, DefaultSolution<f64>)`.
+//! - [`topp3_lp_expert_with_info`](crate::solver::topp3_lp::topp3_lp_expert_with_info): expert API plus Clarabel linear-solver
+//!   metadata for wrappers that need solver-side diagnostics.
 
-use crate::copp::copp3::Copp3Result;
+use crate::copp::copp3::Topp3Profile;
 use crate::copp::copp3::formulation::{Topp3Problem, get_weight_a_topp3};
+use crate::copp::copp3::opt3::ClarabelExpertInfor3rd;
 use crate::copp::copp3::opt3::clarabel_constraints::{
     clarabel_standard_capacity_topp3, clarabel_standard_constraint_topp3,
 };
@@ -39,25 +42,25 @@ use core::f64;
 /// Strict TOPP3-LP API for production use.
 ///
 /// # Purpose
-/// Use this entry when caller only needs a valid profile `(a,b,num_stationary)` and treats
+/// Use this entry when caller only needs a valid [`Topp3Profile`](crate::solver::topp3_lp::Topp3Profile) and treats
 /// non-accepted solver statuses as hard failures.
 ///
 /// # Contract
-/// - Internally calls [`topp3_lp_expert`].
-/// - Returns `Ok((a,b,num_stationary))` **iff** `options.is_allow(solution.status)` is `true`.
+/// - Internally calls [`topp3_lp_expert`](crate::solver::topp3_lp::topp3_lp_expert).
+/// - Returns `Ok(Topp3Profile { .. })` **iff** `options.is_allow(solution.status)` is `true`.
 /// - Returns `Err(CoppError::ClarabelSolverStatus(...))` when status is not accepted.
 ///
 /// # Returns
-/// Returns accepted TOPP3 profile `(a, b, num_stationary)`.
+/// Returns accepted TOPP3 profile.
 ///
 /// # Errors
-/// Returns [`CoppError`] on model/solver failures and non-accepted solver status.
+/// Returns [`CoppError`](crate::diag::CoppError) on model/solver failures and non-accepted solver status.
 ///
-/// More details are provided in the documentation of [`topp3_lp_expert`].
+/// More details are provided in the documentation of [`topp3_lp_expert`](crate::solver::topp3_lp::topp3_lp_expert).
 pub fn topp3_lp(
     problem: &Topp3Problem,
     options: &ClarabelOptions,
-) -> Result<Copp3Result, CoppError> {
+) -> Result<Topp3Profile, CoppError> {
     let (result, solution) = topp3_lp_expert(problem, options)?;
     result.ok_or_else(|| CoppError::ClarabelSolverStatus("topp3_lp".into(), solution.status))
 }
@@ -70,10 +73,10 @@ pub fn topp3_lp(
 /// - `Err(...)`: input/model/solver-construction runtime failures.
 ///
 /// # Returns
-/// Returns tuple `(Option<Copp3Result>, DefaultSolution<f64>)` for diagnostics.
+/// Returns tuple `(Option<Topp3Profile>, DefaultSolution<f64>)` for diagnostics.
 ///
 /// # Errors
-/// Returns [`CoppError`] only for real build/runtime failures.
+/// Returns [`CoppError`](crate::diag::CoppError) only for real build/runtime failures.
 ///
 /// # Contract
 /// - caller handles `None` profile when status is not accepted;
@@ -88,7 +91,21 @@ pub fn topp3_lp(
 pub fn topp3_lp_expert(
     problem: &Topp3Problem,
     options: &ClarabelOptions,
-) -> Result<(Option<Copp3Result>, DefaultSolution<f64>), CoppError> {
+) -> Result<(Option<Topp3Profile>, DefaultSolution<f64>), CoppError> {
+    let info = topp3_lp_expert_with_info(problem, options)?;
+    let _ = &info.linsolver;
+    Ok((info.result, info.solution))
+}
+
+/// Expert TOPP3-LP API with Clarabel solution and linear-solver diagnostics.
+///
+/// Use this variant when callers need more than
+/// [`DefaultSolution`](clarabel::solver::DefaultSolution), because Clarabel stores linear-solver metadata on the
+/// solver `info` object rather than inside the returned solution.
+pub fn topp3_lp_expert_with_info(
+    problem: &Topp3Problem,
+    options: &ClarabelOptions,
+) -> Result<ClarabelExpertInfor3rd, CoppError> {
     match options.verbosity() {
         Verbosity::Silent => topp3_lp_core(problem, (options, SilentVerboser)),
         Verbosity::Summary => topp3_lp_core(problem, (options, SummaryVerboser::new())),
@@ -106,11 +123,11 @@ pub fn topp3_lp_expert(
 ///
 /// # Invariants
 /// - decision-variable layout is always `x = [a[0..=n], b[0..=n]]`;
-/// - extracted `(a,b)` is produced only through `clarabel_to_copp3_solution` when status is accepted.
+/// - extracted `(a,b)` is produced only through [`clarabel_to_copp3_solution`](crate::solver::copp3_socp::clarabel_to_copp3_solution) when status is accepted.
 fn topp3_lp_core(
     problem: &Topp3Problem,
     options_verboser: (&ClarabelOptions, impl Verboser),
-) -> Result<(Option<Copp3Result>, DefaultSolution<f64>), CoppError> {
+) -> Result<ClarabelExpertInfor3rd, CoppError> {
     let (options, mut verboser) = options_verboser;
     let idx_s_start = problem.idx_s_start;
     let a_boundary = problem.a_boundary;
@@ -242,6 +259,7 @@ fn topp3_lp_core(
     let mut solver = DefaultSolver::<f64>::new(&p_object, &q_object, &a_csc, &b, &cones, settings)
         .map_err(|e| CoppError::ClarabelSolverError("topp3_lp".into(), e))?;
     solver.solve();
+    let linsolver = solver.info.linsolver.clone();
     let solution = solver.solution;
     if verboser.is_enabled(Verbosity::Summary) {
         crate::verbosity_log!(
@@ -261,9 +279,11 @@ fn topp3_lp_core(
         );
     }
     let result = if options.is_allow(solution.status) {
-        let (a, b) =
-            clarabel_to_copp3_solution(&solution.x.as_slice()[0..2 * (n + 1)], &s, num_stationary);
-        Some((a, b, num_stationary))
+        Some(clarabel_to_copp3_solution(
+            &solution.x.as_slice()[0..2 * (n + 1)],
+            &s,
+            num_stationary,
+        ))
     } else {
         None
     };
@@ -273,13 +293,17 @@ fn topp3_lp_core(
             "topp3_lp: allow(status)={}, extracted_profile={}",
             options.is_allow(solution.status),
             if result.is_some() {
-                "Some((a,b,num_stationary))"
+                "Some(Topp3Profile)"
             } else {
                 "None"
             }
         );
     }
-    Ok((result, solution))
+    Ok(ClarabelExpertInfor3rd {
+        result,
+        solution,
+        linsolver,
+    })
 }
 
 /// Build LP objective vector for TOPP3-LP in Clarabel form.
@@ -309,10 +333,8 @@ mod tests {
     use crate::copp::copp2::stable::reach_set2::ReachSet2OptionsBuilder;
     use crate::copp::copp2::stable::topp2_ra::topp2_ra;
     use crate::copp::copp3::stable::basic::{Topp3ProblemBuilder, s_to_t_topp3, t_to_s_topp3};
-    use crate::path::add_symmetric_axial_limits_for_test;
+    use crate::path::{add_symmetric_axial_limits_for_test, lissajous_path_for_test};
     use crate::robot::robot_core::Robot;
-    use nalgebra::DMatrix;
-    use rand::RngExt;
     use std::time::Instant;
 
     #[test]
@@ -334,39 +356,13 @@ mod tests {
         let n: usize = 1000;
         let dim = 7;
         let mut rng = rand::rng();
-        let omega = (0..dim)
-            .map(|_| rng.random_range(0.1..(2.0 * f64::consts::PI)))
-            .collect::<Vec<f64>>();
-        let phi = (0..dim)
-            .map(|_| rng.random_range(0.0..(2.0 * f64::consts::PI)))
-            .collect::<Vec<f64>>();
+        let (s, path, _, _) =
+            lissajous_path_for_test(dim, n, &mut rng).expect("random range is valid");
 
         let mut robot = Robot::with_capacity(dim, n);
-        let s = DMatrix::<f64>::from_fn(1, n, |_, j| {
-            (j as f64
-                + (if 0 < j && 2 * j < n { 0.5 } else { 0.0 }
-                    + if n > j && 2 * j > n { 0.5 } else { 0.0 })
-                    * j as f64
-                    / n as f64)
-                * (1.0 / (n - 1) as f64)
-        });
-        let q = DMatrix::<f64>::from_fn(dim, n, |i, j| (omega[i] * s[j] + phi[i]).sin());
-        let dq =
-            DMatrix::<f64>::from_fn(dim, n, |i, j| omega[i] * (omega[i] * s[j] + phi[i]).cos());
-        let ddq = DMatrix::<f64>::from_fn(dim, n, |i, j| {
-            -omega[i] * omega[i] * (omega[i] * s[j] + phi[i]).sin()
-        });
-        let dddq = DMatrix::<f64>::from_fn(dim, n, |i, j| {
-            -omega[i] * omega[i] * omega[i] * (omega[i] * s[j] + phi[i]).cos()
-        });
-        robot.with_s(&s.as_view())?;
-        robot.with_q(
-            &q.as_view(),
-            &dq.as_view(),
-            &ddq.as_view(),
-            Some(&dddq.as_view()),
-            0,
-        )?;
+        robot
+            .with_s(&s.as_view())?
+            .with_q_from_path_3rd(&path, 0, n)?;
         add_symmetric_axial_limits_for_test(&mut robot, 1.0, 1.0, Some(5.0))?;
 
         let topp2_problem = Topp2ProblemBuilder::new(&robot, (0, n - 1), (0.0, 0.0)).build()?;
@@ -378,7 +374,7 @@ mod tests {
             .build()?;
         let a_profile_ra = topp2_ra(&topp2_problem, &options_ra)?;
         let time_topp_ra = start.elapsed().as_secs_f64() * 1E3;
-        let (t_motion_ra, _) = s_to_t_topp2(s.as_slice(), &a_profile_ra, 0.0);
+        let (t_motion_ra, _) = s_to_t_topp2(s.as_slice(), &a_profile_ra, 0.0)?;
 
         let start = Instant::now();
         robot.constraints.amax_substitute(&a_profile_ra, 0)?;
@@ -386,19 +382,16 @@ mod tests {
             Topp3ProblemBuilder::new(&mut robot, 0, &a_profile_ra, (0.0, 0.0), (0.0, 0.0))
                 .with_num_stationary_max(2)
                 .build_with_linearization()?;
-        let (a_profile, b_profile, num_stationary) = topp3_lp(&topp3_problem, options_lp)?;
+        let profile = topp3_lp(&topp3_problem, options_lp)?;
         let time_topp3_lp = start.elapsed().as_secs_f64() * 1E3;
         let start = Instant::now();
-        let (t_motion_lp, t_s) =
-            s_to_t_topp3(s.as_slice(), &a_profile, &b_profile, num_stationary, 0.0);
+        let (t_motion_lp, t_s) = s_to_t_topp3(s.as_slice(), profile.as_parts(), 0.0)?;
         let s_t = t_to_s_topp3(
             s.as_slice(),
-            &a_profile,
-            &b_profile,
-            num_stationary,
+            profile.as_parts(),
             &t_s,
             InterpolationMode::UniformTimeGrid(0.0, 1E-3, true),
-        );
+        )?;
         let time_interpolation = start.elapsed().as_secs_f64() * 1E3;
         Ok((
             time_topp_ra,

@@ -1,4 +1,4 @@
-//! Internal COPP/TOPP namespace and crate-level façade.
+//! Internal COPP/TOPP namespace and crate-level facade.
 //!
 //! # Method identity
 //! This module is the root namespace for:
@@ -17,9 +17,10 @@
 //! - `general` (crate-private module, selectively re-exported): shared enums/helpers used by APIs.
 //! - `objectives` (crate-private module, selectively re-exported): objective descriptors for COPP.
 //!
-//! # Export policy (façade design)
-//! This module acts as a **thin public façade**:
-//! - Stable user-facing concepts are available as `copp::copp::{TypeOrFn}` via `pub use`.
+//! # Export policy (facade design)
+//! This module acts as a **thin public facade**:
+//! - Stable user-facing concepts are available as `copp::{TypeOrFn}` or
+//!   `copp::prelude::{TypeOrFn}` via `pub use`.
 //! - User-facing solver entry points are provided by [`crate::solver`] and [`crate::prelude`].
 //! - Internal implementation modules stay `pub(crate)` to reduce API surface and semver burden.
 //!
