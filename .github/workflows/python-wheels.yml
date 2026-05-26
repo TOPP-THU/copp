@@ -19,6 +19,9 @@ on:
       - ".github/workflows/python-wheels.yml"
   workflow_dispatch:
 
+env:
+  RUSTFLAGS: "-C target-cpu=generic"
+
 jobs:
   build:
     strategy:
