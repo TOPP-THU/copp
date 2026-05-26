@@ -42,7 +42,7 @@ from copp._copp import (
     force_positive_a_3rd,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "CoppError", "PathError", "ConstraintError",
