@@ -175,6 +175,26 @@ class TestErrors:
                 [copp.Objective.thermal_energy(1.0, [1.0, 1.0])],
             )
 
+    def test_axial_torque_preserves_callback_return_length_error(self):
+        def inverse_dynamics(_q, _dq, _ddq):
+            return [0.0]
+
+        robot = _robot_with_inverse_dynamics(inverse_dynamics)
+        with pytest.raises(ValueError, match="must return 2 values, got 1"):
+            robot.with_axial_torque(np.ones(2), -np.ones(2))
+
+
+def test_force_positive_a_3rd_is_exported_and_mutates_profile():
+    s = np.array([0.0, 1.0, 2.0, 3.0])
+    a = np.array([1.0, 1.0, 1.0, 1.0])
+    b = np.array([-5.0, -5.0, 5.0, 5.0])
+
+    succeed = copp.force_positive_a_3rd(s, a, b, (0, 0), 0.25)
+
+    assert succeed
+    assert np.all(a > 0.0)
+    assert not np.allclose(b, [-5.0, -5.0, 5.0, 5.0])
+
 
 def _robot_with_inverse_dynamics(inverse_dynamics):
     robot = copp.Robot(dim=2, inverse_dynamics=inverse_dynamics, capacity=3)

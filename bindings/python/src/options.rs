@@ -62,7 +62,8 @@ impl PyClarabelOptions {
         allow_almost_solved=false,
         allow_max_iterations=false,
         allow_max_time=false,
-        allow_insufficient_progress=false
+        allow_insufficient_progress=false,
+        allow_callback_terminated=false
     ))]
     fn new(
         verbosity: &str,
@@ -70,6 +71,7 @@ impl PyClarabelOptions {
         allow_max_iterations: bool,
         allow_max_time: bool,
         allow_insufficient_progress: bool,
+        allow_callback_terminated: bool,
     ) -> PyResult<Self> {
         let opts = ClarabelOptionsBuilder::new()
             .verbosity(str_to_verbosity(verbosity)?)
@@ -77,6 +79,7 @@ impl PyClarabelOptions {
             .allow_max_iterations(allow_max_iterations)
             .allow_max_time(allow_max_time)
             .allow_insufficient_progress(allow_insufficient_progress)
+            .allow_callback_terminated(allow_callback_terminated)
             .build()
             .map_err(copp_err_to_py)?;
         Ok(Self { inner: opts })

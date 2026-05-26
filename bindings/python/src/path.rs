@@ -364,3 +364,9 @@ impl PyPath {
         self.inner.s_range()
     }
 }
+
+impl PyPath {
+    pub(crate) fn inner(&self) -> &Path {
+        &self.inner
+    }
+}

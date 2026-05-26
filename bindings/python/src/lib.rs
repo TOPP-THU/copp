@@ -44,6 +44,7 @@ fn _copp(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(solver::a_to_b_topp2, m)?)?;
     m.add_function(wrap_pyfunction!(solver::s_to_t_topp3, m)?)?;
     m.add_function(wrap_pyfunction!(solver::t_to_s_topp3, m)?)?;
+    m.add_function(wrap_pyfunction!(solver::force_positive_a_3rd, m)?)?;
 
     Ok(())
 }

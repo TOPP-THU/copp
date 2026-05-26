@@ -127,6 +127,18 @@ class Robot:
         dddq: Optional[NDArray[np.float64]] = None,
         idx_s: int = 0,
     ) -> None: ...
+    def with_q_from_path_2nd(
+        self,
+        path: Path,
+        idx_s_from: int,
+        idx_s_to: int,
+    ) -> None: ...
+    def with_q_from_path_3rd(
+        self,
+        path: Path,
+        idx_s_from: int,
+        idx_s_to: int,
+    ) -> None: ...
     def with_axial_velocity(
         self,
         vel_max: NDArray[np.float64],
@@ -143,6 +155,12 @@ class Robot:
         self,
         jerk_max: NDArray[np.float64],
         jerk_min: NDArray[np.float64],
+        idx_s: int = 0,
+    ) -> None: ...
+    def with_axial_torque(
+        self,
+        torque_max: NDArray[np.float64],
+        torque_min: NDArray[np.float64],
         idx_s: int = 0,
     ) -> None: ...
     def amax_substitute(
@@ -170,6 +188,7 @@ class ClarabelOptions:
         allow_max_iterations: bool = False,
         allow_max_time: bool = False,
         allow_insufficient_progress: bool = False,
+        allow_callback_terminated: bool = False,
     ) -> None: ...
 
 # ─── Objectives ───
@@ -222,6 +241,8 @@ def topp3_lp(
     a_boundary: tuple[float, float],
     b_boundary: tuple[float, float],
     options: Optional[ClarabelOptions] = None,
+    num_stationary_max: Optional[tuple[int, int]] = None,
+    a_linearization_floor: Optional[float] = None,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64], tuple[int, int]]: ...
 
 def topp3_socp(
@@ -231,6 +252,8 @@ def topp3_socp(
     a_boundary: tuple[float, float],
     b_boundary: tuple[float, float],
     options: Optional[ClarabelOptions] = None,
+    num_stationary_max: Optional[tuple[int, int]] = None,
+    a_linearization_floor: Optional[float] = None,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64], tuple[int, int]]: ...
 
 def copp3_socp(
@@ -241,6 +264,8 @@ def copp3_socp(
     b_boundary: tuple[float, float],
     objectives: list[Objective],
     options: Optional[ClarabelOptions] = None,
+    num_stationary_max: Optional[tuple[int, int]] = None,
+    a_linearization_floor: Optional[float] = None,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64], tuple[int, int]]: ...
 
 # ─── Interpolation ───
@@ -281,3 +306,11 @@ def t_to_s_topp3(
     dt: Optional[float] = None,
     t_samples: Optional[NDArray[np.float64]] = None,
 ) -> NDArray[np.float64]: ...
+
+def force_positive_a_3rd(
+    s: NDArray[np.float64],
+    a: NDArray[np.float64],
+    b: NDArray[np.float64],
+    num_stationary: tuple[int, int],
+    a_min: float,
+) -> bool: ...

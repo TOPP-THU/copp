@@ -15,11 +15,11 @@ use copp::solver::reach_set2::{
 };
 use copp::solver::topp2_ra::topp2_ra as rust_topp2_ra;
 use copp::solver::topp3_lp::{
-    Topp3ProblemBuilder, s_to_t_topp3 as rust_s_to_t3, t_to_s_topp3 as rust_t_to_s3,
-    topp3_lp as rust_topp3_lp,
+    Topp3ProblemBuilder, force_positive_a as rust_force_positive_a, s_to_t_topp3 as rust_s_to_t3,
+    t_to_s_topp3 as rust_t_to_s3, topp3_lp as rust_topp3_lp,
 };
 use copp::solver::topp3_socp::topp3_socp as rust_topp3_socp;
-use numpy::{PyArray1, PyReadonlyArray1};
+use numpy::{PyArray1, PyReadonlyArray1, PyReadwriteArray1};
 use pyo3::prelude::*;
 
 type PyArray1Bound<'py> = Bound<'py, PyArray1<f64>>;
@@ -181,7 +181,8 @@ pub fn copp2_socp<'py>(
 // ─── TOPP3-LP ───
 
 #[pyfunction]
-#[pyo3(signature = (robot, idx_s_start, a_linearization, a_boundary, b_boundary, options=None))]
+#[pyo3(signature = (robot, idx_s_start, a_linearization, a_boundary, b_boundary, options=None, num_stationary_max=None, a_linearization_floor=None))]
+#[allow(clippy::too_many_arguments)]
 pub fn topp3_lp<'py>(
     py: Python<'py>,
     robot: &mut PyRobot,
@@ -190,18 +191,25 @@ pub fn topp3_lp<'py>(
     a_boundary: (f64, f64),
     b_boundary: (f64, f64),
     options: Option<&PyClarabelOptions>,
+    num_stationary_max: Option<(usize, usize)>,
+    a_linearization_floor: Option<f64>,
 ) -> PyResult<PyTopp3Result<'py>> {
     let a_lin = ndarray1_to_vec(a_linearization);
 
-    let problem = Topp3ProblemBuilder::with_constraint(
+    let mut builder = Topp3ProblemBuilder::with_constraint(
         &mut robot.inner.constraints,
         idx_s_start,
         &a_lin,
         a_boundary,
         b_boundary,
-    )
-    .build_with_linearization()
-    .map_err(copp_err_to_py)?;
+    );
+    if let Some(ns) = num_stationary_max {
+        builder = builder.with_num_stationary_max_pair(ns);
+    }
+    if let Some(floor) = a_linearization_floor {
+        builder = builder.with_a_linearization_floor(floor);
+    }
+    let problem = builder.build_with_linearization().map_err(copp_err_to_py)?;
 
     let default_opts;
     let opts = match options {
@@ -214,14 +222,17 @@ pub fn topp3_lp<'py>(
         }
     };
 
-    let (a, b, num_st) = rust_topp3_lp(&problem, opts).map_err(copp_err_to_py)?;
+    let (a, b, num_st) = rust_topp3_lp(&problem, opts)
+        .map_err(copp_err_to_py)?
+        .into_parts();
     Ok((vec_to_ndarray1(py, &a), vec_to_ndarray1(py, &b), num_st))
 }
 
 // ─── TOPP3-SOCP ───
 
 #[pyfunction]
-#[pyo3(signature = (robot, idx_s_start, a_linearization, a_boundary, b_boundary, options=None))]
+#[pyo3(signature = (robot, idx_s_start, a_linearization, a_boundary, b_boundary, options=None, num_stationary_max=None, a_linearization_floor=None))]
+#[allow(clippy::too_many_arguments)]
 pub fn topp3_socp<'py>(
     py: Python<'py>,
     robot: &mut PyRobot,
@@ -230,18 +241,25 @@ pub fn topp3_socp<'py>(
     a_boundary: (f64, f64),
     b_boundary: (f64, f64),
     options: Option<&PyClarabelOptions>,
+    num_stationary_max: Option<(usize, usize)>,
+    a_linearization_floor: Option<f64>,
 ) -> PyResult<PyTopp3Result<'py>> {
     let a_lin = ndarray1_to_vec(a_linearization);
 
-    let problem = Topp3ProblemBuilder::with_constraint(
+    let mut builder = Topp3ProblemBuilder::with_constraint(
         &mut robot.inner.constraints,
         idx_s_start,
         &a_lin,
         a_boundary,
         b_boundary,
-    )
-    .build_with_linearization()
-    .map_err(copp_err_to_py)?;
+    );
+    if let Some(ns) = num_stationary_max {
+        builder = builder.with_num_stationary_max_pair(ns);
+    }
+    if let Some(floor) = a_linearization_floor {
+        builder = builder.with_a_linearization_floor(floor);
+    }
+    let problem = builder.build_with_linearization().map_err(copp_err_to_py)?;
 
     let default_opts;
     let opts = match options {
@@ -254,14 +272,16 @@ pub fn topp3_socp<'py>(
         }
     };
 
-    let (a, b, num_st) = rust_topp3_socp(&problem, opts).map_err(copp_err_to_py)?;
+    let (a, b, num_st) = rust_topp3_socp(&problem, opts)
+        .map_err(copp_err_to_py)?
+        .into_parts();
     Ok((vec_to_ndarray1(py, &a), vec_to_ndarray1(py, &b), num_st))
 }
 
 // ─── COPP3-SOCP ───
 
 #[pyfunction]
-#[pyo3(signature = (robot, idx_s_start, a_linearization, a_boundary, b_boundary, objectives, options=None))]
+#[pyo3(signature = (robot, idx_s_start, a_linearization, a_boundary, b_boundary, objectives, options=None, num_stationary_max=None, a_linearization_floor=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn copp3_socp<'py>(
     py: Python<'py>,
@@ -272,20 +292,27 @@ pub fn copp3_socp<'py>(
     b_boundary: (f64, f64),
     objectives: Vec<PyObjective>,
     options: Option<&PyClarabelOptions>,
+    num_stationary_max: Option<(usize, usize)>,
+    a_linearization_floor: Option<f64>,
 ) -> PyResult<PyTopp3Result<'py>> {
     let a_lin = ndarray1_to_vec(a_linearization);
     let copp_objs = convert_objectives(&objectives);
 
-    let problem = Copp3ProblemBuilder::new(
+    let mut builder = Copp3ProblemBuilder::new(
         &mut robot.inner,
         &copp_objs,
         idx_s_start,
         &a_lin,
         a_boundary,
         b_boundary,
-    )
-    .build_with_linearization()
-    .map_err(copp_err_to_py)?;
+    );
+    if let Some(ns) = num_stationary_max {
+        builder = builder.with_num_stationary_max_pair(ns);
+    }
+    if let Some(floor) = a_linearization_floor {
+        builder = builder.with_a_linearization_floor(floor);
+    }
+    let problem = builder.build_with_linearization().map_err(copp_err_to_py)?;
 
     let default_opts;
     let opts = match options {
@@ -302,7 +329,7 @@ pub fn copp3_socp<'py>(
     if let Some(err) = robot.take_callback_error() {
         return Err(err);
     }
-    let (a, b, num_st) = result.map_err(copp_err_to_py)?;
+    let (a, b, num_st) = result.map_err(copp_err_to_py)?.into_parts();
     Ok((vec_to_ndarray1(py, &a), vec_to_ndarray1(py, &b), num_st))
 }
 
@@ -315,9 +342,10 @@ pub fn s_to_t_topp2<'py>(
     s: PyReadonlyArray1<'_, f64>,
     a: PyReadonlyArray1<'_, f64>,
     t_offset: f64,
-) -> (f64, Bound<'py, PyArray1<f64>>) {
-    let (tf, ts) = rust_s_to_t2(&ndarray1_to_vec(s), &ndarray1_to_vec(a), t_offset);
-    (tf, vec_to_ndarray1(py, &ts))
+) -> PyResult<(f64, Bound<'py, PyArray1<f64>>)> {
+    let (tf, ts) =
+        rust_s_to_t2(&ndarray1_to_vec(s), &ndarray1_to_vec(a), t_offset).map_err(copp_err_to_py)?;
+    Ok((tf, vec_to_ndarray1(py, &ts)))
 }
 
 #[pyfunction]
@@ -336,13 +364,13 @@ pub fn t_to_s_topp2<'py>(
 
     if let Some(dt_val) = dt {
         let mode = InterpolationMode::UniformTimeGrid(0.0, dt_val, true);
-        let r = rust_t_to_s2(&sv, &av, &tsv, mode);
+        let r = rust_t_to_s2(&sv, &av, &tsv, mode).map_err(copp_err_to_py)?;
         return Ok(vec_to_ndarray1(py, &r));
     }
     if let Some(ts) = t_samples {
         let tv = ndarray1_to_vec(ts);
         let mode = InterpolationMode::NonUniformTimeGrid(&tv);
-        let r = rust_t_to_s2(&sv, &av, &tsv, mode);
+        let r = rust_t_to_s2(&sv, &av, &tsv, mode).map_err(copp_err_to_py)?;
         return Ok(vec_to_ndarray1(py, &r));
     }
     Err(pyo3::exceptions::PyValueError::new_err(
@@ -355,9 +383,9 @@ pub fn a_to_b_topp2<'py>(
     py: Python<'py>,
     s: PyReadonlyArray1<'_, f64>,
     a: PyReadonlyArray1<'_, f64>,
-) -> PyArray1Bound<'py> {
-    let r = rust_a_to_b(&ndarray1_to_vec(s), &ndarray1_to_vec(a));
-    vec_to_ndarray1(py, &r)
+) -> PyResult<PyArray1Bound<'py>> {
+    let r = rust_a_to_b(&ndarray1_to_vec(s), &ndarray1_to_vec(a)).map_err(copp_err_to_py)?;
+    Ok(vec_to_ndarray1(py, &r))
 }
 
 // ─── Interpolation (TOPP3) ───
@@ -371,15 +399,13 @@ pub fn s_to_t_topp3<'py>(
     b: PyReadonlyArray1<'_, f64>,
     num_stationary: (usize, usize),
     t_offset: f64,
-) -> (f64, Bound<'py, PyArray1<f64>>) {
-    let (tf, ts) = rust_s_to_t3(
-        &ndarray1_to_vec(s),
-        &ndarray1_to_vec(a),
-        &ndarray1_to_vec(b),
-        num_stationary,
-        t_offset,
-    );
-    (tf, vec_to_ndarray1(py, &ts))
+) -> PyResult<(f64, Bound<'py, PyArray1<f64>>)> {
+    let sv = ndarray1_to_vec(s);
+    let av = ndarray1_to_vec(a);
+    let bv = ndarray1_to_vec(b);
+    let (tf, ts) =
+        rust_s_to_t3(&sv, (&av, &bv, num_stationary), t_offset).map_err(copp_err_to_py)?;
+    Ok((tf, vec_to_ndarray1(py, &ts)))
 }
 
 #[pyfunction]
@@ -399,19 +425,35 @@ pub fn t_to_s_topp3<'py>(
     let av = ndarray1_to_vec(a);
     let bv = ndarray1_to_vec(b);
     let tsv = ndarray1_to_vec(t_s);
+    let profile = (&av[..], &bv[..], num_stationary);
 
     if let Some(dt_val) = dt {
         let mode = InterpolationMode::UniformTimeGrid(0.0, dt_val, true);
-        let r = rust_t_to_s3(&sv, &av, &bv, num_stationary, &tsv, mode);
+        let r = rust_t_to_s3(&sv, profile, &tsv, mode).map_err(copp_err_to_py)?;
         return Ok(vec_to_ndarray1(py, &r));
     }
     if let Some(ts) = t_samples {
         let tv = ndarray1_to_vec(ts);
         let mode = InterpolationMode::NonUniformTimeGrid(&tv);
-        let r = rust_t_to_s3(&sv, &av, &bv, num_stationary, &tsv, mode);
+        let r = rust_t_to_s3(&sv, profile, &tsv, mode).map_err(copp_err_to_py)?;
         return Ok(vec_to_ndarray1(py, &r));
     }
     Err(pyo3::exceptions::PyValueError::new_err(
         "Either dt or t_samples must be provided",
     ))
+}
+
+#[pyfunction]
+#[pyo3(signature = (s, a, b, num_stationary, a_min))]
+pub fn force_positive_a_3rd(
+    s: PyReadonlyArray1<'_, f64>,
+    mut a: PyReadwriteArray1<'_, f64>,
+    mut b: PyReadwriteArray1<'_, f64>,
+    num_stationary: (usize, usize),
+    a_min: f64,
+) -> PyResult<bool> {
+    let sv = ndarray1_to_vec(s);
+    let a_slice = a.as_slice_mut()?;
+    let b_slice = b.as_slice_mut()?;
+    rust_force_positive_a((a_slice, b_slice, num_stationary), &sv, a_min).map_err(copp_err_to_py)
 }

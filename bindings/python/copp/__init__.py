@@ -39,6 +39,7 @@ from copp._copp import (
     a_to_b_topp2,
     s_to_t_topp3,
     t_to_s_topp3,
+    force_positive_a_3rd,
 )
 
 __version__ = "0.1.0"
@@ -54,5 +55,5 @@ __all__ = [
     "topp2_ra", "reach_set2_backward", "reach_set2_bidirectional",
     "copp2_socp", "topp3_lp", "topp3_socp", "copp3_socp",
     "s_to_t_topp2", "t_to_s_topp2", "a_to_b_topp2",
-    "s_to_t_topp3", "t_to_s_topp3",
+    "s_to_t_topp3", "t_to_s_topp3", "force_positive_a_3rd",
 ]
