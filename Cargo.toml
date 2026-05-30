@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "bindings/python"]
+
 [package]
 name = "copp"
 version = "0.2.0"
