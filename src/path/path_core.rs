@@ -25,6 +25,8 @@ pub type ParametricFn = Arc<dyn Fn(Jet3) -> Vec<Jet3> + Send + Sync>;
 /// Buffer layout is always `dim x s.len()` in column-major order:
 /// `buffer[row + col * dim]` corresponds to path dimension `row` at sample
 /// `s[col]`. Empty `s` slices are valid no-ops.
+///
+/// See [`Path::from_evaluator_2nd`] for a complete constructor example.
 pub trait PathEvaluator2nd: Send + Sync {
     /// Return the path dimension.
     ///
@@ -61,6 +63,8 @@ pub trait PathEvaluator2nd: Send + Sync {
 /// This extends [`PathEvaluator2nd`] with jerk-level path derivatives. Use it
 /// when the path will be sampled by TOPP3/COPP3 workflows or any API that calls
 /// [`Path::evaluate_up_to_3rd`].
+///
+/// See [`Path::from_evaluator_3rd`] for a complete constructor example.
 pub trait PathEvaluator3rd: PathEvaluator2nd {
     /// Evaluate `q`, `dq`, `ddq`, and `dddq` at all supplied path parameters.
     ///
@@ -153,6 +157,25 @@ impl Path {
     /// # Errors
     /// - [`PathError::InvalidRange`](crate::diag::PathError::InvalidRange)     : `s_min >= s_max` or either value is non-finite
     /// - [`PathError::InvalidDimension`](crate::diag::PathError::InvalidDimension) : closure returned an empty vector
+    ///
+    /// # Example
+    /// The example below builds a two-dimensional analytic path and evaluates
+    /// derivatives produced by automatic differentiation.
+    ///
+    /// ```rust
+    /// # fn main() -> Result<(), copp::diag::CoppError> {
+    /// use copp::path::autodiff::Jet3;
+    /// use copp::path::{cos, sin, Path};
+    ///
+    /// let path = Path::from_parametric(|s: Jet3| vec![sin(s), cos(s)], 0.0, 1.0)?;
+    ///
+    /// let s = [0.0, 0.25, 0.5, 0.75, 1.0];
+    /// let out = path.evaluate_up_to_3rd(s.as_slice())?;
+    /// assert_eq!(out.q.shape(), (2, 5));
+    /// assert!(out.dddq.is_some());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn from_parametric<F>(q_fn: F, s_min: f64, s_max: f64) -> Result<Self, PathError>
     where
         F: Fn(Jet3) -> Vec<Jet3> + Send + Sync + 'static,
@@ -190,6 +213,51 @@ impl Path {
     /// # Errors
     /// - [`PathError::InvalidRange`](crate::diag::PathError::InvalidRange): `s_min >= s_max` or either value is non-finite
     /// - [`PathError::InvalidDimension`](crate::diag::PathError::InvalidDimension): evaluator dimension is zero
+    ///
+    /// # Example
+    /// The example below wraps a two-dimensional external evaluator that writes
+    /// explicit `q/dq/ddq` buffers in column-major order.
+    ///
+    /// ```rust
+    /// # fn main() -> Result<(), copp::diag::CoppError> {
+    /// use copp::diag::PathError;
+    /// use copp::path::{Path, PathEvaluator2nd};
+    ///
+    /// struct NormalizedEvaluator2nd;
+    ///
+    /// impl PathEvaluator2nd for NormalizedEvaluator2nd {
+    ///     fn dim(&self) -> usize {
+    ///         2
+    ///     }
+    ///
+    ///     fn evaluate_up_to_2nd(
+    ///         &self,
+    ///         s: &[f64],
+    ///         q: &mut [f64],
+    ///         dq: &mut [f64],
+    ///         ddq: &mut [f64],
+    ///     ) -> Result<(), PathError> {
+    ///         for (col, &sj) in s.iter().enumerate() {
+    ///             let row0 = 2 * col;
+    ///             q[row0] = 0.5 * sj * sj;
+    ///             q[row0 + 1] = sj;
+    ///             dq[row0] = sj;
+    ///             dq[row0 + 1] = 1.0;
+    ///             ddq[row0] = 1.0;
+    ///             ddq[row0 + 1] = 0.0;
+    ///         }
+    ///         Ok(())
+    ///     }
+    /// }
+    ///
+    /// let path = Path::from_evaluator_2nd(NormalizedEvaluator2nd, 0.0, 1.0)?;
+    /// let out = path.evaluate_up_to_2nd(&[0.0, 0.5])?;
+    /// assert_eq!(out.q.shape(), (2, 2));
+    /// assert_eq!(out.q[(0, 1)], 0.125);
+    /// assert!(out.dddq.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn from_evaluator_2nd<E>(evaluator: E, s_min: f64, s_max: f64) -> Result<Self, PathError>
     where
         E: PathEvaluator2nd + 'static,
@@ -237,6 +305,66 @@ impl Path {
     /// # Errors
     /// - [`PathError::InvalidRange`](crate::diag::PathError::InvalidRange): `s_min >= s_max` or either value is non-finite
     /// - [`PathError::InvalidDimension`](crate::diag::PathError::InvalidDimension): evaluator dimension is zero
+    ///
+    /// # Example
+    /// The example below extends a two-dimensional explicit evaluator to third
+    /// order by writing jerk samples into the `dddq` buffer.
+    ///
+    /// ```rust
+    /// # fn main() -> Result<(), copp::diag::CoppError> {
+    /// use copp::diag::PathError;
+    /// use copp::path::{Path, PathEvaluator2nd, PathEvaluator3rd};
+    ///
+    /// struct NormalizedEvaluator3rd;
+    ///
+    /// impl PathEvaluator2nd for NormalizedEvaluator3rd {
+    ///     fn dim(&self) -> usize {
+    ///         2
+    ///     }
+    ///
+    ///     fn evaluate_up_to_2nd(
+    ///         &self,
+    ///         s: &[f64],
+    ///         q: &mut [f64],
+    ///         dq: &mut [f64],
+    ///         ddq: &mut [f64],
+    ///     ) -> Result<(), PathError> {
+    ///         for (col, &sj) in s.iter().enumerate() {
+    ///             let row0 = 2 * col;
+    ///             q[row0] = 0.5 * sj * sj;
+    ///             q[row0 + 1] = sj;
+    ///             dq[row0] = sj;
+    ///             dq[row0 + 1] = 1.0;
+    ///             ddq[row0] = 1.0;
+    ///             ddq[row0 + 1] = 0.0;
+    ///         }
+    ///         Ok(())
+    ///     }
+    /// }
+    ///
+    /// impl PathEvaluator3rd for NormalizedEvaluator3rd {
+    ///     fn evaluate_up_to_3rd(
+    ///         &self,
+    ///         s: &[f64],
+    ///         q: &mut [f64],
+    ///         dq: &mut [f64],
+    ///         ddq: &mut [f64],
+    ///         dddq: &mut [f64],
+    ///     ) -> Result<(), PathError> {
+    ///         self.evaluate_up_to_2nd(s, q, dq, ddq)?;
+    ///         dddq.fill(0.0);
+    ///         Ok(())
+    ///     }
+    /// }
+    ///
+    /// let path = Path::from_evaluator_3rd(NormalizedEvaluator3rd, 0.0, 1.0)?;
+    /// let out = path.evaluate_up_to_3rd(&[0.0, 0.5])?;
+    /// assert_eq!(out.q.shape(), (2, 2));
+    /// assert_eq!(out.q[(0, 1)], 0.125);
+    /// assert!(out.dddq.is_some());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn from_evaluator_3rd<E>(evaluator: E, s_min: f64, s_max: f64) -> Result<Self, PathError>
     where
         E: PathEvaluator3rd + 'static,
@@ -312,6 +440,33 @@ impl Path {
     /// - [`PathError::InvalidOrder`](crate::diag::PathError::InvalidOrder)       : `order < 3`
     /// - [`PathError::InvalidRange`](crate::diag::PathError::InvalidRange)       : invalid parameter range
     /// - [`PathError::SingularSystem`](crate::diag::PathError::SingularSystem)     : spline system is singular (extremely rare)
+    ///
+    /// # Example
+    /// The example below builds a spline through two-dimensional waypoints and
+    /// evaluates position samples.
+    ///
+    /// ```rust
+    /// # fn main() -> Result<(), copp::diag::CoppError> {
+    /// use copp::path::{Path, SplineConfig};
+    /// use nalgebra::DMatrix;
+    ///
+    /// let waypoints = DMatrix::from_row_slice(
+    ///     2,
+    ///     5,
+    ///     &[
+    ///         0.0, 0.25, 0.5, 0.75, 1.0,
+    ///         0.0, 0.1, -0.1, 0.2, 0.0,
+    ///     ],
+    /// );
+    /// let path = Path::from_waypoints(&waypoints, SplineConfig::default())?;
+    ///
+    /// let s = [0.0, 0.5, 1.0];
+    /// let out = path.evaluate_q(s.as_slice())?;
+    /// assert_eq!(out.q.shape(), (2, 3));
+    /// assert!(out.dq.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn from_waypoints(waypoints: &DMatrix<f64>, cfg: SplineConfig) -> Result<Self, PathError> {
         Self::from_waypoints_view(waypoints.as_view(), cfg)
     }
@@ -405,6 +560,9 @@ impl Path {
     /// - [`PathError::OutOfRangeS`] : a query value is out of range
     ///
     /// # Example
+    /// The example below evaluates an analytic path up to jerk using automatic
+    /// differentiation.
+    ///
     /// ```rust, no_run
     /// use copp::path::{Path, sin, cos};
     /// use copp::path::autodiff::Jet3;

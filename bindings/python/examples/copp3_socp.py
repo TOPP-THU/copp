@@ -1,89 +1,121 @@
-"""COPP3-SOCP: Convex-objective 3rd-order path parameterization via SOCP.
+"""Use COPP3-SOCP to solve a jerk-limited convex-objective timing problem.
 
-Replicates examples/copp3_socp.rs with matplotlib visualization.
-Objective: 1.0 * time + 0.1 * thermal_energy.
-Uses SCP (2 iterations) for jerk-constraint linearization.
+The example combines traversal-time and thermal-energy objectives, seeds the
+third-order model with TOPP2-RA, and performs one refinement around the first
+SOCP solution.
 """
 
 import numpy as np
-import copp
-from _common import (
-    lissajous_waypoints, plot_joint_kinematics,
-    plot_a_profile, plot_b_profile, plot_s_of_t, make_figure, save_figure,
-)
 
-# ─── 1) Build path from waypoints ───
-DIM = 3
-N = 1001
-waypoints = lissajous_waypoints(n_waypoints=200)
-path = copp.Path.from_waypoints(waypoints)
+import copp_py as copp
 
-s = np.linspace(*path.s_range, N)
-derivs = path.evaluate_up_to_3rd(s)
 
-# ─── 2) Build robot constraints: v,a,j in [-1, 1] ───
-robot = copp.Robot(dim=DIM, capacity=N)
-robot.with_s(s)
-robot.with_q(derivs.q, derivs.dq, derivs.ddq, derivs.dddq)
-robot.with_axial_velocity(np.ones(DIM), -np.ones(DIM))
-robot.with_axial_acceleration(np.ones(DIM), -np.ones(DIM))
-robot.with_axial_jerk(np.ones(DIM), -np.ones(DIM))
+def main() -> None:
+    try:
+        import jax
+        import jax.numpy as jnp
+    except ImportError as exc:
+        raise SystemExit(
+            'Install JAX to run this example: python -m pip install "copp-py[jax]"'
+        ) from exc
 
-# ─── 3) TOPP2-RA for initial linearization ───
-idx_s_interval = (0, N - 1)
-a_boundary = (0.0, 0.0)
-a_ra = copp.topp2_ra(robot, idx_s_interval, a_boundary)
+    jax.config.update("jax_enable_x64", True)
 
-robot.amax_substitute(a_ra, 0)
+    dim = 3
+    n = 1001
+    dt = 1.0e-3
 
-# ─── 4) COPP3-SOCP iteration 1 ───
-objectives = [
-    copp.Objective.time(1.0),
-    copp.Objective.thermal_energy(0.1, [1.0] * DIM),
-]
-options = copp.ClarabelOptions(allow_almost_solved=True)
+    # 1) Define q(s). Path.from_jax differentiates it up to third order.
+    def q_fn(s):
+        freq = jnp.array([2.0 * jnp.pi, 3.0 * jnp.pi, 5.0 * jnp.pi], dtype=jnp.float64)
+        phase = jnp.array([0.0, 0.3, 0.7], dtype=jnp.float64)
+        return jnp.sin(freq * s + phase)
 
-a1, b1, ns1 = copp.copp3_socp(
-    robot, 0, a_ra, (0.0, 0.0), (0.0, 0.0), objectives, options
-)
-t_final1, t_s1 = copp.s_to_t_topp3(s, a1, b1, ns1)
+    path = copp.Path.from_jax(q_fn, 0.0, 1.0)
+    s = np.linspace(0.0, 1.0, n, dtype=np.float64)
 
-# ─── 5) COPP3-SOCP iteration 2 (SCP) ───
-a2, b2, ns2 = copp.copp3_socp(
-    robot, 0, a1, (0.0, 0.0), (0.0, 0.0), objectives, options
-)
-t_final2, t_s2 = copp.s_to_t_topp3(s, a2, b2, ns2)
+    # 2) Build robot constraints (3-axis), then apply symmetric limits
+    # velocity/acceleration/jerk = [-1, 1].
+    robot = copp.Robot(dim, capacity=n)
+    robot.append_s(s)
+    robot.set_q_from_path_3rd(path, 0, n)
 
-dt = 1e-3
-s_t = copp.t_to_s_topp3(s, a2, b2, ns2, t_s2, dt=dt)
-t_grid = np.arange(len(s_t)) * dt
+    upper = np.ones(dim, dtype=np.float64)
+    lower = -upper
+    robot.add_velocity_limits(upper, lower, start_idx_s=0, length=n)
+    robot.add_acceleration_limits(upper, lower, start_idx_s=0, length=n)
+    robot.add_jerk_limits(upper, lower, start_idx_s=0, length=n)
 
-print(f"COPP3-SOCP done. dim={DIM}, N={N}")
-print(f"  Iter 1: t_final = {t_final1:.6f} s")
-print(f"  Iter 2: t_final = {t_final2:.6f} s")
-print(f"  s(t) samples = {len(s_t)}")
+    # 3) Use TOPP2-RA as the initial a(s) linearization for the third-order model.
+    topp2_problem = copp.solver.topp2_ra.Problem(
+        robot.constraints,
+        idx_s_interval=(0, n - 1),
+        a_boundary=(0.0, 0.0),
+    )
+    a_ra0 = copp.solver.topp2_ra.solve(topp2_problem, copp.solver.topp2_ra.Options())
+    robot.constraints.amax_substitute(a_ra0, 0)
 
-# ─── 6) Visualization ───
-fig, axes = make_figure(
-    f"COPP3-SOCP  (iter1={t_final1:.4f}s → iter2={t_final2:.4f}s)"
-)
+    # 4) Build COPP3 objective terms and solve COPP3-SOCP twice.
+    objectives = [
+        copp.objective.Time(1.0),
+        copp.objective.ThermalEnergy(0.1, np.ones(dim, dtype=np.float64)),
+    ]
+    options = copp.solver.copp3_socp.Options(allow_almost_solved=True)
 
-plot_a_profile(
-    axes[0, 0], s,
-    (a_ra, {"color": "k", "linestyle": "--", "linewidth": 0.6, "alpha": 0.5, "label": "TOPP2-RA"}),
-    (a1, {"color": "b", "linewidth": 0.6, "alpha": 0.7, "label": "COPP3 iter1"}),
-    (a2, {"color": "r", "linewidth": 0.8, "label": "COPP3 iter2"}),
-)
-plot_b_profile(
-    axes[0, 1], s,
-    (b1, {"color": "b", "linewidth": 0.6, "alpha": 0.7, "label": "COPP3 iter1"}),
-    (b2, {"color": "r", "linewidth": 0.8, "label": "COPP3 iter2"}),
-)
-plot_s_of_t(axes[1, 0], t_grid, s_t, suffix=" (iter2)")
+    problem1 = copp.solver.copp3_socp.Problem(
+        robot,
+        objectives,
+        a_ra0,
+        idx_s_start=0,
+        a_boundary=(0.0, 0.0),
+        b_boundary=(0.0, 0.0),
+        num_stationary_max=1,
+    )
+    profile1 = copp.solver.copp3_socp.solve(problem1, options)
+    t_final1, t_s1 = copp.interpolation.s_to_t_topp3(s, profile1, 0.0)
+    s_t1 = copp.interpolation.t_to_s_topp3_uniform(
+        s,
+        profile1,
+        t_s1,
+        dt,
+        t0=0.0,
+        include_final=True,
+    )
 
-q_t = path.evaluate_q(np.asarray(s_t))
-plot_joint_kinematics(
-    axes[1, 1], axes[2, 0], axes[2, 1], q_t.q, t_grid, dt, DIM, suffix=" (iter2)"
-)
+    problem2 = copp.solver.copp3_socp.Problem(
+        robot,
+        objectives,
+        profile1.a,
+        idx_s_start=0,
+        a_boundary=(0.0, 0.0),
+        b_boundary=(0.0, 0.0),
+        num_stationary_max=1,
+    )
+    profile2 = copp.solver.copp3_socp.solve(problem2, options)
+    t_final2, t_s2 = copp.interpolation.s_to_t_topp3(s, profile2, 0.0)
+    s_t2 = copp.interpolation.t_to_s_topp3_uniform(
+        s,
+        profile2,
+        t_s2,
+        dt,
+        t0=0.0,
+        include_final=True,
+    )
 
-save_figure(fig, "copp3_socp")
+    # 5) Print the tutorial summary.
+    print("COPP3-SOCP done. (The first iteration)")
+    print(f"dim = {dim}, N = {n}")
+    print(f"t_final = {t_final1:.6f} s")
+    print(f"a_profile.len() = {len(profile1.a)}")
+    print(f"b_profile.len() = {len(profile1.b)}")
+    print(f"s(t) samples = {len(s_t1)}")
+    print("---------")
+    print("COPP3-SOCP done. (The second iteration)")
+    print(f"t_final = {t_final2:.6f} s <= {t_final1:.6f} s")
+    print(f"a_profile.len() = {len(profile2.a)}")
+    print(f"b_profile.len() = {len(profile2.b)}")
+    print(f"s(t) samples = {len(s_t2)}")
+
+
+if __name__ == "__main__":
+    main()

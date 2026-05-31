@@ -15,6 +15,32 @@
 //! - Path grid uses station samples `s[0..=n]`.
 //! - State profile `a` is node-based (`a.len() == s.len()`).
 //! - Profile `b` is segment-based (`b.len() == s.len() - 1`).
+//!
+//! # Example
+//! The example below converts a second-order profile from station samples to
+//! cumulative time and then samples the inverse map `s(t)`.
+//!
+//! ```rust
+//! # fn main() -> Result<(), copp::diag::CoppError> {
+//! use copp::InterpolationMode;
+//! use copp::solver::topp2_ra::{s_to_t_topp2, t_to_s_topp2};
+//!
+//! let s = [0.0, 0.5, 1.0];
+//! let a = [1.0, 1.0, 1.0];
+//!
+//! let (_t_final, t_s) = s_to_t_topp2(&s, &a, 0.0)?;
+//! let s_t = t_to_s_topp2(
+//!     &s,
+//!     &a,
+//!     &t_s,
+//!     InterpolationMode::UniformTimeGrid(0.0, 0.25, true),
+//! )?;
+//!
+//! assert_eq!(s_t.first().copied(), Some(0.0));
+//! assert_eq!(s_t.last().copied(), Some(1.0));
+//! # Ok(())
+//! # }
+//! ```
 
 use crate::copp::InterpolationMode;
 use crate::diag::{

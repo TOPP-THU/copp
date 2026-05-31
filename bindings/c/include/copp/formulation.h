@@ -63,6 +63,25 @@ typedef enum CoppObjectiveKind {
  * length equal to the robot dimension. Torque is evaluated through the robot's
  * stored inverse-dynamics callback when provided, otherwise by the default
  * point model (`tau = ddq`).
+ *
+ * # Example
+ * The example below combines a time objective with a thermal-energy
+ * objective for a three-axis robot.
+ *
+ * ```c
+ * struct CoppSliceF64 empty = {NULL, 0};
+ * double normalize[] = {1.0, 1.0, 1.0};
+ * struct CoppObjective objectives[2] = {
+ *     {COPP_OBJECTIVE_KIND_TIME, 1.0, empty, empty, empty},
+ *     {
+ *         COPP_OBJECTIVE_KIND_THERMAL_ENERGY,
+ *         0.1,
+ *         empty,
+ *         empty,
+ *         (struct CoppSliceF64){normalize, 3},
+ *     },
+ * };
+ * ```
  */
 typedef struct CoppObjective {
     /**
@@ -93,6 +112,22 @@ typedef struct CoppObjective {
  * This is not an owning handle. `robot` and `objectives` are borrowed only
  * during the solver call, and the solver does not store those pointers after
  * the call returns.
+ *
+ * # Example
+ * The example below describes a COPP2 problem over the full station grid and
+ * borrows an objective array for one solver call.
+ *
+ * ```c
+ * struct Copp2Problem problem = {
+ *     robot,
+ *     0,
+ *     n - 1,
+ *     0.0,
+ *     0.0,
+ *     objectives,
+ *     2,
+ * };
+ * ```
  */
 typedef struct Copp2Problem {
     /**
@@ -132,7 +167,13 @@ typedef struct Copp2Problem {
  * solver calls such as `topp2_ra` and `copp_reach_set2_*`, and no pointer is
  * stored after the call returns.
  *
- * Refactor it after the C solver flow is validated.
+ * # Example
+ * The example below describes a TOPP2 problem over the full station grid with
+ * zero boundary accelerations.
+ *
+ * ```c
+ * struct Topp2Problem problem = {robot, 0, n - 1, 0.0, 0.0};
+ * ```
  */
 typedef struct Topp2Problem {
     /**
@@ -164,6 +205,19 @@ typedef struct Topp2Problem {
  * `num_stationary_*` stores the effective stationary head/tail interval
  * counts returned by the solver.  Both vectors are library-owned and must be
  * released together with `copp_profile_3rd_free`.
+ *
+ * # Example
+ * The example below receives a third-order solver profile, reads the first
+ * station, and releases the owned buffers.
+ *
+ * ```c
+ * struct CoppProfile3rd profile = {{0}, {0}, 0, 0};
+ * check(topp3_socp(problem, options, &profile));
+ *
+ * double a0 = profile.a.data[0];
+ * double b0 = profile.b.data[0];
+ * copp_profile_3rd_free(profile);
+ * ```
  */
 typedef struct CoppProfile3rd {
     /**
@@ -200,6 +254,25 @@ void copp_profile_3rd_free(struct CoppProfile3rd profile);
  * This is not an owning handle. `robot` and `a_linearization` are borrowed
  * only during the solver call.  Building the internal TOPP3 problem mutates the
  * robot's internal linearized third-order constraint cache.
+ *
+ * # Example
+ * The example below builds a TOPP3 descriptor using a seed `a` profile for
+ * third-order constraint linearization.
+ *
+ * ```c
+ * struct Topp3Problem problem = {
+ *     robot,
+ *     0,
+ *     (struct CoppSliceF64){a_seed.data, a_seed.len},
+ *     0.0,
+ *     0.0,
+ *     0.0,
+ *     0.0,
+ *     1,
+ *     1,
+ *     1e-10,
+ * };
+ * ```
  */
 typedef struct Topp3Problem {
     /**
@@ -250,6 +323,27 @@ typedef struct Topp3Problem {
  *
  * This extends `Topp3Problem` with borrowed objective descriptors.  It is
  * not an owning handle; all pointers are used only during the solver call.
+ *
+ * # Example
+ * The example below extends a TOPP3 descriptor with borrowed objective
+ * descriptors for a COPP3 solver call.
+ *
+ * ```c
+ * struct Copp3Problem problem = {
+ *     robot,
+ *     0,
+ *     (struct CoppSliceF64){a_seed.data, a_seed.len},
+ *     0.0,
+ *     0.0,
+ *     0.0,
+ *     0.0,
+ *     1,
+ *     1,
+ *     1e-10,
+ *     objectives,
+ *     num_objectives,
+ * };
+ * ```
  */
 typedef struct Copp3Problem {
     /**

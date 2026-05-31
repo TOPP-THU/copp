@@ -525,6 +525,19 @@ pub unsafe extern "C" fn copp_clarabel_default_options(
 /// output has length `s_len`; missing tail values are filled with zero and all
 /// entries are clamped to be non-negative.
 ///
+/// # Example
+/// The example below converts an expert raw primal vector into a second-order
+/// `a(s)` profile.
+///
+/// ```c
+/// struct CoppVecF64 a = {0};
+/// check(copp_clarabel_solution_to_profile_2nd(
+///     n,
+///     (struct CoppSliceF64){expert.x.data, expert.x.len},
+///     &a));
+/// copp_vec_f64_free(a);
+/// ```
+///
 /// # Safety
 /// `x.data` must be valid for `x.len` reads when `x.len` is non-zero.
 /// `out_a` must be valid for one `CoppVecF64` write and must later be
@@ -571,6 +584,21 @@ pub unsafe extern "C" fn copp_clarabel_solution_to_profile_2nd(
 /// `x` vector should be converted back into the accepted
 /// `(a, b, num_stationary)` profile. The station vector `s` defines the profile
 /// length and interval spacing.
+///
+/// # Example
+/// The example below converts an expert raw primal vector into a third-order
+/// `(a, b)` profile.
+///
+/// ```c
+/// struct CoppProfile3rd profile = {{0}, {0}, 0, 0};
+/// check(copp_clarabel_solution_to_profile_3rd(
+///     (struct CoppSliceF64){s, n},
+///     (struct CoppSliceF64){expert.x.data, expert.x.len},
+///     expert.profile.num_stationary_start,
+///     expert.profile.num_stationary_end,
+///     &profile));
+/// copp_profile_3rd_free(profile);
+/// ```
 ///
 /// # Safety
 /// `s.data` and `x.data` must be valid for their declared lengths when those
@@ -641,6 +669,23 @@ pub unsafe extern "C" fn copp_clarabel_solution_to_profile_3rd(
 /// On success, `out_a` owns a COPP-allocated vector over the closed station
 /// interval and must be released with `copp_vec_f64_free`.
 ///
+/// # Example
+/// The example below solves COPP2-SOCP with Clarabel options and releases the
+/// optimized `a(s)` profile.
+///
+/// ```c
+/// struct CoppClarabelOptions options;
+/// struct Copp2Problem problem = {
+///     robot, 0, n - 1, 0.0, 0.0, objectives, num_objectives,
+/// };
+/// struct CoppVecF64 a = {0};
+///
+/// check(copp_clarabel_default_options(&options));
+/// options.allow_almost_solved = true;
+/// check(copp2_socp(problem, options, &a));
+/// copp_vec_f64_free(a);
+/// ```
+///
 /// # Safety
 /// `problem.robot` must be a non-null handle returned by `copp_robot_create`
 /// and must remain valid for the duration of this call. `problem.objectives`
@@ -704,10 +749,32 @@ pub unsafe extern "C" fn copp2_socp(
 
 /// Solve a COPP2-SOCP problem and always return Clarabel diagnostics.
 ///
-/// This expert entry mirrors `copp2_socp_expert`: true runtime failures
-/// still return a non-OK `CoppStatus`, but non-accepted Clarabel statuses are
-/// reported inside `out_result` with `has_a == false` and the function returns
-/// `COPP_STATUS_OK`.
+/// This expert entry follows the advanced-diagnostics convention: true
+/// runtime failures still return a non-OK `CoppStatus`, but non-accepted
+/// Clarabel statuses are reported inside `out_result` with `has_a == false`
+/// and the function returns `COPP_STATUS_OK`.
+///
+/// # Example
+/// The example below distinguishes C ABI failures from non-accepted Clarabel
+/// solves and then frees all expert buffers.
+///
+/// ```c
+/// struct Copp2SocpResult result = {0};
+/// enum CoppStatus status = copp2_socp_expert(problem, options, &result);
+/// if (status != COPP_STATUS_OK) {
+///     fprintf(stderr, "COPP failed: %s\n", copp_last_error_message());
+/// } else if (!result.has_a) {
+///     fprintf(stderr,
+///             "Clarabel status=%d iterations=%u r_prim=%.3e r_dual=%.3e\n",
+///             (int)result.solver_status,
+///             result.iterations,
+///             result.r_prim,
+///             result.r_dual);
+/// } else {
+///     printf("accepted profile length: %zu\n", result.a.len);
+/// }
+/// copp2_socp_result_free(result);
+/// ```
 ///
 /// # Safety
 /// Same safety requirements as `copp2_socp`. `out_result` must be valid for

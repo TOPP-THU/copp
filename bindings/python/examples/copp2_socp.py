@@ -1,62 +1,87 @@
-"""COPP2-SOCP: Convex-objective 2nd-order path parameterization via SOCP.
+"""Use COPP2-SOCP to solve a second-order convex-objective timing problem.
 
-Replicates examples/copp2_socp.rs with matplotlib visualization.
-Objective: 1.0 * time + 0.1 * thermal_energy.
+The example combines traversal-time and thermal-energy objectives under
+velocity and acceleration limits, then samples the resulting trajectory in time.
 """
 
 import numpy as np
-import copp
-from _common import (
-    lissajous_waypoints, plot_joint_kinematics,
-    plot_a_profile, plot_b_profile, plot_s_of_t, make_figure, save_figure,
-)
 
-# ─── 1) Build path from waypoints ───
-DIM = 3
-N = 1001
-waypoints = lissajous_waypoints(n_waypoints=200)
-path = copp.Path.from_waypoints(waypoints)
+import copp_py as copp
 
-s = np.linspace(*path.s_range, N)
-derivs = path.evaluate_up_to_2nd(s)
 
-# ─── 2) Build robot constraints: v,a in [-1, 1] ───
-robot = copp.Robot(dim=DIM, capacity=N)
-robot.with_s(s)
-robot.with_q(derivs.q, derivs.dq, derivs.ddq)
-robot.with_axial_velocity(np.ones(DIM), -np.ones(DIM))
-robot.with_axial_acceleration(np.ones(DIM), -np.ones(DIM))
+def main() -> None:
+    try:
+        import jax
+        import jax.numpy as jnp
+    except ImportError as exc:
+        raise SystemExit(
+            'Install JAX to run this example: python -m pip install "copp-py[jax]"'
+        ) from exc
 
-# ─── 3) Solve COPP2-SOCP ───
-objectives = [
-    copp.Objective.time(1.0),
-    copp.Objective.thermal_energy(0.1, [1.0] * DIM),
-]
-idx_s_interval = (0, N - 1)
-a_boundary = (0.0, 0.0)
-options = copp.ClarabelOptions(allow_almost_solved=True)
+    jax.config.update("jax_enable_x64", True)
 
-a = copp.copp2_socp(robot, idx_s_interval, a_boundary, objectives, options)
+    dim = 3
+    n = 1001
+    dt = 1.0e-3
 
-# ─── 4) Post-process ───
-t_final, t_s = copp.s_to_t_topp2(s, a)
-dt = 1e-3
-s_t = copp.t_to_s_topp2(s, a, t_s, dt=dt)
-t_grid = np.arange(len(s_t)) * dt
+    # 1) Define q(s). Path.from_jax differentiates it up to third order.
+    def q_fn(s):
+        freq = jnp.array([2.0 * jnp.pi, 3.0 * jnp.pi, 5.0 * jnp.pi], dtype=jnp.float64)
+        phase = jnp.array([0.0, 0.3, 0.7], dtype=jnp.float64)
+        return jnp.sin(freq * s + phase)
 
-print(f"COPP2-SOCP done. dim={DIM}, N={N}")
-print(f"  t_final = {t_final:.6f} s")
-print(f"  s(t) samples = {len(s_t)}")
+    path = copp.Path.from_jax(q_fn, 0.0, 1.0)
+    s = np.linspace(0.0, 1.0, n, dtype=np.float64)
 
-# ─── 5) Visualization ───
-fig, axes = make_figure(f"COPP2-SOCP  (t_final = {t_final:.4f} s)")
+    # 2) Build robot constraints (3-axis), then apply symmetric limits
+    # velocity/acceleration = [-1, 1].
+    robot = copp.Robot(dim, capacity=n)
+    robot.append_s(s)
+    robot.set_q_from_path_2nd(path, 0, n)
 
-plot_a_profile(axes[0, 0], s, (a, {"color": "b", "linewidth": 0.8}))
-b = copp.a_to_b_topp2(s, a)
-plot_b_profile(axes[0, 1], s, (b, {"color": "g", "linewidth": 0.8}))
-plot_s_of_t(axes[1, 0], t_grid, s_t)
+    upper = np.ones(dim, dtype=np.float64)
+    lower = -upper
+    robot.add_velocity_limits(upper, lower, start_idx_s=0, length=n)
+    robot.add_acceleration_limits(upper, lower, start_idx_s=0, length=n)
 
-q_t = path.evaluate_q(np.asarray(s_t))
-plot_joint_kinematics(axes[1, 1], axes[2, 0], axes[2, 1], q_t.q, t_grid, dt, DIM)
+    # 3) Build COPP2 problem and solve COPP2-SOCP with Clarabel.
+    # Here we use a hybrid objective: 1.0 * time + 0.1 * thermal energy.
+    # With no inverse-dynamics callback installed, Robot uses point dynamics
+    # (`tau = ddq`), matching the reference tutorial setup.
+    objectives = [
+        copp.objective.Time(1.0),
+        copp.objective.ThermalEnergy(0.1, np.ones(dim, dtype=np.float64)),
+    ]
+    problem = copp.solver.copp2_socp.Problem(
+        robot,
+        objectives,
+        idx_s_interval=(0, n - 1),
+        a_boundary=(0.0, 0.0),
+    )
+    options = copp.solver.copp2_socp.Options(
+        allow_almost_solved=True,
+        allow_insufficient_progress=True,
+    )
+    a_socp = copp.solver.copp2_socp.solve(problem, options)
 
-save_figure(fig, "copp2_socp")
+    # 4) Post-process COPP2-SOCP results: a(s) -> t(s) -> s(t).
+    t_final, t_s = copp.interpolation.s_to_t_topp2(s, a_socp, 0.0)
+    s_t = copp.interpolation.t_to_s_topp2_uniform(
+        s,
+        a_socp,
+        t_s,
+        dt,
+        t0=0.0,
+        include_final=True,
+    )
+
+    # 5) Print the tutorial summary.
+    print("COPP2-SOCP done.")
+    print(f"dim = {dim}, N = {n}")
+    print(f"t_final = {t_final:.6f} s")
+    print(f"a_profile.len() = {len(a_socp)}")
+    print(f"s(t) samples = {len(s_t)}")
+
+
+if __name__ == "__main__":
+    main()

@@ -50,7 +50,9 @@ fn main() -> Result<(), CoppError> {
         .with_axial_acceleration((acc_max.as_slice(), n), (acc_min.as_slice(), n), 0)?
         .with_axial_jerk((jerk_max.as_slice(), n), (jerk_min.as_slice(), n), 0)?;
 
-    // 3) Solve TOPP2-RA to get a feasible linearization profile for TOPP3.
+    // 3) Build a reference a(s) profile for third-order linearization.
+    // Jerk-level constraints are linearized around a speed-squared profile.
+    // TOPP2-RA is a cheap and usually feasible initial guess.
     let idx_s_interval = (0, n - 1); // 0 <= k <= n-1
     let a_boundary = (0.0, 0.0); // a(0) = 0, a(1) = 0
     let a_ra0 = {
@@ -59,8 +61,10 @@ fn main() -> Result<(), CoppError> {
         topp2_ra(&topp2_problem, &options)?
     };
 
-    // 4) Solve COPP3-SOCP with the linearization profile from TOPP2-RA.
-    // The following code is optional. It substitutes the 1st-order constraint `a[k]<=amax[k]` with `a[k]<=a_ra0[k]` to get a less conservative COPP3-SOCP result. The user can skip this step and directly use `amax` for COPP3-SOCP.
+    // 4) Solve COPP3-SOCP with the TOPP2-RA reference profile.
+    // Optional: use the TOPP2-RA profile as the first-order upper bound for
+    // the first linearized third-order solve. Skip this to keep the original
+    // `amax` bounds.
     robot.constraints.amax_substitute(&a_ra0, 0)?;
 
     // Here we use a hybrid objective: 1.0 * time + 0.1 * thermal energy.
@@ -76,8 +80,9 @@ fn main() -> Result<(), CoppError> {
         .build()?;
 
     let profile_qp1 = {
-        // Note that in TOPP3Problem, the non-convex jerk constraints should be linearized into a convex one.
-        // More details can be found in the documentation of `Copp3ProblemBuilder::build_with_linearization`.
+        // build_with_linearization() converts nonlinear jerk rows into cached
+        // affine rows in `robot.constraints`, so the builder takes `&mut robot`.
+        // Rebuild the problem whenever the linearization profile changes.
         let copp3_problem = Copp3ProblemBuilder::new(
             &mut robot,
             &objectives,
@@ -113,9 +118,10 @@ fn main() -> Result<(), CoppError> {
     println!("b_profile.len() = {}", profile_qp1.b.len());
     println!("s(t) samples = {}", s_t1.len());
 
-    // 7) Solve COPP3-SOCP with the linearization profile from COPP3-SOCP.
+    // 7) Rebuild COPP3-SOCP around the first solution and solve one SCP refinement.
     let profile_qp2 = {
-        // Note that the linearization point is changed from `a_ra0` to `profile_qp1.a`. This is a standard sequential convex programming (SCP) procedure that can be iterated until convergence. Here we just show the 2nd iteration result.
+        // The linearization point changes from `a_ra0` to `profile_qp1.a`.
+        // Rebuilding refreshes the cached affine jerk rows before the second solve.
         let copp3_problem = Copp3ProblemBuilder::new(
             &mut robot,
             &objectives,

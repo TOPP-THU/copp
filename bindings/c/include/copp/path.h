@@ -153,6 +153,30 @@ enum CoppStatus copp_path_default_options(double s_min,
  * On success, `*out_path` receives a non-null handle that must be released
  * with `copp_path_free`.
  *
+ * # Example
+ * The example below builds a two-dimensional spline path from column-major
+ * waypoint coordinates.
+ *
+ * ```c
+ * enum { DIM = 2, NUM_WAYPOINTS = 4 };
+ * double waypoints[DIM * NUM_WAYPOINTS] = {
+ *     0.0, 0.0,
+ *     0.3, 0.2,
+ *     0.7, 0.8,
+ *     1.0, 1.0,
+ * };
+ *
+ * struct CoppPathOptions options;
+ * struct CoppPath *path = NULL;
+ * check(copp_path_default_options(0.0, 1.0, &options));
+ * check(copp_path_from_waypoints(
+ *     COPP_MATRIX_VIEW_F64_COLUMN_MAJOR(waypoints, DIM, NUM_WAYPOINTS),
+ *     options,
+ *     &path));
+ *
+ * copp_path_free(path);
+ * ```
+ *
  * \warning Safety
  * Non-empty matrix views in `waypoints` and `options` must point to valid
  * `double` arrays for their declared layouts for the duration of this call.
@@ -177,6 +201,32 @@ enum CoppStatus copp_path_from_waypoints(struct CoppMatrixViewF64 waypoints,
  *
  * On success, `*out_path` receives a non-null handle that must be released
  * with `copp_path_free`.
+ *
+ * # Example
+ * The example below wraps a one-dimensional external evaluator that provides
+ * `q`, `dq`, and `ddq`.
+ *
+ * ```c
+ * static enum CoppStatus eval_path_2nd(
+ *     void *user_data,
+ *     size_t dim,
+ *     size_t n,
+ *     const double *s,
+ *     double *q,
+ *     double *dq,
+ *     double *ddq)
+ * {
+ *     for (size_t j = 0; j < n; ++j) {
+ *         q[0 + j * dim] = s[j];
+ *         dq[0 + j * dim] = 1.0;
+ *         ddq[0 + j * dim] = 0.0;
+ *     }
+ *     return COPP_STATUS_OK;
+ * }
+ *
+ * struct CoppPath *path = NULL;
+ * check(copp_path_from_evaluator_2nd(1, 0.0, 1.0, eval_path_2nd, NULL, &path));
+ * ```
  *
  * \warning Safety
  * `evaluate_2nd` must be non-null and valid until `copp_path_free`.
@@ -204,6 +254,34 @@ enum CoppStatus copp_path_from_evaluator_2nd(size_t dim,
  *
  * On success, `*out_path` receives a non-null handle that must be released
  * with `copp_path_free`.
+ *
+ * # Example
+ * The example below wraps a one-dimensional external evaluator that also
+ * provides third derivatives.
+ *
+ * ```c
+ * static enum CoppStatus eval_path_3rd(
+ *     void *user_data,
+ *     size_t dim,
+ *     size_t n,
+ *     const double *s,
+ *     double *q,
+ *     double *dq,
+ *     double *ddq,
+ *     double *dddq)
+ * {
+ *     for (size_t j = 0; j < n; ++j) {
+ *         q[0 + j * dim] = s[j] * s[j];
+ *         dq[0 + j * dim] = 2.0 * s[j];
+ *         ddq[0 + j * dim] = 2.0;
+ *         dddq[0 + j * dim] = 0.0;
+ *     }
+ *     return COPP_STATUS_OK;
+ * }
+ *
+ * struct CoppPath *path = NULL;
+ * check(copp_path_from_evaluator_3rd(1, 0.0, 1.0, NULL, eval_path_3rd, NULL, &path));
+ * ```
  *
  * \warning Safety
  * `evaluate_3rd` must be non-null and valid until `copp_path_free`.
@@ -245,6 +323,29 @@ enum CoppStatus copp_path_s_range(const struct CoppPath *path,
  * Output matrices are column-major with shape `dim x s.len` and must be
  * released with `copp_matrix_f64_free`.
  *
+ * # Example
+ * The example below evaluates second-order path derivatives and reads one
+ * column-major output entry.
+ *
+ * ```c
+ * double s_eval[] = {0.0, 0.5, 1.0};
+ * struct CoppMatrixF64 q = {0};
+ * struct CoppMatrixF64 dq = {0};
+ * struct CoppMatrixF64 ddq = {0};
+ *
+ * check(copp_path_evaluate_up_to_2nd(
+ *     path,
+ *     (struct CoppSliceF64){s_eval, 3},
+ *     &q,
+ *     &dq,
+ *     &ddq));
+ *
+ * double q_axis0_at_sample1 = q.data[0 + 1 * q.rows];
+ * copp_matrix_f64_free(ddq);
+ * copp_matrix_f64_free(dq);
+ * copp_matrix_f64_free(q);
+ * ```
+ *
  * \warning Safety
  * `path` must be a non-null handle created by this module.
  * `s.data` must be valid for `s.len` reads when non-empty. Output pointers
@@ -261,6 +362,19 @@ enum CoppStatus copp_path_evaluate_up_to_2nd(const struct CoppPath *path,
  *
  * Output matrices are column-major with shape `dim x s.len` and must be
  * released with `copp_matrix_f64_free`.
+ *
+ * # Example
+ * The example below evaluates a third-order path and releases all returned
+ * matrices.
+ *
+ * ```c
+ * struct CoppMatrixF64 q = {0}, dq = {0}, ddq = {0}, dddq = {0};
+ * check(copp_path_evaluate_up_to_3rd(path, s_slice, &q, &dq, &ddq, &dddq));
+ * copp_matrix_f64_free(dddq);
+ * copp_matrix_f64_free(ddq);
+ * copp_matrix_f64_free(dq);
+ * copp_matrix_f64_free(q);
+ * ```
  *
  * \warning Safety
  * `path` must be a non-null handle created by this module.

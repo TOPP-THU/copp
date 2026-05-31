@@ -62,6 +62,20 @@ enum CoppStatus topp2_ra_default_options(struct Topp2RaOptions *out_options);
  * `a(s) = (ds/dt)^2` profile over the closed station interval and must be
  * released with `copp_vec_f64_free`.
  *
+ * # Example
+ * The example below solves a TOPP2-RA problem and releases the returned
+ * `a(s)` profile.
+ *
+ * ```c
+ * struct Topp2RaOptions options;
+ * struct Topp2Problem problem = {robot, 0, n - 1, 0.0, 0.0};
+ * struct CoppVecF64 a = {0};
+ *
+ * check(topp2_ra_default_options(&options));
+ * check(topp2_ra(problem, options, &a));
+ * copp_vec_f64_free(a);
+ * ```
+ *
  * \warning Safety
  * `problem.robot` must be a non-null handle returned by `copp_robot_create`
  * and must remain valid for the duration of this call.  The robot must not be
@@ -102,6 +116,20 @@ typedef struct CoppReachSet2Result {
  * `idx_s_final - idx_s_start + 1`, ordered as `a_max` then `a_min`.  Release
  * them with `copp_reach_set2_result_free`.
  *
+ * # Example
+ * The example below computes backward-only reachable intervals for a TOPP2
+ * problem.
+ *
+ * ```c
+ * struct Topp2RaOptions options;
+ * struct Topp2Problem problem = {robot, 0, n - 1, 0.0, 0.0};
+ * struct CoppReachSet2Result reach = {0};
+ *
+ * check(topp2_ra_default_options(&options));
+ * check(copp_reach_set2_backward(problem, options, &reach));
+ * copp_reach_set2_result_free(reach);
+ * ```
+ *
  * \warning Safety
  * `problem.robot` must be a non-null handle returned by `copp_robot_create`
  * and must remain valid for the duration of this call.  The robot must not be
@@ -121,6 +149,19 @@ enum CoppStatus copp_reach_set2_backward(struct Topp2Problem problem,
  * On success, `out_result` owns two vectors with length
  * `idx_s_final - idx_s_start + 1`, ordered as `a_max` then `a_min`.  Release
  * them with `copp_reach_set2_result_free`.
+ *
+ * # Example
+ * The example below computes bidirectional reachable intervals while
+ * enforcing both endpoint boundary values.
+ *
+ * ```c
+ * struct Topp2RaOptions options;
+ * struct CoppReachSet2Result reach = {0};
+ *
+ * check(topp2_ra_default_options(&options));
+ * check(copp_reach_set2_bidirectional(problem, options, &reach));
+ * copp_reach_set2_result_free(reach);
+ * ```
  *
  * \warning Safety
  * `problem.robot` must be a non-null handle returned by `copp_robot_create`

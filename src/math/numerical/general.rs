@@ -2,8 +2,7 @@
 //!
 //! # Method identity
 //! This module provides deterministic algebraic primitives with no allocation:
-//! - cross products in 2D/3D,
-//! - convexity predicates for 1D/2D affine supports.
+//! - cross products in 2D.
 
 /// 2D cross product under right-hand rule.
 /// If result>0, x2 is **anticlockwise** to x1.

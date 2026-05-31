@@ -43,6 +43,19 @@ typedef struct Copp3SocpResult Copp3SocpResult;
  * On success, `out_profile` owns COPP-allocated `a` and `b` vectors and must
  * be released with `copp_profile_3rd_free`.
  *
+ * # Example
+ * The example below solves TOPP3-LP and releases the accepted third-order
+ * profile.
+ *
+ * ```c
+ * struct CoppClarabelOptions options;
+ * struct CoppProfile3rd profile = {{0}, {0}, 0, 0};
+ *
+ * check(copp_clarabel_default_options(&options));
+ * check(topp3_lp(problem, options, &profile));
+ * copp_profile_3rd_free(profile);
+ * ```
+ *
  * \warning Safety
  * `problem.robot` must be a non-null mutable handle returned by
  * `copp_robot_create` and must remain valid for the duration of this call.
@@ -57,15 +70,18 @@ enum CoppStatus topp3_lp(struct Topp3Problem problem,
 /**
  * Solve a TOPP3-LP problem and always return Clarabel diagnostics.
  *
- * This expert entry mirrors `topp3_lp_expert`: true runtime failures
- * still return a non-OK `CoppStatus`, but non-accepted Clarabel statuses are
- * reported inside `out_result` with `has_profile == false` and the function
- * returns `COPP_STATUS_OK`.
+ * This expert entry follows the advanced-diagnostics convention: true
+ * runtime failures still return a non-OK `CoppStatus`, but non-accepted
+ * Clarabel statuses are reported inside `out_result` with
+ * `has_profile == false` and the function returns `COPP_STATUS_OK`.
  *
  * TOPP3-LP has no user-provided COPP objective list, so
  * `out_result.objective_value` is NaN and `out_result.objective_terms` is an
  * empty vector. Raw Clarabel objective values and solver diagnostics are still
  * populated.
+ *
+ * Use the same advanced-diagnostics pattern as \ref copp2_socp_expert. The
+ * result type is `Copp3SocpResult`, and `has_profile` replaces `has_a`.
  *
  * \warning Safety
  * Same safety requirements as `topp3_lp`. `out_result` must be valid for one
@@ -86,6 +102,19 @@ enum CoppStatus topp3_lp_expert(struct Topp3Problem problem,
  * On success, `out_profile` owns COPP-allocated `a` and `b` vectors and must
  * be released with `copp_profile_3rd_free`.
  *
+ * # Example
+ * The example below solves TOPP3-SOCP and releases the accepted third-order
+ * profile.
+ *
+ * ```c
+ * struct CoppClarabelOptions options;
+ * struct CoppProfile3rd profile = {{0}, {0}, 0, 0};
+ *
+ * check(copp_clarabel_default_options(&options));
+ * check(topp3_socp(problem, options, &profile));
+ * copp_profile_3rd_free(profile);
+ * ```
+ *
  * \warning Safety
  * `problem.robot` must be a non-null mutable handle returned by
  * `copp_robot_create` and must remain valid for the duration of this call.
@@ -100,15 +129,18 @@ enum CoppStatus topp3_socp(struct Topp3Problem problem,
 /**
  * Solve a TOPP3-SOCP problem and always return Clarabel diagnostics.
  *
- * This expert entry mirrors `topp3_socp_expert`: true runtime failures
- * still return a non-OK `CoppStatus`, but non-accepted Clarabel statuses are
- * reported inside `out_result` with `has_profile == false` and the function
- * returns `COPP_STATUS_OK`.
+ * This expert entry follows the advanced-diagnostics convention: true
+ * runtime failures still return a non-OK `CoppStatus`, but non-accepted
+ * Clarabel statuses are reported inside `out_result` with
+ * `has_profile == false` and the function returns `COPP_STATUS_OK`.
  *
  * TOPP3-SOCP has no user-provided COPP objective list, so
  * `out_result.objective_value` is NaN and `out_result.objective_terms` is an
  * empty vector. Raw Clarabel objective values and solver diagnostics are still
  * populated.
+ *
+ * Use the same advanced-diagnostics pattern as \ref copp2_socp_expert. The
+ * result type is `Copp3SocpResult`, and `has_profile` replaces `has_a`.
  *
  * \warning Safety
  * Same safety requirements as `topp3_socp`. `out_result` must be valid for

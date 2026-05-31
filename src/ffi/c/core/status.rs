@@ -391,6 +391,41 @@ pub extern "C" fn copp_last_error_message_len() -> usize {
 /// If `buffer` is non-null and `capacity > 0`, COPP always writes a
 /// null-terminated, possibly truncated UTF-8 prefix.
 ///
+/// # Example
+/// The example below reports both the portable status string and the
+/// thread-local detail, then copies the detail into caller-owned storage.
+/// Inline snippets elsewhere in this reference use `check(...)` as shorthand
+/// for this kind of status handling.
+///
+/// ```c
+/// static int check(enum CoppStatus status)
+/// {
+///     if (status == COPP_STATUS_OK) {
+///         return 0;
+///     }
+///
+///     fprintf(stderr, "status: %s\n", copp_status_message(status));
+///     fprintf(stderr, "detail: %s\n", copp_last_error_message());
+///     return 1;
+/// }
+///
+/// size_t robot_len = 0;
+/// enum CoppStatus status = copp_robot_len(NULL, &robot_len);
+/// if (check(status)) {
+///     return 1;
+/// }
+///
+/// size_t message_len = 0;
+/// copp_last_error_message_copy(NULL, 0, &message_len);
+///
+/// char *message = malloc(message_len + 1);
+/// if (message != NULL) {
+///     copp_last_error_message_copy(message, message_len + 1, NULL);
+///     fprintf(stderr, "owned detail: %s\n", message);
+///     free(message);
+/// }
+/// ```
+///
 /// # Safety
 /// `buffer` must be valid for `capacity` writable bytes when `capacity > 0`.
 /// `out_len`, when non-null, must be valid for one `size_t` write.
@@ -448,6 +483,33 @@ pub extern "C" fn copp_clear_last_error() {
 /// The message is interpreted as UTF-8 with lossy replacement for invalid byte
 /// sequences. Interior null bytes cannot appear in this C-string variant; use
 /// `copp_set_last_error_message_n` when the message length is known.
+///
+/// # Example
+/// The example below sets callback-specific detail before returning a non-OK
+/// status to COPP.
+///
+/// ```c
+/// static enum CoppStatus my_inverse_dynamics(
+///     void *user_data,
+///     size_t dim,
+///     const double *q,
+///     const double *dq,
+///     const double *ddq,
+///     double *tau)
+/// {
+///     if (dim > 0 && (q == NULL || dq == NULL || ddq == NULL || tau == NULL)) {
+///         copp_set_last_error_message(
+///             COPP_STATUS_ROBOT_DYNAMICS_ERROR,
+///             "inverse dynamics callback received a null vector");
+///         return COPP_STATUS_ROBOT_DYNAMICS_ERROR;
+///     }
+///
+///     for (size_t i = 0; i < dim; ++i) {
+///         tau[i] = ddq[i];
+///     }
+///     return COPP_STATUS_OK;
+/// }
+/// ```
 ///
 /// # Safety
 /// `message` must point to a null-terminated byte string when non-null.

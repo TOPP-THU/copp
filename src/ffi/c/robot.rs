@@ -257,6 +257,28 @@ pub unsafe extern "C" fn copp_robot_create(
 /// `inverse_dynamics_user_data` must remain valid until replaced, cleared, or
 /// the robot is freed.
 ///
+/// # Example
+/// The example below installs point dynamics explicitly as the robot's
+/// inverse-dynamics callback.
+///
+/// ```c
+/// static enum CoppStatus point_dynamics(
+///     void *user_data,
+///     size_t dim,
+///     const double *q,
+///     const double *dq,
+///     const double *ddq,
+///     double *tau)
+/// {
+///     for (size_t i = 0; i < dim; ++i) {
+///         tau[i] = ddq[i];
+///     }
+///     return COPP_STATUS_OK;
+/// }
+///
+/// check(copp_robot_set_inverse_dynamics(robot, point_dynamics, NULL));
+/// ```
+///
 /// # Safety
 /// `robot` must be a non-null handle returned by `copp_robot_create`.
 /// `inverse_dynamics`, when non-null, must not unwind and must write a
@@ -1352,6 +1374,21 @@ pub unsafe extern "C" fn copp_add_raw_constraint_3rd(
 /// dimension.  The same per-axis limits are applied to every station in
 /// `[start_idx_s, start_idx_s + len)`.  `len == 0` is accepted as a no-op.
 ///
+/// # Example
+/// The example below applies the same per-axis velocity box to every station
+/// in an interval.
+///
+/// ```c
+/// double vmax[] = {1.0, 1.0, 1.0};
+/// double vmin[] = {-1.0, -1.0, -1.0};
+/// check(copp_add_axial_velocity_limits(
+///     robot,
+///     0,
+///     n,
+///     (struct CoppSliceF64){vmax, 3},
+///     (struct CoppSliceF64){vmin, 3}));
+/// ```
+///
 /// # Safety
 /// `robot` must be a non-null handle returned by `copp_robot_create`.
 /// Non-empty slices must point to valid contiguous `double` values.
@@ -1470,6 +1507,21 @@ pub unsafe extern "C" fn copp_add_axial_acceleration_limits_matrix(
 /// same interval, for example via `copp_robot_set_q_3rd` or
 /// `copp_robot_sample_path_3rd`.
 ///
+/// # Example
+/// The example below applies broadcast jerk limits after third-order path
+/// derivative data has been stored.
+///
+/// ```c
+/// double jmax[] = {5.0, 5.0, 5.0};
+/// double jmin[] = {-5.0, -5.0, -5.0};
+/// check(copp_add_axial_jerk_limits(
+///     robot,
+///     0,
+///     n,
+///     (struct CoppSliceF64){jmax, 3},
+///     (struct CoppSliceF64){jmin, 3}));
+/// ```
+///
 /// # Safety
 /// `robot` must be a non-null handle returned by `copp_robot_create`.
 /// Non-empty slices must point to valid contiguous `double` values.
@@ -1531,6 +1583,21 @@ pub unsafe extern "C" fn copp_add_axial_jerk_limits_matrix(
 ///
 /// If the robot has no stored inverse-dynamics callback, point dynamics
 /// (`tau = ddq`) is used.
+///
+/// # Example
+/// The example below applies broadcast torque limits over an interval that
+/// already has second-order path derivative data.
+///
+/// ```c
+/// double tau_max[] = {40.0, 40.0, 40.0};
+/// double tau_min[] = {-40.0, -40.0, -40.0};
+/// check(copp_add_axial_torque_limits(
+///     robot,
+///     0,
+///     n,
+///     (struct CoppSliceF64){tau_max, 3},
+///     (struct CoppSliceF64){tau_min, 3}));
+/// ```
 ///
 /// # Safety
 /// `robot` must be a non-null handle returned by `copp_robot_create`.

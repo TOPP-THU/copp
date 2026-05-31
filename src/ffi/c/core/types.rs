@@ -40,6 +40,17 @@ pub enum CoppMatrixLayout {
 /// selected layout unless `rows == 0` or `cols == 0`, in which case `data` may
 /// be null. Borrowed matrix inputs must remain valid and must not be mutated
 /// concurrently for the duration of the call.
+///
+/// # Example
+/// The example below declares a borrowed column-major matrix view for a
+/// `dim x n` buffer.
+///
+/// ```c
+/// enum { DIM = 3, N = 100 };
+/// double column_major[DIM * N];
+/// struct CoppMatrixViewF64 view =
+///     COPP_MATRIX_VIEW_F64_COLUMN_MAJOR(column_major, DIM, N);
+/// ```
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct CoppMatrixViewF64 {
@@ -338,6 +349,18 @@ impl CoppSliceMutF64 {
 ///
 /// C callers may read `data[0..len]` and must release the vector exactly once
 /// with `copp_vec_f64_free`.
+///
+/// # Example
+/// The example below reads a solver-returned vector and then releases it.
+///
+/// ```c
+/// struct CoppVecF64 a = {0};
+/// check(topp2_ra(problem, options, &a));
+/// for (size_t k = 0; k < a.len; ++k) {
+///     printf("a[%zu] = %.17g\n", k, a.data[k]);
+/// }
+/// copp_vec_f64_free(a);
+/// ```
 #[repr(C)]
 #[derive(Debug)]
 pub struct CoppVecF64 {
@@ -368,6 +391,22 @@ pub struct CoppVecUsize {
 ///
 /// C callers may read `data[0..rows * cols]` using column-major indexing and
 /// must release the matrix exactly once with `copp_matrix_f64_free`.
+///
+/// # Example
+/// The example below reads a column-major path-evaluation matrix and releases
+/// all returned matrices.
+///
+/// ```c
+/// struct CoppMatrixF64 q = {0};
+/// struct CoppMatrixF64 dq = {0};
+/// struct CoppMatrixF64 ddq = {0};
+/// check(copp_path_evaluate_up_to_2nd(path, s_slice, &q, &dq, &ddq));
+///
+/// double q_row_i_col_j = q.data[i + j * q.rows];
+/// copp_matrix_f64_free(ddq);
+/// copp_matrix_f64_free(dq);
+/// copp_matrix_f64_free(q);
+/// ```
 #[repr(C)]
 #[derive(Debug)]
 pub struct CoppMatrixF64 {

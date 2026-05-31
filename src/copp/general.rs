@@ -18,6 +18,19 @@
 ///
 /// This enum describes how target sample times are provided to interpolation
 /// routines after a trajectory has been parameterized.
+///
+/// # Output behavior
+/// Interpolation helpers such as
+/// [`t_to_s_topp2`](crate::solver::topp2_ra::t_to_s_topp2) and
+/// [`t_to_s_topp3`](crate::solver::topp3_socp::t_to_s_topp3) preserve the
+/// requested sampling policy:
+/// - [`UniformTimeGrid`](InterpolationMode::UniformTimeGrid) emits samples
+///   `t0 + i * dt` up to the final time, and may append the exact final sample
+///   when `include_final` is `true`.
+/// - [`NonUniformTimeGrid`](InterpolationMode::NonUniformTimeGrid) returns one
+///   output value per caller-provided time stamp.
+/// - Samples outside the computed trajectory time range are reported as `NaN`
+///   by the interpolation helpers.
 pub enum InterpolationMode<'a> {
     /// Uniform sampling grid.
     ///

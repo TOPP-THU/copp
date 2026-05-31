@@ -1,9 +1,12 @@
 //! Foreign-function interfaces for COPP.
 //!
-//! Language-specific ABI surfaces live in submodules.  The C ABI is currently
-//! the only implemented surface and is re-exported here for compatibility with
-//! existing internal paths.
+//! Language-specific ABI surfaces live in feature-gated submodules.
 
+#[cfg(feature = "c")]
 pub mod c;
 
+#[cfg(feature = "python")]
+pub(crate) mod python;
+
+#[cfg(feature = "c")]
 pub use c::*;

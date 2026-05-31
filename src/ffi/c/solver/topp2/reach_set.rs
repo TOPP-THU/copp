@@ -84,6 +84,20 @@ impl CoppReachSet2Result {
 /// `idx_s_final - idx_s_start + 1`, ordered as `a_max` then `a_min`.  Release
 /// them with `copp_reach_set2_result_free`.
 ///
+/// # Example
+/// The example below computes backward-only reachable intervals for a TOPP2
+/// problem.
+///
+/// ```c
+/// struct Topp2RaOptions options;
+/// struct Topp2Problem problem = {robot, 0, n - 1, 0.0, 0.0};
+/// struct CoppReachSet2Result reach = {0};
+///
+/// check(topp2_ra_default_options(&options));
+/// check(copp_reach_set2_backward(problem, options, &reach));
+/// copp_reach_set2_result_free(reach);
+/// ```
+///
 /// # Safety
 /// `problem.robot` must be a non-null handle returned by `copp_robot_create`
 /// and must remain valid for the duration of this call.  The robot must not be
@@ -107,6 +121,19 @@ pub unsafe extern "C" fn copp_reach_set2_backward(
 /// On success, `out_result` owns two vectors with length
 /// `idx_s_final - idx_s_start + 1`, ordered as `a_max` then `a_min`.  Release
 /// them with `copp_reach_set2_result_free`.
+///
+/// # Example
+/// The example below computes bidirectional reachable intervals while
+/// enforcing both endpoint boundary values.
+///
+/// ```c
+/// struct Topp2RaOptions options;
+/// struct CoppReachSet2Result reach = {0};
+///
+/// check(topp2_ra_default_options(&options));
+/// check(copp_reach_set2_bidirectional(problem, options, &reach));
+/// copp_reach_set2_result_free(reach);
+/// ```
 ///
 /// # Safety
 /// `problem.robot` must be a non-null handle returned by `copp_robot_create`

@@ -220,6 +220,41 @@ size_t copp_last_error_message_len(void);
  * If `buffer` is non-null and `capacity > 0`, COPP always writes a
  * null-terminated, possibly truncated UTF-8 prefix.
  *
+ * # Example
+ * The example below reports both the portable status string and the
+ * thread-local detail, then copies the detail into caller-owned storage.
+ * Inline snippets elsewhere in this reference use `check(...)` as shorthand
+ * for this kind of status handling.
+ *
+ * ```c
+ * static int check(enum CoppStatus status)
+ * {
+ *     if (status == COPP_STATUS_OK) {
+ *         return 0;
+ *     }
+ *
+ *     fprintf(stderr, "status: %s\n", copp_status_message(status));
+ *     fprintf(stderr, "detail: %s\n", copp_last_error_message());
+ *     return 1;
+ * }
+ *
+ * size_t robot_len = 0;
+ * enum CoppStatus status = copp_robot_len(NULL, &robot_len);
+ * if (check(status)) {
+ *     return 1;
+ * }
+ *
+ * size_t message_len = 0;
+ * copp_last_error_message_copy(NULL, 0, &message_len);
+ *
+ * char *message = malloc(message_len + 1);
+ * if (message != NULL) {
+ *     copp_last_error_message_copy(message, message_len + 1, NULL);
+ *     fprintf(stderr, "owned detail: %s\n", message);
+ *     free(message);
+ * }
+ * ```
+ *
  * \warning Safety
  * `buffer` must be valid for `capacity` writable bytes when `capacity > 0`.
  * `out_len`, when non-null, must be valid for one `size_t` write.
@@ -237,6 +272,33 @@ void copp_clear_last_error(void);
  * The message is interpreted as UTF-8 with lossy replacement for invalid byte
  * sequences. Interior null bytes cannot appear in this C-string variant; use
  * `copp_set_last_error_message_n` when the message length is known.
+ *
+ * # Example
+ * The example below sets callback-specific detail before returning a non-OK
+ * status to COPP.
+ *
+ * ```c
+ * static enum CoppStatus my_inverse_dynamics(
+ *     void *user_data,
+ *     size_t dim,
+ *     const double *q,
+ *     const double *dq,
+ *     const double *ddq,
+ *     double *tau)
+ * {
+ *     if (dim > 0 && (q == NULL || dq == NULL || ddq == NULL || tau == NULL)) {
+ *         copp_set_last_error_message(
+ *             COPP_STATUS_ROBOT_DYNAMICS_ERROR,
+ *             "inverse dynamics callback received a null vector");
+ *         return COPP_STATUS_ROBOT_DYNAMICS_ERROR;
+ *     }
+ *
+ *     for (size_t i = 0; i < dim; ++i) {
+ *         tau[i] = ddq[i];
+ *     }
+ *     return COPP_STATUS_OK;
+ * }
+ * ```
  *
  * \warning Safety
  * `message` must point to a null-terminated byte string when non-null.
@@ -643,6 +705,17 @@ typedef enum CoppMatrixLayout {
  * selected layout unless `rows == 0` or `cols == 0`, in which case `data` may
  * be null. Borrowed matrix inputs must remain valid and must not be mutated
  * concurrently for the duration of the call.
+ *
+ * # Example
+ * The example below declares a borrowed column-major matrix view for a
+ * `dim x n` buffer.
+ *
+ * ```c
+ * enum { DIM = 3, N = 100 };
+ * double column_major[DIM * N];
+ * struct CoppMatrixViewF64 view =
+ *     COPP_MATRIX_VIEW_F64_COLUMN_MAJOR(column_major, DIM, N);
+ * ```
  */
 typedef struct CoppMatrixViewF64 {
     /**
@@ -739,6 +812,18 @@ typedef struct CoppSliceMutF64 {
  *
  * C callers may read `data[0..len]` and must release the vector exactly once
  * with `copp_vec_f64_free`.
+ *
+ * # Example
+ * The example below reads a solver-returned vector and then releases it.
+ *
+ * ```c
+ * struct CoppVecF64 a = {0};
+ * check(topp2_ra(problem, options, &a));
+ * for (size_t k = 0; k < a.len; ++k) {
+ *     printf("a[%zu] = %.17g\n", k, a.data[k]);
+ * }
+ * copp_vec_f64_free(a);
+ * ```
  */
 typedef struct CoppVecF64 {
     /**
@@ -781,6 +866,22 @@ typedef struct CoppVecUsize {
  *
  * C callers may read `data[0..rows * cols]` using column-major indexing and
  * must release the matrix exactly once with `copp_matrix_f64_free`.
+ *
+ * # Example
+ * The example below reads a column-major path-evaluation matrix and releases
+ * all returned matrices.
+ *
+ * ```c
+ * struct CoppMatrixF64 q = {0};
+ * struct CoppMatrixF64 dq = {0};
+ * struct CoppMatrixF64 ddq = {0};
+ * check(copp_path_evaluate_up_to_2nd(path, s_slice, &q, &dq, &ddq));
+ *
+ * double q_row_i_col_j = q.data[i + j * q.rows];
+ * copp_matrix_f64_free(ddq);
+ * copp_matrix_f64_free(dq);
+ * copp_matrix_f64_free(q);
+ * ```
  */
 typedef struct CoppMatrixF64 {
     /**
@@ -845,6 +946,19 @@ struct CoppProfile3rd;
  * output has length `s_len`; missing tail values are filled with zero and all
  * entries are clamped to be non-negative.
  *
+ * # Example
+ * The example below converts an expert raw primal vector into a second-order
+ * `a(s)` profile.
+ *
+ * ```c
+ * struct CoppVecF64 a = {0};
+ * check(copp_clarabel_solution_to_profile_2nd(
+ *     n,
+ *     (struct CoppSliceF64){expert.x.data, expert.x.len},
+ *     &a));
+ * copp_vec_f64_free(a);
+ * ```
+ *
  * \warning Safety
  * `x.data` must be valid for `x.len` reads when `x.len` is non-zero.
  * `out_a` must be valid for one `CoppVecF64` write and must later be
@@ -861,6 +975,21 @@ enum CoppStatus copp_clarabel_solution_to_profile_2nd(size_t s_len,
  * `x` vector should be converted back into the accepted
  * `(a, b, num_stationary)` profile. The station vector `s` defines the profile
  * length and interval spacing.
+ *
+ * # Example
+ * The example below converts an expert raw primal vector into a third-order
+ * `(a, b)` profile.
+ *
+ * ```c
+ * struct CoppProfile3rd profile = {{0}, {0}, 0, 0};
+ * check(copp_clarabel_solution_to_profile_3rd(
+ *     (struct CoppSliceF64){s, n},
+ *     (struct CoppSliceF64){expert.x.data, expert.x.len},
+ *     expert.profile.num_stationary_start,
+ *     expert.profile.num_stationary_end,
+ *     &profile));
+ * copp_profile_3rd_free(profile);
+ * ```
  *
  * \warning Safety
  * `s.data` and `x.data` must be valid for their declared lengths when those

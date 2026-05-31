@@ -75,6 +75,20 @@ pub unsafe extern "C" fn topp2_ra_default_options(out_options: *mut Topp2RaOptio
 /// `a(s) = (ds/dt)^2` profile over the closed station interval and must be
 /// released with `copp_vec_f64_free`.
 ///
+/// # Example
+/// The example below solves a TOPP2-RA problem and releases the returned
+/// `a(s)` profile.
+///
+/// ```c
+/// struct Topp2RaOptions options;
+/// struct Topp2Problem problem = {robot, 0, n - 1, 0.0, 0.0};
+/// struct CoppVecF64 a = {0};
+///
+/// check(topp2_ra_default_options(&options));
+/// check(topp2_ra(problem, options, &a));
+/// copp_vec_f64_free(a);
+/// ```
+///
 /// # Safety
 /// `problem.robot` must be a non-null handle returned by `copp_robot_create`
 /// and must remain valid for the duration of this call.  The robot must not be

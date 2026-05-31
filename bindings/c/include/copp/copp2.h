@@ -113,6 +113,23 @@ typedef struct Copp2SocpResult {
  * On success, `out_a` owns a COPP-allocated vector over the closed station
  * interval and must be released with `copp_vec_f64_free`.
  *
+ * # Example
+ * The example below solves COPP2-SOCP with Clarabel options and releases the
+ * optimized `a(s)` profile.
+ *
+ * ```c
+ * struct CoppClarabelOptions options;
+ * struct Copp2Problem problem = {
+ *     robot, 0, n - 1, 0.0, 0.0, objectives, num_objectives,
+ * };
+ * struct CoppVecF64 a = {0};
+ *
+ * check(copp_clarabel_default_options(&options));
+ * options.allow_almost_solved = true;
+ * check(copp2_socp(problem, options, &a));
+ * copp_vec_f64_free(a);
+ * ```
+ *
  * \warning Safety
  * `problem.robot` must be a non-null handle returned by `copp_robot_create`
  * and must remain valid for the duration of this call. `problem.objectives`
@@ -129,10 +146,32 @@ enum CoppStatus copp2_socp(struct Copp2Problem problem,
 /**
  * Solve a COPP2-SOCP problem and always return Clarabel diagnostics.
  *
- * This expert entry mirrors `copp2_socp_expert`: true runtime failures
- * still return a non-OK `CoppStatus`, but non-accepted Clarabel statuses are
- * reported inside `out_result` with `has_a == false` and the function returns
- * `COPP_STATUS_OK`.
+ * This expert entry follows the advanced-diagnostics convention: true
+ * runtime failures still return a non-OK `CoppStatus`, but non-accepted
+ * Clarabel statuses are reported inside `out_result` with `has_a == false`
+ * and the function returns `COPP_STATUS_OK`.
+ *
+ * # Example
+ * The example below distinguishes C ABI failures from non-accepted Clarabel
+ * solves and then frees all expert buffers.
+ *
+ * ```c
+ * struct Copp2SocpResult result = {0};
+ * enum CoppStatus status = copp2_socp_expert(problem, options, &result);
+ * if (status != COPP_STATUS_OK) {
+ *     fprintf(stderr, "COPP failed: %s\n", copp_last_error_message());
+ * } else if (!result.has_a) {
+ *     fprintf(stderr,
+ *             "Clarabel status=%d iterations=%u r_prim=%.3e r_dual=%.3e\n",
+ *             (int)result.solver_status,
+ *             result.iterations,
+ *             result.r_prim,
+ *             result.r_dual);
+ * } else {
+ *     printf("accepted profile length: %zu\n", result.a.len);
+ * }
+ * copp2_socp_result_free(result);
+ * ```
  *
  * \warning Safety
  * Same safety requirements as `copp2_socp`. `out_result` must be valid for

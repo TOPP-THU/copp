@@ -1,5 +1,51 @@
 #include "example_common.h"
 
+static int solve_copp3_socp_with_temporary_diagnostics(const char *label,
+                                                       struct Copp3Problem problem,
+                                                       struct CoppClarabelOptions options,
+                                                       struct CoppProfile3rd *out_profile)
+{
+    enum CoppStatus status = copp3_socp(problem, options, out_profile);
+    if (status == COPP_STATUS_OK)
+    {
+        return 0;
+    }
+
+    fprintf(stderr, "%s failed: %s\n", label, copp_status_message(status));
+    fprintf(stderr, "%s last error: %s\n", label, copp_last_error_message());
+
+    struct Copp3SocpResult result;
+    enum CoppStatus expert_status = copp3_socp_expert(problem, options, &result);
+    if (expert_status != COPP_STATUS_OK)
+    {
+        fprintf(stderr,
+                "%s expert diagnostics failed: %s\n",
+                label,
+                copp_status_message(expert_status));
+        fprintf(stderr, "%s expert last error: %s\n", label, copp_last_error_message());
+        return 1;
+    }
+
+    fprintf(stderr,
+            "%s expert diagnostics: solver_status=%d, has_profile=%d, iterations=%u, "
+            "r_prim=%.17g, r_dual=%.17g, obj_val=%.17g, obj_val_dual=%.17g, solve_time=%.17g, "
+            "x.len=%zu, z.len=%zu, s.len=%zu\n",
+            label,
+            (int)result.solver_status,
+            (int)result.has_profile,
+            result.iterations,
+            result.r_prim,
+            result.r_dual,
+            result.obj_val,
+            result.obj_val_dual,
+            result.solve_time,
+            result.x.len,
+            result.z.len,
+            result.s.len);
+    copp3_socp_result_free(result);
+    return 1;
+}
+
 int main(void)
 {
     /*
@@ -78,8 +124,11 @@ int main(void)
         2,
     };
 
-    status = copp3_socp(problem1, options_socp, &profile_qp1);
-    if (example_expect_ok(status, "copp3_socp first iteration"))
+    if (solve_copp3_socp_with_temporary_diagnostics(
+            "copp3_socp first iteration",
+            problem1,
+            options_socp,
+            &profile_qp1))
     {
         goto cleanup;
     }
@@ -116,8 +165,11 @@ int main(void)
         objectives,
         2,
     };
-    status = copp3_socp(problem2, options_socp, &profile_qp2);
-    if (example_expect_ok(status, "copp3_socp second iteration"))
+    if (solve_copp3_socp_with_temporary_diagnostics(
+            "copp3_socp second iteration",
+            problem2,
+            options_socp,
+            &profile_qp2))
     {
         goto cleanup;
     }

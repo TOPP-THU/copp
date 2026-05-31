@@ -5,6 +5,7 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 c_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
 repo_root=$(CDPATH= cd -- "$c_root/../.." && pwd)
 doxyfile="$c_root/Doxyfile"
+docs_html="$c_root/docs/html"
 docs_index="$c_root/docs/html/index.html"
 
 if ! command -v doxygen >/dev/null 2>&1; then
@@ -18,6 +19,8 @@ if ! command -v pwsh >/dev/null 2>&1; then
 fi
 
 pwsh -NoProfile -File "$script_dir/generate_headers.ps1"
+
+rm -rf "$docs_html"
 
 cd "$repo_root"
 doxygen "$doxyfile"

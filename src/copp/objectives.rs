@@ -16,12 +16,49 @@
 use crate::diag::CoppError;
 
 /// Objective terms for COPP optimization.
+///
 /// Continuous formulation is shared by COPP2/COPP3; discrete form depends on how `b` and torque are sampled.
+///
 /// Torque notation:
 /// - continuous: $\boldsymbol{\tau}(s)$.
 /// - discrete: `tau[i][k]` for joint `i` at `s[k]`.
 /// - COPP2: `tau[i][k]` is the right-limit value $\boldsymbol{\tau}(s_k^+)$, i.e. computed on interval $[s_k, s_{k+1}]$ from `(a[k], a[k+1], b[k])`.
 /// - COPP3: `tau[i][k]` is node value $\boldsymbol{\tau}(s_k)$, computed from `(a[k], b[k])`.
+///
+/// # Solver support
+/// The table below describes the built-in objective dispatcher. Expert solver
+/// entry points that accept a custom objective trait can represent other costs
+/// under the contract documented by that trait.
+///
+/// | Objective | COPP2/3 SOCP |
+/// |---|---|
+/// | [`Time`](CoppObjective::Time) | yes |
+/// | [`ThermalEnergy`](CoppObjective::ThermalEnergy) | yes |
+/// | [`Linear`](CoppObjective::Linear) | yes |
+/// | [`TotalVariationTorque`](CoppObjective::TotalVariationTorque) | yes |
+///
+/// For [`Linear`](CoppObjective::Linear), `beta` has length `s_len - 1` in
+/// COPP2 and length `s_len` in COPP3.
+///
+/// # Example
+/// The example below builds a standard COPP3-style objective array with time,
+/// thermal-energy, and linear terms.
+///
+/// ```rust
+/// use copp::prelude::CoppObjective;
+///
+/// let normalize = [1.0, 1.0];
+/// let alpha = [0.0, 0.1, 0.0];
+/// let beta = [0.0, 0.0, 0.0];
+///
+/// let objectives = [
+///     CoppObjective::Time(1.0),
+///     CoppObjective::ThermalEnergy(0.1, &normalize),
+///     CoppObjective::Linear(0.05, &alpha, &beta),
+/// ];
+///
+/// assert_eq!(objectives.len(), 3);
+/// ```
 pub enum CoppObjective<'a> {
     /// Time objective.
     /// + Continuous: $J_{\mathrm{time}} = w_t\int_{0}^{t_f} 1 \mathrm{d}t = w_t\int_{s_0}^{s_f} \frac{1}{\sqrt{a(s)}} \mathrm{d}s$.

@@ -1,8 +1,17 @@
 //! Waypoint-based spline path construction and evaluation kernels.
 //!
+//! Most users should construct waypoint paths through
+//! [`Path::from_waypoints`](crate::path::Path::from_waypoints), passing a
+//! [`SplineConfig`] when the default spline settings
+//! need to be changed. This module contains the lower-level spline
+//! implementation used by that constructor.
+//!
 //! # Design
 //!
-//! All splines are **odd-order** (`p = 2m+1`, `m >= 1`):
+//! All splines are **odd-order**:
+//! $$
+//! p = 2m + 1,\quad m \ge 1.
+//! $$
 //!   - order 3 (m=1): C2 cubic, boundary specifies v at both ends
 //!   - order 5 (m=2): C4 quintic, boundary specifies v,a at both ends
 //!   - order 7 (m=3): C6 septic, boundary specifies v,a,j at both ends
@@ -12,15 +21,19 @@
 //! `None` means all-zero (the most common default).
 //!
 //! Internally, all orders share a single `solve_general_thomas` solver that
-//! implements the O(N) block-Thomas algorithm on the `m×m` block-tridiagonal
-//! system arising from Hermite parametrisation + C^{m+1}..C^{2m} continuity.
+//! implements the O(N) block-Thomas algorithm on the `m x m` block-tridiagonal
+//! system arising from Hermite parametrisation and
+//! $$
+//! C^{m+1}, \ldots, C^{2m}
+//! $$
+//! continuity.
 
 use crate::diag::PathError;
 use crate::path::OutOfRangeMode;
 use nalgebra::{DMatrix, DMatrixView, DVector};
 use rayon::prelude::*;
 
-// ── Public configuration ─────────────────────────────────────────────────────
+// --- Public configuration ----------------------------------------------------
 
 /// Parameter assignment policy for waypoint splines.
 #[derive(Clone, Copy, Debug)]
@@ -33,6 +46,49 @@ pub enum Parametrization {
 ///
 /// The default is a quintic spline on `s in [0, 1]` with zero endpoint
 /// derivative boundary conditions and out-of-range errors.
+///
+/// Most callers use this type through
+/// [`Path::from_waypoints`](crate::path::Path::from_waypoints) rather than
+/// constructing [`SplinePath`] directly.
+///
+/// # Example
+/// The example below customizes the waypoint parameter range and endpoint
+/// derivative conditions for a two-dimensional quintic spline.
+///
+/// ```rust
+/// # fn main() -> Result<(), copp::diag::CoppError> {
+/// use copp::path::{OutOfRangeMode, Parametrization, Path, SplineConfig};
+/// use nalgebra::DMatrix;
+///
+/// let waypoints = DMatrix::from_row_slice(
+///     2,
+///     3,
+///     &[
+///         0.0, 0.5, 1.0,
+///         0.0, 0.2, 0.0,
+///     ],
+/// );
+///
+/// // For order 5, m = 2, so each endpoint state is `(dim x 2)`:
+/// // column 0 is velocity and column 1 is acceleration.
+/// let start_state = DMatrix::from_row_slice(2, 2, &[0.0, 0.0, 0.0, 0.0]);
+/// let end_state = DMatrix::from_row_slice(2, 2, &[0.0, 0.0, 0.0, 0.0]);
+///
+/// let cfg = SplineConfig {
+///     order: 5,
+///     parametrization: Parametrization::Uniform,
+///     s_min: 0.0,
+///     s_max: 2.0,
+///     out_of_range_mode: OutOfRangeMode::Error,
+///     start_state: Some(start_state),
+///     end_state: Some(end_state),
+/// };
+///
+/// let path = Path::from_waypoints(&waypoints, cfg)?;
+/// assert_eq!(path.dim(), 2);
+/// # Ok(())
+/// # }
+/// ```
 pub struct SplineConfig {
     /// Spline order: must be an odd number >= 3.
     pub order: usize,
@@ -67,14 +123,18 @@ impl Default for SplineConfig {
     }
 }
 
-// ── SplinePath ────────────────────────────────────────────────────────────────
+// --- SplinePath ---------------------------------------------------------------
 
-/// Piecewise-polynomial path in normalised segment coordinates.
+/// Low-level piecewise-polynomial path in normalised segment coordinates.
 ///
 /// Coefficients are stored in column-major blocks by dimension:
 /// `[dim0_seg0.., dim0_seg1.., ..., dim1_seg0.., ...]`.
+///
+/// Most users should construct a public [`Path`](crate::path::Path) with
+/// [`Path::from_waypoints`](crate::path::Path::from_waypoints) instead of using
+/// this implementation type directly.
 pub struct SplinePath {
-    // ── Evaluation metadata (all cheap Copy types) ───────────────────────
+    // --- Evaluation metadata (all cheap Copy types) ----------------------
     /// Polynomial order used for each spline segment.
     pub order: usize,
     /// Lower endpoint of the path parameter range.
@@ -89,7 +149,7 @@ pub struct SplinePath {
     /// `inv_ds = n_segments / (s_max - s_min)`.
     /// Each derivative order gains one additional factor of `inv_ds`.
     inv_ds: f64,
-    // ── Coefficient storage ───────────────────────────────────────────────
+    // --- Coefficient storage ---------------------------------------------
     /// Flat Horner coefficients, layout: `[dim][segment][coef]`.
     coeffs: Vec<f64>,
 }
@@ -122,7 +182,7 @@ impl SplinePath {
         let n_coef = order + 1;
         let m = (order - 1) / 2;
 
-        // Validate / extract boundary state (dim × m)
+        // Validate / extract boundary state (dim x m)
         let start = extract_boundary(cfg.start_state.as_ref(), dim, m)?;
         let end = extract_boundary(cfg.end_state.as_ref(), dim, m)?;
         let coeffs = solve_general_thomas(waypoints, order, m, &start, &end)?;
@@ -267,9 +327,9 @@ impl SplinePath {
     }
 }
 
-// ── Boundary helpers ──────────────────────────────────────────────────────────
+// --- Boundary helpers --------------------------------------------------------
 
-/// Extract boundary state as a flat `dim × m` array (row-major: `[d][r]`).
+/// Extract boundary state as a flat `dim x m` array (row-major: `[d][r]`).
 /// Returns `vec![0; dim*m]` when `state` is `None`.
 fn extract_boundary(
     state: Option<&DMatrix<f64>>,
@@ -294,7 +354,7 @@ fn extract_boundary(
     }
 }
 
-// ── Unified O(N) block-Thomas solver ─────────────────────────────────────────
+// --- Unified O(N) block-Thomas solver ----------------------------------------
 //
 // For any odd order p=2m+1 with uniform parametrisation (h=1 per segment):
 //
@@ -307,9 +367,9 @@ fn extract_boundary(
 //
 // Enforcing C^{m+1}..C^{2m} continuity at each interior node gives:
 //
-//   A·u_{i-1}  +  B·u_i  +  C·u_{i+1}  =  R·[dy_{i-1}, dy_i]^T
+//   A*u_{i-1}  +  B*u_i  +  C*u_{i+1}  =  R*[dy_{i-1}, dy_i]^T
 //
-// where A, B, C, R are constant m×m (resp. m×2) matrices depending only on m.
+// where A, B, C, R are constant m x m (resp. m x 2) matrices depending only on m.
 // These are stored as compile-time constants for m=1,2,3 and computed
 // at run-time for larger m via the general formula.
 //
@@ -320,22 +380,22 @@ fn extract_boundary(
 //   u(0)   = start_state[d, :]   (the m boundary derivative values)
 //   u(N-1) = end_state[d, :]
 //
-// These are absorbed as known vectors; the interior system has size (N-2) × m.
+// These are absorbed as known vectors; the interior system has size (N-2) x m.
 
-// ── Block matrices ────────────────────────────────────────────────────────────
+// --- Block matrices ----------------------------------------------------------
 
 /// Precomputed block-tridiagonal matrices for a given `m`.
 ///
-/// All m×m matrices use `DMatrix<f64>` for nalgebra operations.
-/// `h_coeff` has shape `(m+1) × (1+2m)`.
+/// All `m x m` matrices use `DMatrix<f64>` for nalgebra operations.
+/// `h_coeff` has shape `(m+1) x (1+2m)`.
 struct BlockMatrices {
     m: usize,
     a: DMatrix<f64>,
     b: DMatrix<f64>,
     c: DMatrix<f64>,
-    /// R: m×2
+    /// R: `m x 2`.
     r: DMatrix<f64>,
-    /// shape (m+1) × (1+2m); row i: a[m+1+i]
+    /// Shape `(m+1) x (1+2m)`; row i: `a[m+1+i]`.
     h_coeff: DMatrix<f64>,
 }
 
@@ -420,7 +480,7 @@ impl BlockMatrices {
     fn general(m: usize) -> Self {
         let p = 2 * m + 1;
 
-        // Build M (m+1 × m+1): endpoint conditions at t=1
+        // Build M ((m+1) x (m+1)): endpoint conditions at t=1
         // M[r][k-(m+1)] = C(k, r)  for r=0..m, k=m+1..2m+1
         let n = m + 1;
 
@@ -471,7 +531,7 @@ impl BlockMatrices {
         }
         let minv = aug.columns(n, n).into_owned();
 
-        // RHS basis vectors: shape (n) × (1+2m)
+        // RHS basis vectors: shape n x (1+2m)
         let basis = 1 + 2 * m;
         let mut rhs_mat = DMatrix::<f64>::zeros(n, basis);
         rhs_mat[(0, 0)] = 1.0;
@@ -584,11 +644,11 @@ impl BlockMatrices {
     }
 }
 
-// ── Main solver ───────────────────────────────────────────────────────────────
+// --- Main solver -------------------------------------------------------------
 
 /// Unified O(N) block-Thomas spline solver for any odd order `p = 2m+1`.
 ///
-/// `start_bd` and `end_bd` are flat `dim × m` arrays (row-major) containing
+/// `start_bd` and `end_bd` are flat `dim x m` arrays (row-major) containing
 /// the m boundary derivative values at the first and last waypoint respectively.
 fn solve_general_thomas(
     waypoints: DMatrixView<'_, f64>,
@@ -631,7 +691,7 @@ fn solve_general_thomas(
 /// # Block-Thomas algorithm
 ///
 /// The block-tridiagonal system is:
-///   A·u_{i-1} + B·u_i + C·u_{i+1} = rhs_i,  i=1..N-2
+///   A*u_{i-1} + B*u_i + C*u_{i+1} = rhs_i,  i=1..N-2
 /// with u_0 = u_start, u_{N-1} = u_end (known boundary values).
 ///
 /// Forward sweep: B'_0 = B - A*(0) = B (u_{-1}=u_start contributes only to rhs).
@@ -668,8 +728,8 @@ fn thomas_row(
 
     let ni = n - 2; // number of interior nodes (indices 1..=n-2)
 
-    // ── Forward sweep ─────────────────────────────────────────────────────────
-    // b_inv_c_list[i] : B'_i^{-1} * C   (m×m DMatrix)
+    // --- Forward sweep -------------------------------------------------------
+    // b_inv_c_list[i] : B'_i^{-1} * C   (m x m DMatrix)
     // b_inv_r_list[i] : B'_i^{-1} * r'_i (m-DVector)
     // Forward sweep: accumulate B'^{-1}*C and B'^{-1}*rhs using DMatrix
     let mut b_inv_c_list: Vec<DMatrix<f64>> = Vec::with_capacity(ni);
@@ -709,7 +769,7 @@ fn thomas_row(
         b_inv_r_list.push(lu.solve(&rhs_curr).ok_or(PathError::SingularSystem)?);
     }
 
-    // ── Back substitution ──────────────────────────────────────────────────────
+    // --- Back substitution ---------------------------------------------------
     // u_list[i] stores the recovered derivative DVector at interior node i+1.
     let mut u_list: Vec<DVector<f64>> = vec![DVector::zeros(m); ni];
     u_list[ni - 1] = b_inv_r_list[ni - 1].clone();
@@ -717,7 +777,7 @@ fn thomas_row(
         u_list[i] = &b_inv_r_list[i] - &b_inv_c_list[i] * &u_list[i + 1];
     }
 
-    // ── Reconstruct Horner coefficients ───────────────────────────────────────
+    // --- Reconstruct Horner coefficients ------------------------------------
     let u_at = |k: usize| -> &[f64] {
         if k == 0 {
             u_start

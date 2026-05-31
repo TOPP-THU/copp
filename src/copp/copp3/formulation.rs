@@ -155,11 +155,47 @@ pub struct Topp3Problem<'a> {
     pub(crate) num_stationary: (usize, usize),
 }
 
-/// Builder for [`Topp3Problem`](crate::solver::topp3_lp::Topp3Problem), including optional in-build linearization.
+/// Builder for [`Topp3Problem`](crate::solver::topp3_socp::Topp3Problem), including optional in-build linearization.
 ///
 /// # Side effect notice
-/// `build_with_linearization()` updates cached affine linearization data inside [`Constraints`](crate::constraints::Constraints).
+/// [`build_with_linearization`](Topp3ProblemBuilder::build_with_linearization) updates
+/// cached affine linearization data inside [`Constraints`](crate::constraints::Constraints).
 /// Raw jerk constraints remain unchanged.
+///
+/// # Why mutable?
+/// Third-order jerk rows are stored in nonconvex form after
+/// [`Robot::with_axial_jerk`](crate::robot::Robot::with_axial_jerk) or
+/// [`Constraints::with_constraint_3order`](crate::constraints::Constraints::with_constraint_3order).
+/// [`build_with_linearization`](Topp3ProblemBuilder::build_with_linearization)
+/// evaluates an affine approximation around
+/// [`a_linearization`](Topp3ProblemBuilder::a_linearization) and
+/// writes the generated coefficients into the constraint
+/// cache. Rebuild the problem whenever the linearization profile changes.
+///
+/// # Example
+/// The example below builds a TOPP3 problem and lets the builder linearize the third-order constraints.
+///
+/// ```rust
+/// # fn main() -> Result<(), copp::diag::CoppError> {
+/// use copp::robot::Robot;
+/// use copp::solver::topp3_lp::Topp3ProblemBuilder;
+///
+/// let mut robot = Robot::with_capacity(2usize, 3);
+/// let s = [0.0, 0.5, 1.0];
+/// robot.with_s(s.as_slice())?;
+///
+/// let a_linearization = [0.0, 0.25, 0.0];
+/// let _problem = Topp3ProblemBuilder::new(
+///     &mut robot,
+///     0,
+///     &a_linearization,
+///     (0.0, 0.0),
+///     (0.0, 0.0),
+/// )
+/// .build_with_linearization()?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct Topp3ProblemBuilder<'a> {
     /// Mutable constraint storage used to build linearized TOPP3 problem data.
     pub constraints: &'a mut Constraints,
@@ -182,7 +218,7 @@ pub struct Topp3ProblemBuilder<'a> {
     /// Discrete code form:
     /// `1.0 / max(a_linearization, a_linearization_floor).sqrt()`.
     ///
-    /// More details are available in the [`Topp3Problem`](crate::solver::topp3_lp::Topp3Problem) documentation.
+    /// More details are available in the [`Topp3Problem`](crate::solver::topp3_socp::Topp3Problem) documentation.
     pub a_linearization_floor: f64,
 }
 
@@ -251,7 +287,11 @@ impl<'a> Topp3ProblemBuilder<'a> {
         self
     }
 
-    /// Set denominator floor used in linearization.
+    /// Set denominator floor used in third-order linearization near `a = 0`.
+    ///
+    /// [`build_with_linearization`](Self::build_with_linearization) applies
+    /// `1.0 / max(a_linearization[k], floor).sqrt()` when converting nonlinear
+    /// jerk rows into affine rows.
     #[inline]
     pub fn with_a_linearization_floor(mut self, floor: f64) -> Self {
         self.a_linearization_floor = floor;
@@ -260,7 +300,16 @@ impl<'a> Topp3ProblemBuilder<'a> {
 
     /// Build a TOPP3 problem and linearize third-order constraints in one step.
     ///
-    /// This validates boundaries/interval/floor first, then writes linearized jerk buffers.
+    /// This validates boundaries/interval/floor first, then writes linearized jerk buffers
+    /// inside [`Constraints`](crate::constraints::Constraints). The generated rows
+    /// can be inspected with
+    /// [`Constraints::get_jerk_linear_constraints`](crate::constraints::Constraints::get_jerk_linear_constraints).
+    ///
+    /// # Rebuilding rule
+    /// If a later solver result is used as a new
+    /// [`a_linearization`](Topp3ProblemBuilder::a_linearization), create a new
+    /// builder and call [`build_with_linearization`](Topp3ProblemBuilder::build_with_linearization)
+    /// again before solving.
     pub fn build_with_linearization(self) -> Result<Topp3Problem<'a>, CoppError> {
         check_boundary_state_copp3_valid(self.a_boundary, self.b_boundary)?;
         if self.a_linearization.is_empty() {
@@ -337,6 +386,46 @@ pub struct Copp3Problem<'a, M: RobotTorque> {
 }
 
 /// Builder for [`Copp3Problem`](crate::solver::copp3_socp::Copp3Problem).
+///
+/// # Why mutable?
+/// COPP3 uses the same third-order linearization cache as TOPP3. The builder
+/// takes [`&mut Robot<M>`](crate::robot::RobotTorque) because
+/// [`build_with_linearization`](Copp3ProblemBuilder::build_with_linearization) converts nonconvex
+/// jerk rows into affine rows around [`a_linearization`](Copp3ProblemBuilder::a_linearization) and stores those rows in
+/// [`robot.constraints`](crate::robot::Robot::constraints).
+/// Rebuild the problem whenever the linearization profile changes.
+///
+/// # Example
+/// The example below builds a COPP3 problem with time and thermal objectives, including the required third-order linearization profile.
+///
+/// ```rust
+/// # fn main() -> Result<(), copp::diag::CoppError> {
+/// use copp::robot::Robot;
+/// use copp::solver::copp3_socp::{Copp3ProblemBuilder, CoppObjective};
+///
+/// let mut robot = Robot::with_capacity(2usize, 3);
+/// let s = [0.0, 0.5, 1.0];
+/// robot.with_s(s.as_slice())?;
+///
+/// let a_linearization = [0.0, 0.25, 0.0];
+/// let normalize = [1.0, 1.0];
+/// let objectives = [
+///     CoppObjective::Time(1.0),
+///     CoppObjective::ThermalEnergy(0.1, &normalize),
+/// ];
+///
+/// let _problem = Copp3ProblemBuilder::new(
+///     &mut robot,
+///     &objectives,
+///     0,
+///     &a_linearization,
+///     (0.0, 0.0),
+///     (0.0, 0.0),
+/// )
+/// .build_with_linearization()?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct Copp3ProblemBuilder<'a, M: RobotTorque> {
     /// A robot with torque implemented, which defines the constraints and dynamic of the problem.
     pub robot: &'a mut Robot<M>,
@@ -409,7 +498,11 @@ impl<'a, M: RobotTorque> Copp3ProblemBuilder<'a, M> {
         self
     }
 
-    /// Set denominator floor used in linearization.
+    /// Set denominator floor used in third-order linearization near `a = 0`.
+    ///
+    /// [`build_with_linearization`](Self::build_with_linearization) applies
+    /// `1.0 / max(a_linearization[k], floor).sqrt()` when converting nonlinear
+    /// jerk rows into affine rows.
     #[inline]
     pub fn with_a_linearization_floor(mut self, floor: f64) -> Self {
         self.a_linearization_floor = floor;
@@ -418,7 +511,14 @@ impl<'a, M: RobotTorque> Copp3ProblemBuilder<'a, M> {
 
     /// Build a validated COPP3 problem and linearize third-order constraints in one step.
     ///
-    /// This validates boundaries/interval/floor first, then writes linearized jerk buffers.
+    /// This validates boundaries/interval/floor first, then writes linearized jerk buffers
+    /// inside [`Constraints`](crate::constraints::Constraints). The generated rows
+    /// can be inspected with
+    /// [`Constraints::get_jerk_linear_constraints`](crate::constraints::Constraints::get_jerk_linear_constraints).
+    ///
+    /// # Rebuilding rule
+    /// If a later solver result is used as a new [`a_linearization`](Copp3ProblemBuilder::a_linearization), create a new
+    /// builder and call [`build_with_linearization`](Copp3ProblemBuilder::build_with_linearization) again before solving.
     pub fn build_with_linearization(self) -> Result<Copp3Problem<'a, M>, CoppError> {
         check_boundary_state_copp3_valid(self.a_boundary, self.b_boundary)?;
         if self.a_linearization.is_empty() {

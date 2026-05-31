@@ -30,6 +30,19 @@ extern "C" {
  * On success, `out_b` owns a COPP-allocated vector and must be released with
  * `copp_vec_f64_free`.
  *
+ * # Example
+ * The example below converts a solved second-order node profile into
+ * interval-based `b` values.
+ *
+ * ```c
+ * struct CoppVecF64 b = {0};
+ * check(copp_a_to_b_2nd(
+ *     (struct CoppSliceF64){s, n},
+ *     (struct CoppSliceF64){a.data, a.len},
+ *     &b));
+ * copp_vec_f64_free(b);
+ * ```
+ *
  * \warning Safety
  * `s.data` and `a.data` must be valid for `len` reads when their lengths are
  * non-zero. `out_b` must be valid for one `CoppVecF64` write.
@@ -43,6 +56,22 @@ enum CoppStatus copp_a_to_b_2nd(struct CoppSliceF64 s,
  *
  * On success, `*out_t_final` receives the final time and `out_t_s` owns a
  * COPP-allocated vector that must be released with `copp_vec_f64_free`.
+ *
+ * # Example
+ * The example below converts a TOPP2 `a(s)` profile into cumulative time
+ * samples and the final duration.
+ *
+ * ```c
+ * double t_final = 0.0;
+ * struct CoppVecF64 t_s = {0};
+ * check(copp_s_to_t_2nd(
+ *     (struct CoppSliceF64){s, n},
+ *     (struct CoppSliceF64){a.data, a.len},
+ *     0.0,
+ *     &t_final,
+ *     &t_s));
+ * copp_vec_f64_free(t_s);
+ * ```
  *
  * \warning Safety
  * `s.data` and `a.data` must be valid for `len` reads when their lengths are
@@ -61,6 +90,22 @@ enum CoppStatus copp_s_to_t_2nd(struct CoppSliceF64 s,
  *
  * On success, `out_s_t` owns a COPP-allocated vector and must be released with
  * `copp_vec_f64_free`.
+ *
+ * # Example
+ * The example below resamples a TOPP2 trajectory on a uniform time grid.
+ *
+ * ```c
+ * struct CoppVecF64 s_t = {0};
+ * check(copp_t_to_s_uniform_2nd(
+ *     (struct CoppSliceF64){s, n},
+ *     (struct CoppSliceF64){a.data, a.len},
+ *     (struct CoppSliceF64){t_s.data, t_s.len},
+ *     0.0,
+ *     1e-3,
+ *     true,
+ *     &s_t));
+ * copp_vec_f64_free(s_t);
+ * ```
  *
  * \warning Safety
  * `s.data`, `a.data`, and `t_s.data` must be valid for `len` reads when their
@@ -95,12 +140,31 @@ enum CoppStatus copp_t_to_s_non_uniform_2nd(struct CoppSliceF64 s,
  * Compute cumulative TOPP3/COPP3 time profile `t(s)` from node profiles
  * `a(s) = dot{s}^2` and `b(s) = ddot{s}`.
  *
- * C callers pass profile parts explicitly: `a` and `b` are node-based arrays with length
- * `s.len`, and `num_stationary_*` are the effective stationary interval
- * counts at the start and end.
+ * C callers pass profile parts explicitly: `a` and `b` are node-based arrays
+ * with length `s.len`, and `num_stationary_*` are the effective stationary
+ * interval counts at the start and end.
  *
  * On success, `*out_t_final` receives the final time and `out_t_s` owns a
  * COPP-allocated vector that must be released with `copp_vec_f64_free`.
+ *
+ * # Example
+ * The example below converts a TOPP3/COPP3 profile into cumulative time
+ * samples and the final duration.
+ *
+ * ```c
+ * double t_final = 0.0;
+ * struct CoppVecF64 t_s = {0};
+ * check(copp_s_to_t_3rd(
+ *     (struct CoppSliceF64){s, n},
+ *     (struct CoppSliceF64){profile.a.data, profile.a.len},
+ *     (struct CoppSliceF64){profile.b.data, profile.b.len},
+ *     profile.num_stationary_start,
+ *     profile.num_stationary_end,
+ *     0.0,
+ *     &t_final,
+ *     &t_s));
+ * copp_vec_f64_free(t_s);
+ * ```
  *
  * \warning Safety
  * `s.data`, `a.data`, and `b.data` must be valid for reads when their lengths
@@ -119,8 +183,27 @@ enum CoppStatus copp_s_to_t_3rd(struct CoppSliceF64 s,
 /**
  * Interpolate `s(t)` from TOPP3/COPP3 profiles using a uniform time grid.
  *
- * C callers pass profile parts explicitly. On success, `out_s_t` owns a COPP-allocated vector and
- * must be released with `copp_vec_f64_free`.
+ * C callers pass profile parts explicitly. On success, `out_s_t` owns a
+ * COPP-allocated vector and must be released with `copp_vec_f64_free`.
+ *
+ * # Example
+ * The example below resamples a third-order profile on a uniform time grid.
+ *
+ * ```c
+ * struct CoppVecF64 s_t = {0};
+ * check(copp_t_to_s_uniform_3rd(
+ *     (struct CoppSliceF64){s, n},
+ *     (struct CoppSliceF64){profile.a.data, profile.a.len},
+ *     (struct CoppSliceF64){profile.b.data, profile.b.len},
+ *     profile.num_stationary_start,
+ *     profile.num_stationary_end,
+ *     (struct CoppSliceF64){t_s.data, t_s.len},
+ *     0.0,
+ *     1e-3,
+ *     true,
+ *     &s_t));
+ * copp_vec_f64_free(s_t);
+ * ```
  *
  * \warning Safety
  * `s.data`, `a.data`, `b.data`, and `t_s.data` must be valid for reads when
@@ -142,8 +225,8 @@ enum CoppStatus copp_t_to_s_uniform_3rd(struct CoppSliceF64 s,
  * Interpolate `s(t)` from TOPP3/COPP3 profiles using caller-provided time
  * samples.
  *
- * C callers pass profile parts explicitly. On success, `out_s_t` owns a COPP-allocated vector and
- * must be released with `copp_vec_f64_free`.
+ * C callers pass profile parts explicitly. On success, `out_s_t` owns a
+ * COPP-allocated vector and must be released with `copp_vec_f64_free`.
  *
  * \warning Safety
  * `s.data`, `a.data`, `b.data`, `t_s.data`, and `t_sample.data` must be valid
@@ -163,9 +246,26 @@ enum CoppStatus copp_t_to_s_non_uniform_3rd(struct CoppSliceF64 s,
  * Adjust mutable TOPP3/COPP3 `a` and `b` node profiles in place so
  * interpolated `a(s)` stays strictly positive per interval.
  *
- * C callers pass mutable profile parts explicitly. `a` and `b` must be mutable node-based arrays with length
- * `s.len`. On success, `*out_succeed` receives the operation result flag; the
- * `a.data` and `b.data` buffers may have been modified.
+ * C callers pass mutable profile parts explicitly. `a` and `b` must be
+ * mutable node-based arrays with length `s.len`. On success, `*out_succeed`
+ * receives the operation result flag; the `a.data` and `b.data` buffers may
+ * have been modified.
+ *
+ * # Example
+ * The example below repairs a mutable third-order profile in place before
+ * downstream interpolation.
+ *
+ * ```c
+ * bool succeeded = false;
+ * check(copp_force_positive_a_3rd(
+ *     (struct CoppSliceF64){s, n},
+ *     (struct CoppSliceMutF64){profile.a.data, profile.a.len},
+ *     (struct CoppSliceMutF64){profile.b.data, profile.b.len},
+ *     profile.num_stationary_start,
+ *     profile.num_stationary_end,
+ *     1e-12,
+ *     &succeeded));
+ * ```
  *
  * \warning Safety
  * `s.data` must be valid for reads when non-empty. `a.data` and `b.data` must

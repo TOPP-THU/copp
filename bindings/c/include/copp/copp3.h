@@ -117,6 +117,24 @@ typedef struct Copp3SocpResult {
  * On success, `out_profile` owns COPP-allocated `a` and `b` vectors and must
  * be released with `copp_profile_3rd_free`.
  *
+ * # Example
+ * The example below solves COPP3-SOCP with Clarabel options and releases the
+ * accepted third-order profile.
+ *
+ * ```c
+ * struct CoppClarabelOptions options;
+ * struct Copp3Problem problem = {
+ *     robot, 0, (struct CoppSliceF64){a_seed.data, a_seed.len},
+ *     0.0, 0.0, 0.0, 0.0, 1, 1, 1e-10,
+ *     objectives, num_objectives,
+ * };
+ * struct CoppProfile3rd profile = {{0}, {0}, 0, 0};
+ *
+ * check(copp_clarabel_default_options(&options));
+ * check(copp3_socp(problem, options, &profile));
+ * copp_profile_3rd_free(profile);
+ * ```
+ *
  * \warning Safety
  * `problem.robot` must be a non-null mutable handle returned by
  * `copp_robot_create` and must remain valid for the duration of this call.
@@ -134,10 +152,13 @@ enum CoppStatus copp3_socp(struct Copp3Problem problem,
 /**
  * Solve a COPP3-SOCP problem and always return Clarabel diagnostics.
  *
- * This expert entry mirrors `copp3_socp_expert`: true runtime failures
- * still return a non-OK `CoppStatus`, but non-accepted Clarabel statuses are
- * reported inside `out_result` with `has_profile == false` and the function
- * returns `COPP_STATUS_OK`.
+ * This expert entry follows the advanced-diagnostics convention: true
+ * runtime failures still return a non-OK `CoppStatus`, but non-accepted
+ * Clarabel statuses are reported inside `out_result` with
+ * `has_profile == false` and the function returns `COPP_STATUS_OK`.
+ *
+ * Use the same advanced-diagnostics pattern as \ref copp2_socp_expert. The
+ * result type is `Copp3SocpResult`, and `has_profile` replaces `has_a`.
  *
  * \warning Safety
  * Same safety requirements as `copp3_socp`. `out_result` must be valid for

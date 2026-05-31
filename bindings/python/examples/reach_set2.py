@@ -1,64 +1,85 @@
-"""Reach-Set 2: Backward and bidirectional reachable sets.
+"""Compute second-order reachable sets for a JAX-defined path.
 
-Replicates examples/reach_set2.rs with matplotlib visualization.
+The example applies velocity and acceleration limits in ``[-1, 1]``, then
+compares backward-only and bidirectional bounds on ``a(s) = dot(s)^2``.
 """
 
 import numpy as np
-import matplotlib.pyplot as plt
-import copp
-from _common import lissajous_waypoints, save_figure
 
-# ─── 1) Build path from waypoints ───
-DIM = 3
-N = 1001
-waypoints = lissajous_waypoints(n_waypoints=200)
-path = copp.Path.from_waypoints(waypoints)
+import copp_py as copp
 
-s = np.linspace(*path.s_range, N)
-derivs = path.evaluate_up_to_2nd(s)
 
-# ─── 2) Build robot constraints: v,a in [-1, 1] ───
-robot = copp.Robot(dim=DIM, capacity=N)
-robot.with_s(s)
-robot.with_q(derivs.q, derivs.dq, derivs.ddq)
-robot.with_axial_velocity(np.ones(DIM), -np.ones(DIM))
-robot.with_axial_acceleration(np.ones(DIM), -np.ones(DIM))
+def main() -> None:
+    try:
+        import jax
+        import jax.numpy as jnp
+    except ImportError as exc:
+        raise SystemExit(
+            'Install JAX to run this example: python -m pip install "copp-py[jax]"'
+        ) from exc
 
-# ─── 3) Compute reachable sets ───
-idx_s_interval = (0, N - 1)
-a_boundary = (0.0, 0.0)
+    jax.config.update("jax_enable_x64", True)
 
-a_min_back, a_max_back = copp.reach_set2_backward(
-    robot, idx_s_interval, a_boundary
-)
-a_min_bidir, a_max_bidir = copp.reach_set2_bidirectional(
-    robot, idx_s_interval, a_boundary
-)
+    dim = 3
+    n = 1001
 
-print(f"reach_set2 done. dim={DIM}, N={N}")
-print(f"  backward:      a_max.len={len(a_max_back)}")
-print(f"  bidirectional: a_max.len={len(a_max_bidir)}")
+    # 1) Define q(s). Path.from_jax differentiates it up to third order.
+    def q_fn(s):
+        freq = jnp.array([2.0 * jnp.pi, 3.0 * jnp.pi, 5.0 * jnp.pi], dtype=jnp.float64)
+        phase = jnp.array([0.0, 0.3, 0.7], dtype=jnp.float64)
+        return jnp.sin(freq * s + phase)
 
-# ─── 4) Visualization ───
-fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-fig.suptitle("Reachable Sets (a = ṡ²)", fontsize=14)
+    path = copp.Path.from_jax(q_fn, 0.0, 1.0)
+    s = np.linspace(0.0, 1.0, n, dtype=np.float64)
 
-axes[0].fill_between(s, a_min_back, a_max_back, alpha=0.3, color="blue")
-axes[0].plot(s, a_max_back, "b-", linewidth=0.8, label="a_max")
-axes[0].plot(s, a_min_back, "b--", linewidth=0.8, label="a_min")
-axes[0].set_xlabel("s")
-axes[0].set_ylabel("a(s) = ṡ²")
-axes[0].set_title("Backward-only reachable set")
-axes[0].legend()
-axes[0].grid(True, alpha=0.3)
+    # 2) Build robot constraints (3-axis), then apply symmetric limits
+    # velocity/acceleration = [-1, 1].
+    robot = copp.Robot(dim, capacity=n)
+    robot.append_s(s)
+    robot.set_q_from_path_2nd(path, 0, n)
 
-axes[1].fill_between(s, a_min_bidir, a_max_bidir, alpha=0.3, color="green")
-axes[1].plot(s, a_max_bidir, "g-", linewidth=0.8, label="a_max")
-axes[1].plot(s, a_min_bidir, "g--", linewidth=0.8, label="a_min")
-axes[1].set_xlabel("s")
-axes[1].set_ylabel("a(s) = ṡ²")
-axes[1].set_title("Bidirectional reachable set")
-axes[1].legend()
-axes[1].grid(True, alpha=0.3)
+    upper = np.ones(dim, dtype=np.float64)
+    lower = -upper
+    robot.add_velocity_limits(upper, lower, start_idx_s=0, length=n)
+    robot.add_acceleration_limits(upper, lower, start_idx_s=0, length=n)
 
-save_figure(fig, "reach_set2")
+    # 3) Build TOPP2 problem and compute reachable sets.
+    problem = copp.solver.reach_set2.Problem(
+        robot.constraints,
+        idx_s_interval=(0, n - 1),
+        a_boundary=(0.0, 0.0),
+    )
+    options = copp.solver.reach_set2.Options()
+
+    # Backward-only reachability constrains the terminal boundary.
+    reach_back = copp.solver.reach_set2.backward(problem, options)
+    # Bidirectional reachability constrains both start and terminal boundaries.
+    reach_bidir = copp.solver.reach_set2.bidirectional(problem, options)
+
+    # 4) Print the tutorial summary.
+    print("reach_set2 done.")
+    print(f"dim = {dim}, N = {n}")
+    print(
+        "backward-only: "
+        f"a_max.len() = {len(reach_back.a_max)}, "
+        f"a_min.len() = {len(reach_back.a_min)}"
+    )
+    print(
+        "bidirectional: "
+        f"a_max.len() = {len(reach_bidir.a_max)}, "
+        f"a_min.len() = {len(reach_bidir.a_min)}"
+    )
+
+    k0 = 0
+    km = n // 2
+    k1 = n - 1
+    print(
+        "bidirectional bounds @k=0/mid/end: "
+        f"[{reach_bidir.a_min[k0]:.6f}, {reach_bidir.a_max[k0]:.6f}], "
+        f"[{reach_bidir.a_min[km]:.6f}, {reach_bidir.a_max[km]:.6f}], "
+        f"[{reach_bidir.a_min[k1]:.6f}, {reach_bidir.a_max[k1]:.6f}]"
+    )
+
+
+if __name__ == "__main__":
+    main()

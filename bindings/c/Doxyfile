@@ -11,11 +11,16 @@ PROJECT_BRIEF          = "C interface for COPP trajectory optimization"
 OUTPUT_DIRECTORY       = bindings/c/docs
 
 INPUT                  = bindings/c/README.md \
-                         bindings/c/include/copp
+                         bindings/c/include/copp \
+                         bindings/c/examples
 RECURSIVE              = YES
-FILE_PATTERNS          = *.h *.md *.dox
+FILE_PATTERNS          = *.h *.c *.md *.dox
 EXCLUDE_PATTERNS       =
 USE_MDFILE_AS_MAINPAGE = bindings/c/README.md
+
+EXAMPLE_PATH           = bindings/c/examples
+EXAMPLE_PATTERNS       = *.c *.h
+EXAMPLE_RECURSIVE      = YES
 
 GENERATE_HTML          = YES
 HTML_OUTPUT            = html
@@ -67,6 +72,6 @@ ENABLE_PREPROCESSING   = YES
 MACRO_EXPANSION        = NO
 SKIP_FUNCTION_MACROS   = NO
 
-SOURCE_BROWSER         = NO
+SOURCE_BROWSER         = YES
 REFERENCED_BY_RELATION = NO
 REFERENCES_RELATION    = NO

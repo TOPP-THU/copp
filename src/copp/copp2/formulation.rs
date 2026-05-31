@@ -45,6 +45,24 @@ impl<'a> Topp2Problem<'a> {
 }
 
 /// Builder for [`Topp2Problem`](crate::solver::topp2_ra::Topp2Problem).
+///
+/// # Example
+/// The example below builds the smallest TOPP2 problem from a robot's station grid.
+///
+/// ```rust
+/// # fn main() -> Result<(), copp::diag::CoppError> {
+/// use copp::robot::Robot;
+/// use copp::solver::topp2_ra::Topp2ProblemBuilder;
+///
+/// let mut robot = Robot::with_capacity(2usize, 3);
+/// let s = [0.0, 0.5, 1.0];
+/// robot.with_s(s.as_slice())?;
+///
+/// let problem = Topp2ProblemBuilder::new(&robot, (0, 2), (0.0, 0.0)).build()?;
+/// assert_eq!(problem.s_len(), 3);
+/// # Ok(())
+/// # }
+/// ```
 pub struct Topp2ProblemBuilder<'a> {
     /// Reference to path constraints.
     pub constraints: &'a Constraints,
@@ -156,6 +174,31 @@ impl<'a, M: RobotTorque> Copp2Problem<'a, M> {
 }
 
 /// Builder for [`Copp2Problem`](crate::solver::copp2_socp::Copp2Problem).
+///
+/// # Example
+/// The example below builds a COPP2 problem with time and thermal objectives.
+///
+/// ```rust
+/// # fn main() -> Result<(), copp::diag::CoppError> {
+/// use copp::robot::Robot;
+/// use copp::solver::copp2_socp::{Copp2ProblemBuilder, CoppObjective};
+///
+/// let mut robot = Robot::with_capacity(2, 3);
+/// let s = [0.0, 0.5, 1.0];
+/// robot.with_s(s.as_slice())?;
+///
+/// let normalize = [1.0, 1.0];
+/// let objectives = [
+///     CoppObjective::Time(1.0),
+///     CoppObjective::ThermalEnergy(0.1, &normalize),
+/// ];
+///
+/// let problem =
+///     Copp2ProblemBuilder::new(&robot, (0, 2), (0.0, 0.0), &objectives).build()?;
+/// assert_eq!(problem.s_len(), 3);
+/// # Ok(())
+/// # }
+/// ```
 pub struct Copp2ProblemBuilder<'a, M: RobotTorque> {
     /// Reference to robot model defining constraints and dynamics.
     pub robot: &'a Robot<M>,

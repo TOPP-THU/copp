@@ -1,13 +1,13 @@
 //! Path abstraction for trajectory planning.
 //!
-//! The main entry point is [`Path`].  It supports two construction modes and a
-//! uniform evaluation API: pick the one that fits your use case:
+//! The main entry point is [`Path`]. Pick the constructor by the path data you own:
 //!
-//! | You have | Use |
-//! |---|---|
-//! | An analytic formula `q(s)` | [`Path::from_parametric`](crate::path::Path::from_parametric) |
-//! | A set of waypoint positions | [`Path::from_waypoints`](crate::path::Path::from_waypoints) |
-//! | Explicit derivatives from an external evaluator | [`Path::from_evaluator_2nd`](crate::path::Path::from_evaluator_2nd) / [`Path::from_evaluator_3rd`](crate::path::Path::from_evaluator_3rd) |
+//! | You have | Use | Notes |
+//! |---|---|---|
+//! | Analytic formula `q(s)` | [`Path::from_parametric`](crate::path::Path::from_parametric) | Computes derivatives up to third order by [`Jet3`] automatic differentiation. |
+//! | Waypoint positions | [`Path::from_waypoints`](crate::path::Path::from_waypoints) | Builds a spline from a `(dim x n_points)` waypoint matrix. |
+//! | Explicit `q/dq/ddq` evaluator | [`Path::from_evaluator_2nd`](crate::path::Path::from_evaluator_2nd) | Use for TOPP2/COPP2 or other workflows that do not need jerk. See [`PathEvaluator2nd`]. |
+//! | Explicit `q/dq/ddq/dddq` evaluator | [`Path::from_evaluator_3rd`](crate::path::Path::from_evaluator_3rd) | Use for TOPP3/COPP3 workflows. See [`PathEvaluator3rd`]. |
 //!
 //! Once built, call one of the evaluation methods with a one-dimensional parameter slice:
 //!
@@ -16,47 +16,6 @@
 //! | [`Path::evaluate_q`](crate::path::Path::evaluate_q)         | position `q` only |
 //! | [`Path::evaluate_up_to_2nd`](crate::path::Path::evaluate_up_to_2nd) | `q`, `dq`, `ddq` |
 //! | [`Path::evaluate_up_to_3rd`](crate::path::Path::evaluate_up_to_3rd) | `q`, `dq`, `ddq`, `dddq` |
-//!
-//! # Examples
-//!
-//! ## Analytic path: automatic differentiation
-//!
-//! ```rust,no_run
-//! use copp::path::{Path, sin, cos};
-//! use copp::path::autodiff::Jet3;
-//!
-//! // Build a 2-DOF path: q0 = sin(s), q1 = cos(s), s in [0, 1]
-//! let path = Path::from_parametric(
-//!     |s: Jet3| vec![sin(s), cos(s)],
-//!     0.0, 1.0,
-//! ).unwrap();
-//!
-//! // Evaluate at 5 uniformly-spaced parameter values
-//! let s = [0.0, 0.25, 0.5, 0.75, 1.0];
-//! let out = path.evaluate_up_to_3rd(&s).unwrap();
-//! // out.q   : shape (2, 5)
-//! // out.dq  : Some, shape (2, 5)   first derivative w.r.t. s
-//! // out.dddq: Some, shape (2, 5)   third derivative w.r.t. s
-//! ```
-//!
-//! ## Spline path: waypoint interpolation
-//!
-//! ```rust,no_run
-//! use copp::path::{Path, SplineConfig};
-//! use nalgebra::DMatrix;
-//!
-//! // 2-DOF path with 5 waypoints; the spline passes exactly through each one.
-//! // waypoints shape: (dim=2, n_points=5)
-//! let waypoints = DMatrix::from_row_slice(2, 5, &[
-//!     0.0, 0.25, 0.5, 0.75, 1.0,   // dim 0
-//!     0.0, 0.1, -0.1, 0.2,  0.0,   // dim 1
-//! ]);
-//! let path = Path::from_waypoints(&waypoints, SplineConfig::default()).unwrap();
-//!
-//! let s = [0.0, 0.5, 1.0];
-//! let out = path.evaluate_q(&s).unwrap();
-//! // out.q shape (2, 3);  out.dq / ddq / dddq are all None
-//! ```
 
 pub mod autodiff;
 mod path_core;

@@ -4,6 +4,7 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $cRoot = (Resolve-Path (Join-Path $scriptDir "..")).Path
 $repoRoot = (Resolve-Path (Join-Path (Join-Path $cRoot "..") "..")).Path
 $doxyfile = Join-Path $cRoot "Doxyfile"
+$docsHtml = Join-Path (Join-Path $cRoot "docs") "html"
 $docsIndex = Join-Path (Join-Path (Join-Path $cRoot "docs") "html") "index.html"
 
 if (-not (Get-Command doxygen -ErrorAction SilentlyContinue)) {
@@ -11,6 +12,10 @@ if (-not (Get-Command doxygen -ErrorAction SilentlyContinue)) {
 }
 
 & (Join-Path $scriptDir "generate_headers.ps1")
+
+if (Test-Path $docsHtml) {
+    Remove-Item -LiteralPath $docsHtml -Recurse -Force
+}
 
 Push-Location $repoRoot
 try {

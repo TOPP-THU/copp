@@ -4,9 +4,9 @@
 
 This directory contains the public C ABI for the open-source COPP library. It focuses on using COPP from C through stable headers, ordinary C data types, and explicit ownership rules.
 
-The C ABI is in its feedback and stabilization phase. It is intended to be usable today, but function names, problem descriptors, result structs, and packaging details may still evolve before the first stable C release. Feedback from downstream bindings, robotics applications, and packaging workflows is welcome; if you need a specific API shape or compatibility guarantee, please see [Contact Us](../../README.md#contact-us).
+The C ABI is in its feedback and stabilization phase. It is intended to be usable today, but function names, problem descriptors, result structs, and packaging details may still evolve before the first stable C release. Feedback from downstream bindings, robotics applications, and packaging workflows is welcome. For C ABI questions, packaging feedback, compatibility requests, COPP PRO licensing, or commercial collaboration, please contact us at [hello@copp.pro](mailto:hello@copp.pro).
 
-> **Open-source / PRO note:** this README documents the open-source C ABI. The repository root [README](../../README.md) is the single source of truth for the open-source vs PRO algorithm matrix, solver-selection guidance, benchmark comparisons, citation information, and collaboration contact details.
+> **Open-source / Pro note:** this README documents the open-source C ABI. For the full project overview, open-source vs Pro algorithm matrix, solver-selection guidance, benchmark comparisons, citation information, and collaboration contact details, see the [COPP repository README](https://github.com/TOPP-THU/copp#readme).
 
 The C API follows a deliberately small set of rules:
 
@@ -16,7 +16,7 @@ The C API follows a deliberately small set of rules:
 - COPP-owned outputs are released with the matching `copp_*_free` function;
 - matrices support column-major, row-major, and strided views, with contiguous column-major as the zero-copy fast path.
 
-The algorithmic background, open-source algorithm availability, benchmark tables, and citation information live in the repository root README. This page focuses on building, linking, installing, and using the C ABI.
+The algorithmic background, open-source algorithm availability, benchmark tables, and citation information live in the [COPP repository README](https://github.com/TOPP-THU/copp#readme). This page focuses on building, linking, installing, and using the C ABI.
 
 ## API Availability
 
@@ -34,7 +34,7 @@ Runnable examples are in [examples](examples/). They are built as CMake targets 
 
 ## Quick Start
 
-Prebuilt C ABI SDK packages for the latest tagged release are attached to the repository's GitHub Releases. If you want to build COPP from source instead, follow the steps below.
+Prebuilt C ABI SDK packages for the latest tagged release are attached to the repository's GitHub Releases. If you want to build COPP from source instead, follow the steps below. The C ABI is behind Cargo's `c` feature, so source builds must enable it explicitly.
 
 ### Prerequisites
 
@@ -56,7 +56,7 @@ cargo install cbindgen
 Run from the repository root:
 
 ```sh
-cargo build --release
+cargo build --release --lib --features c
 ```
 
 Cargo produces the C ABI libraries under:
@@ -77,7 +77,7 @@ The public C symbols and headers use the `copp` prefix.
 
 ### Refresh Headers
 
-Headers are generated from `src/ffi/c` and split into:
+Headers are generated from the feature-gated `src/ffi/c` declarations and split into:
 
 ```text
 bindings/c/include/copp/
@@ -142,7 +142,13 @@ cmake -S bindings/c -B bindings/c/build -DCOPP_BUILD_EXAMPLES=OFF
 
 ## Install and Link
 
-The CMake install step copies public headers, the native library, and a package config:
+The CMake install step copies public headers, the native library, and a package config. Build the native library first with:
+
+```sh
+cargo build --release --lib --features c
+```
+
+The installed layout is:
 
 ```text
 <prefix>/
@@ -373,7 +379,7 @@ example_topp3_socp
 example_copp3_socp
 ```
 
-Algorithms not listed in the open-source availability table in the repository root README are not documented as part of the open-source C ABI.
+Algorithms not listed in the open-source availability table in the [COPP repository README](https://github.com/TOPP-THU/copp#readme) are not documented as part of the open-source C ABI.
 
 ## Troubleshooting
 
@@ -386,7 +392,7 @@ Install `cbindgen`, then run the header generation command from the repository r
 Run:
 
 ```sh
-cargo build --release
+cargo build --release --lib --features c
 ```
 
 The source-tree CMake flow expects the native library artifact under `target/release/`.

@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 This changelog follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] Unreleased
+
+### Added
+
+- [Rust] Made `Constraints::new`, `Constraints::with_capacity`, `Constraints::with_s`, and `Constraints::with_q` public for advanced low-level constraint construction.
+- [Rust] Added documentation examples for direct constraint construction, problem builders, custom path/robot integration, custom objective/sampler interfaces, and Clarabel expert status handling.
+- [Python] Added the initial Python API surface, including path and robot bindings, problem/options/result types, and solver entry points.
+- [c] Added a Cargo `c` feature for the C ABI; source builds now use `cargo build --release --lib --features c` when producing C libraries.
+
 ## [0.2.0]
 
 ### Breaking Changes

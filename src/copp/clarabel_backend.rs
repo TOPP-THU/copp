@@ -72,6 +72,34 @@ impl ClarabelOptions {
     /// - regardless of acceptance, always return full Clarabel `solution` for advanced users to inspect convergence and diagnostics.
     /// - `copp_solution` is typically `a: Vec<f64>` in TOPP2/COPP2 or [`Topp3Profile`](crate::solver::copp3_socp::Topp3Profile) in TOPP3/COPP3. You can call [`clarabel_to_copp2_solution`](crate::solver::copp2_socp::clarabel_to_copp2_solution) or [`clarabel_to_copp3_solution`](crate::solver::copp3_socp::clarabel_to_copp3_solution) to generate a `copp_solution` from a `clarabel_solution` with a valid `clarabel_solution.x`.
     /// - `clarabel_solution` is the full [`DefaultSolution<f64>`](clarabel::solver::DefaultSolution) returned by Clarabel, which may contain useful information for expert users even when status is not ideal.
+    ///
+    /// # Example
+    /// The example below shows the shared status-handling pattern for expert
+    /// Clarabel APIs.
+    ///
+    /// ```rust,no_run
+    /// use copp::diag::CoppError;
+    /// use copp::solver::copp2_socp::{
+    ///     ClarabelOptionsBuilder, Copp2Problem, copp2_socp_expert,
+    /// };
+    ///
+    /// fn inspect(problem: &Copp2Problem<'_, usize>) -> Result<(), CoppError> {
+    ///     let options = ClarabelOptionsBuilder::new()
+    ///         .allow_almost_solved(true)
+    ///         .build()?;
+    ///
+    ///     let (profile, solution) = copp2_socp_expert(problem, &options)?;
+    ///
+    ///     if options.is_allow(solution.status) {
+    ///         let a = profile.expect("accepted status should provide a profile");
+    ///         println!("accepted profile length = {}", a.len());
+    ///     } else {
+    ///         println!("solver status was not accepted: {:?}", solution.status);
+    ///     }
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     #[inline]
     pub fn is_allow(&self, status: SolverStatus) -> bool {
         match status {
@@ -140,7 +168,10 @@ impl ClarabelOptionsBuilder {
     /// Create a builder from caller-provided Clarabel settings.
     /// This is intended for users who need direct control over Clarabel tolerances, limits, or linear-solver behavior.
     /// # Example
-    /// ```rust,ignore
+    /// The example below starts from raw Clarabel settings and then lets the
+    /// shared builder normalize verbosity policy.
+    ///
+    /// ```rust
     /// use copp::diag::Verbosity;
     /// use copp::solver::copp2_socp::ClarabelOptionsBuilder;
     /// use clarabel::solver::DefaultSettings;

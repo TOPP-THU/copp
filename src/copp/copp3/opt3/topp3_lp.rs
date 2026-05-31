@@ -81,6 +81,8 @@ pub fn topp3_lp(
 /// # Contract
 /// - caller handles `None` profile when status is not accepted;
 /// - acceptance policy is fully defined by `options.is_allow`.
+///   See [`ClarabelOptions::is_allow`](crate::solver::topp3_lp::ClarabelOptions::is_allow)
+///   for a status-handling example.
 ///
 /// # Verbosity behavior
 /// Logging is layered by `options.verbosity()`:
@@ -102,6 +104,10 @@ pub fn topp3_lp_expert(
 /// Use this variant when callers need more than
 /// [`DefaultSolution`](clarabel::solver::DefaultSolution), because Clarabel stores linear-solver metadata on the
 /// solver `info` object rather than inside the returned solution.
+///
+/// Status acceptance follows
+/// [`ClarabelOptions::is_allow`](crate::solver::topp3_lp::ClarabelOptions::is_allow);
+/// see that method for the shared status-handling pattern.
 pub fn topp3_lp_expert_with_info(
     problem: &Topp3Problem,
     options: &ClarabelOptions,

@@ -29,6 +29,7 @@
 
 use crate::copp::clarabel_backend::{ConstraintsClarabel, ObjConsClarabel};
 use crate::copp::copp3::Topp3Profile;
+#[cfg(any(feature = "c", feature = "python", test))]
 use crate::copp::copp3::Topp3ProfileRef;
 use crate::copp::copp3::formulation::{Copp3Problem, get_weight_a_copp3, get_weight_a_topp3};
 use crate::copp::copp3::opt3::ClarabelExpertInfor3rd;
@@ -94,6 +95,8 @@ pub fn copp3_socp<'a, M: RobotTorque>(
 /// # Contract
 /// - caller must handle `None` profile for non-accepted statuses;
 /// - status acceptance policy is defined by `options.is_allow`.
+///   See [`ClarabelOptions::is_allow`](crate::solver::copp3_socp::ClarabelOptions::is_allow)
+///   for a status-handling example.
 ///
 /// # Verbosity behavior
 /// Logging is layered by `options.verbosity()`:
@@ -115,6 +118,10 @@ pub fn copp3_socp_expert<'a, M: RobotTorque>(
 /// Use this variant when callers need more than
 /// [`DefaultSolution`](clarabel::solver::DefaultSolution), because Clarabel stores linear-solver metadata on the
 /// solver `info` object rather than inside the returned solution.
+///
+/// Status acceptance follows
+/// [`ClarabelOptions::is_allow`](crate::solver::copp3_socp::ClarabelOptions::is_allow);
+/// see that method for the shared status-handling pattern.
 pub fn copp3_socp_expert_with_info<'a, M: RobotTorque>(
     problem: &Copp3Problem<'a, M>,
     options: &ClarabelOptions,
@@ -1054,6 +1061,7 @@ fn clarabel_objective_linear_copp3(
 
 /// Compute the time value in COPP3 optimization.
 /// Input: a_sqrt_down = 1 / sqrt(a)
+#[cfg(any(feature = "c", feature = "python", test))]
 #[inline(always)]
 fn objective_value_time_copp3(
     a_sqrt_down: &[f64],
@@ -1077,6 +1085,7 @@ fn objective_value_time_copp3(
 }
 
 /// Compute the thermal energy value in COPP3 optimization.
+#[cfg(any(feature = "c", feature = "python", test))]
 #[inline(always)]
 fn objective_value_thermal_energy_copp3(
     a_sqrt_down: &[f64],
@@ -1130,6 +1139,7 @@ fn objective_value_thermal_energy_copp3(
 }
 
 /// Compute the thermal energy value in COPP3 optimization.
+#[cfg(any(feature = "c", feature = "python", test))]
 #[inline(always)]
 fn objective_value_tv_torque_copp3(
     torque: &DMatrix<f64>,
@@ -1178,6 +1188,7 @@ fn objective_value_tv_torque_copp3(
 }
 
 /// Compute the objective value for Linear in COPP3 optimization.
+#[cfg(any(feature = "c", feature = "python", test))]
 #[inline(always)]
 fn objective_value_linear_copp3(
     a_profile: &[f64],
@@ -1199,6 +1210,7 @@ fn objective_value_linear_copp3(
 }
 
 /// Compute the objective value for COPP3 optimization.
+#[cfg(any(feature = "c", feature = "python", test))]
 pub(crate) fn objective_value_copp3_opt<M: RobotTorque>(
     problem: &Copp3Problem<M>,
     profile: Topp3ProfileRef<'_>,

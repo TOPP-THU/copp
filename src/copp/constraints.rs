@@ -43,12 +43,14 @@
 //! - Public APIs validate station range before indexing.
 //! - Internal unchecked APIs are for hot paths and guarded by debug assertions.
 //! - Linearized jerk access requires builders to call
-//!   [`build_with_linearization(Topp3)`](crate::solver::topp3_lp::Topp3ProblemBuilder::build_with_linearization) or
+//!   [`build_with_linearization(Topp3)`](crate::solver::topp3_socp::Topp3ProblemBuilder::build_with_linearization) or
 //!   [`build_with_linearization(Copp3)`](crate::solver::copp3_socp::Copp3ProblemBuilder::build_with_linearization) beforehand.
 //! - For robust solver behavior, keep zero-state `a=b=c=0` strictly feasible at every station.
 //!   In practice this means every active scalar RHS must stay strictly positive:
 //!   `amax > 0`, `acc_max > 0`, and `jerk_max > 0` (after sign normalization).
 
+#[cfg(test)]
+use crate::copp::copp2::stable::basic::a_to_b_topp2;
 use crate::diag::{ConstraintError, CoppError};
 use crate::path::Path;
 use core::f64;
@@ -57,9 +59,6 @@ use nalgebra::{Const, DMatrix, DMatrixView, Dyn, Matrix, RowDVector, ViewStorage
 use std::cmp::{max, min};
 use std::collections::BTreeMap;
 use std::ops::Bound::{Excluded, Included, Unbounded};
-
-#[cfg(test)]
-use crate::copp::copp2::stable::basic::a_to_b_topp2;
 
 /// Small numerical threshold used by feasibility and bound computations.
 ///
@@ -93,6 +92,50 @@ const EPSILON_NUMERIC: f64 = 1E-10;
 /// - `get_*` methods are safe public accessors and return `Result<_, ConstraintError>`.
 /// - `*_unchecked` methods are internal fast-path helpers. Callers must satisfy
 ///   preconditions; debug builds assert them.
+///
+/// # Example
+/// The example below constructs low-level constraints directly, without going
+/// through [`Robot`](crate::robot::Robot).
+///
+/// ```rust
+/// # fn main() -> Result<(), copp::diag::CoppError> {
+/// use copp::constraints::Constraints;
+/// use nalgebra::DMatrix;
+///
+/// let mut constraints = Constraints::with_capacity(2, 8);
+///
+/// let s = [0.0, 0.5, 1.0];
+/// constraints.with_s(s.as_slice())?;
+///
+/// let amax = [1.0, 0.8, 1.0];
+/// constraints.with_constraint_1order(amax.as_slice(), 0)?;
+///
+/// let acc_a = DMatrix::from_row_slice(2, 3, &[
+///     0.0, 0.0, 0.0,
+///     0.0, 0.0, 0.0,
+/// ]);
+/// let acc_b = DMatrix::from_row_slice(2, 3, &[
+///     1.0, 1.0, 1.0,
+///     -1.0, -1.0, -1.0,
+/// ]);
+/// let acc_max = DMatrix::from_row_slice(2, 3, &[
+///     2.0, 2.0, 2.0,
+///     2.0, 2.0, 2.0,
+/// ]);
+///
+/// constraints.with_constraint_2order(
+///     &acc_a.as_view(),
+///     &acc_b.as_view(),
+///     &acc_max.as_view(),
+///     0,
+///     false,
+/// )?;
+///
+/// assert_eq!(constraints.len(), 3);
+/// assert_eq!(constraints.get_s(1)?, 0.5);
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone)]
 pub struct Constraints {
     /// Allocated circular-buffer capacity in **columns**.
@@ -203,7 +246,7 @@ impl Constraints {
     ///
     /// # Notes
     /// Equivalent to `with_capacity(dim, DEFAULT_CAPACITY)`.
-    pub(crate) fn new(dim: usize) -> Self {
+    pub fn new(dim: usize) -> Self {
         Self::with_capacity(dim, Self::DEFAULT_CAPACITY)
     }
 
@@ -216,7 +259,7 @@ impl Constraints {
     /// # Initialization policy
     /// - Bound matrices are initialized to neutral values (`infinity` where applicable).
     /// - Valid-row maps start empty and are progressively populated by `with_s()`.
-    pub(crate) fn with_capacity(dim: usize, capacity_col: usize) -> Self {
+    pub fn with_capacity(dim: usize, capacity_col: usize) -> Self {
         Constraints {
             capacity_col,
             dim,
@@ -536,7 +579,7 @@ impl Constraints {
     /// Get the linearized third-order constraints at index `idx_s` without bounds checking.
     ///
     /// This accessor assumes linearized jerk constraints are prepared via
-    /// [`Topp3ProblemBuilder::build_with_linearization`](crate::solver::topp3_lp::Topp3ProblemBuilder::build_with_linearization)
+    /// [`Topp3ProblemBuilder::build_with_linearization`](crate::solver::topp3_socp::Topp3ProblemBuilder::build_with_linearization)
     /// or [`Copp3ProblemBuilder::build_with_linearization`](crate::solver::copp3_socp::Copp3ProblemBuilder::build_with_linearization).
     ///
     /// # Preconditions
@@ -579,6 +622,12 @@ impl Constraints {
     }
 
     /// Get linearized third-order row views at station `idx_s`.
+    ///
+    /// The linearized rows are prepared by
+    /// [`Topp3ProblemBuilder::build_with_linearization`](crate::solver::topp3_socp::Topp3ProblemBuilder::build_with_linearization)
+    /// or [`Copp3ProblemBuilder::build_with_linearization`](crate::solver::copp3_socp::Copp3ProblemBuilder::build_with_linearization).
+    /// Call this accessor when solver-side code needs to inspect the affine
+    /// third-order rows generated from the latest reference profile.
     ///
     /// # Returns
     /// `(jerk_a_linear, jerk_b, jerk_c, jerk_max_linear)`, each a `valid_rows x 1`
@@ -673,6 +722,9 @@ impl Constraints {
     /// # Parameters
     /// - `s_new`: a `1 x N` station segment; accepted via [`AsInputMatrix1D`](crate::constraints::AsInputMatrix1D).
     ///
+    /// For the higher-level robot wrapper, [`Robot::with_s`](crate::robot::Robot::with_s)
+    /// delegates to this method.
+    ///
     /// # Behavior
     /// - Rejects non-increasing input.
     /// - Rejects overlap with existing tail station (`s_new[0]` must be greater
@@ -686,7 +738,7 @@ impl Constraints {
     ///
     /// # Returns
     /// Returns `&mut Self` for chaining on success.
-    pub(crate) fn with_s<T: AsInputMatrix1D + ?Sized>(
+    pub fn with_s<T: AsInputMatrix1D + ?Sized>(
         &mut self,
         s_new: &T,
     ) -> Result<&mut Self, ConstraintError> {
@@ -896,6 +948,13 @@ impl Constraints {
 
     /// Write path geometry derivatives on a station interval.
     ///
+    /// This is the low-level entry point for users who populate
+    /// [`Constraints`](crate::constraints::Constraints) directly. Robot-centric
+    /// workflows usually call [`Robot::with_q`](crate::robot::Robot::with_q),
+    /// [`Robot::with_q_from_path_2nd`](crate::robot::Robot::with_q_from_path_2nd),
+    /// or [`Robot::with_q_from_path_3rd`](crate::robot::Robot::with_q_from_path_3rd),
+    /// which forward into this storage layer.
+    ///
     /// # Parameters
     /// - `q_new`: configuration values (`dim x N`).
     /// - `dq_new`: first derivatives (`dim x N`).
@@ -919,7 +978,39 @@ impl Constraints {
     ///
     /// # Returns
     /// Returns `&mut Self` for chaining on success.
-    pub(crate) fn with_q(
+    ///
+    /// # Example
+    /// The example below writes one-dimensional path geometry into a directly
+    /// constructed constraint container.
+    ///
+    /// ```rust
+    /// # fn main() -> Result<(), copp::diag::CoppError> {
+    /// use copp::constraints::Constraints;
+    /// use nalgebra::DMatrix;
+    ///
+    /// let mut constraints = Constraints::with_capacity(2, 3);
+    /// let s = [0.0, 0.5, 1.0];
+    /// constraints.with_s(s.as_slice())?;
+    ///
+    /// let q = DMatrix::from_row_slice(2, 3, &[
+    ///     0.0, 0.125, 0.5,
+    ///     1.0, 1.0, 1.0,
+    /// ]);
+    /// let dq = DMatrix::from_row_slice(2, 3, &[
+    ///     0.0, 0.5, 1.0,
+    ///     0.0, 0.0, 0.0,
+    /// ]);
+    /// let ddq = DMatrix::from_row_slice(2, 3, &[
+    ///     1.0, 1.0, 1.0,
+    ///     0.0, 0.0, 0.0,
+    /// ]);
+    ///
+    /// constraints.with_q(&q.as_view(), &dq.as_view(), &ddq.as_view(), None, 0)?;
+    /// assert_eq!(constraints.len(), 3);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_q(
         &mut self,
         q_new: &InputMatrix,
         dq_new: &InputMatrix,
@@ -1232,6 +1323,47 @@ impl Constraints {
     ///
     /// # Returns
     /// Returns `&mut Self` for chaining on success.
+    ///
+    /// # Example
+    /// The example below installs a single jerk upper-bound row at three
+    /// stations. After changing third-order rows, build a TOPP3/COPP3 problem
+    /// with `build_with_linearization()` before reading linearized jerk rows.
+    ///
+    /// ```rust
+    /// # fn main() -> Result<(), copp::diag::CoppError> {
+    /// use copp::constraints::Constraints;
+    /// use nalgebra::DMatrix;
+    ///
+    /// let mut constraints = Constraints::with_capacity(2, 3);
+    /// let s = [0.0, 0.5, 1.0];
+    /// constraints.with_s(s.as_slice())?;
+    ///
+    /// let zero = DMatrix::from_row_slice(2, 3, &[
+    ///     0.0, 0.0, 0.0,
+    ///     0.0, 0.0, 0.0,
+    /// ]);
+    /// let jerk_c = DMatrix::from_row_slice(2, 3, &[
+    ///     1.0, 1.0, 1.0,
+    ///     -1.0, -1.0, -1.0,
+    /// ]);
+    /// let jerk_max = DMatrix::from_row_slice(2, 3, &[
+    ///     5.0, 5.0, 5.0,
+    ///     5.0, 5.0, 5.0,
+    /// ]);
+    ///
+    /// constraints.with_constraint_3order(
+    ///     &zero.as_view(),
+    ///     &zero.as_view(),
+    ///     &jerk_c.as_view(),
+    ///     &zero.as_view(),
+    ///     &jerk_max.as_view(),
+    ///     0,
+    ///     false,
+    /// )?;
+    /// assert_eq!(constraints.get_jerk_constraints(1)?.0.nrows(), 2);
+    /// # Ok(())
+    /// # }
+    /// ```
     #[allow(clippy::too_many_arguments)]
     pub fn with_constraint_3order(
         &mut self,
@@ -1309,6 +1441,9 @@ impl Constraints {
     ///
     /// so downstream LP/SOCP/RA stages can read linear constraints through
     /// `get_jerk_linear_constraints()`.
+    /// Public callers normally trigger this through
+    /// [`Topp3ProblemBuilder::build_with_linearization`](crate::solver::topp3_socp::Topp3ProblemBuilder::build_with_linearization)
+    /// or [`Copp3ProblemBuilder::build_with_linearization`](crate::solver::copp3_socp::Copp3ProblemBuilder::build_with_linearization).
     ///
     /// # Numerical safety
     /// - Negative `a_linear` is rejected.
@@ -1862,7 +1997,7 @@ impl Constraints {
         (amax_stationary, amin_stationary)
     }
 
-    /// Test-only projection of `a_ori` toward feasible profile `a_fea` for TOPP2.
+    /// Test-only projection of _ori toward feasible profile _fea for TOPP2.
     ///
     /// # Returns
     /// Interpolation factor applied to `a_ori` (in `[0, 1]` in typical cases).
@@ -2069,6 +2204,7 @@ impl Constraints {
             }
         }
     }
+
 }
 
 /// The mode for updating valid rows.

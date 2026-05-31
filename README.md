@@ -1,8 +1,8 @@
 # COPP
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE) [![Website](https://img.shields.io/badge/website-copp.pro-2ff0d8)](https://copp.pro/) [![Docs](https://img.shields.io/badge/docs-docs.copp.pro-1f6feb)](https://docs.copp.pro/) [![Crates.io](https://img.shields.io/crates/v/copp.svg)](https://crates.io/crates/copp) [![Rust](https://img.shields.io/badge/Rust-native-b7410e)](https://docs.rs/copp/latest/copp/) [![C](https://img.shields.io/badge/C-ABI-00599c)](bindings/c/README.md) [![Python](https://img.shields.io/badge/Python-bindings-3776ab)](bindings/python/README.md)
 
-## <font color="#C00000">C</font>onvex-<font color="#C00000">O</font>bjective <font color="#C00000">P</font>ath <font color="#C00000">P</font>arameterization (Rust/C)
+## <font color="#C00000">C</font>onvex-<font color="#C00000">O</font>bjective <font color="#C00000">P</font>ath <font color="#C00000">P</font>arameterization
 
 This library targets **Optimal Path Parameterization (OPP)** for robotic trajectory generation. Typical application domains include robotic motion planning and CNC machining.
 
@@ -118,7 +118,7 @@ If your work uses RDDP methods from the PRO release, please cite:
 ```tex
 @article{wang2026reachability,
   title={Reachability-augmented dual dynamic programming for optimal path parameterization},
-  author={Wang, Yunan and Yan, Jizhou and Hu, Chuxiong and Li, Zeyang},
+  author={Yunan Wang and Jizhou Yan and Chuxiong Hu and Zeyang Li},
   journal={arXiv preprint arXiv:2605.19089},
   year={2026}
 }
@@ -262,8 +262,11 @@ fn main() -> Result<(), CoppError> {
 
 ### API for Other languages
 
-- C: Please refer to [README.md for C](./bindings/c/README.md).
-- Bindings for other languages are under active development. Planned targets include C++, Python, and MATLAB. If you have suggestions for these language interfaces, please feel free to [contact us](#contact-us).
+- C: enable the Cargo `c` feature with `cargo build --release --lib --features c`, then refer to [README.md for C](./bindings/c/README.md).
+- Python: Please refer to [README.md for Python](./bindings/python/README.md).
+- Bindings for other languages are under active development. Planned targets include C++ and MATLAB.
+
+If you have suggestions for these language interfaces, please feel free to [contact us](#contact-us), open an issue, or submit a pull request.
 
 ## PRO
 
@@ -329,11 +332,13 @@ In this test, TOPP methods still use traversal time as the optimization objectiv
 
 ## Contact Us
 
-For COPP PRO licensing, commercial collaboration, or technical consulting, please contact:
+For COPP PRO licensing, commercial collaboration, technical consulting, or general inquiries, please contact us at [hello@copp.pro](mailto:hello@copp.pro).
 
-+ [Mr. Yunan Wang](https://scholar.google.com/citations?user=RXaTo_kAAAAJ): wang-yn22@mails.tsinghua.edu.cn
-+ [Dr. Suqin He](https://github.com/hsqthu2012): hsq_thu2012@163.com
-+ [Dr. Shize Lin](https://github.com/thume4zzzz): linszthume@gmail.com
-+ [Prof. Chuxiong Hu](https://www.me.tsinghua.edu.cn/en/info/1275/2062.htm): cxhu@tsinghua.edu.cn
+Project maintainers:
 
-Furthermore, we thank [Jizhou Yan](https://github.com/yixing312) for his expertise on Rust and robotics.
++ [Mr. Yunan Wang](https://scholar.google.com/citations?user=RXaTo_kAAAAJ): [wang-yn22@mails.tsinghua.edu.cn](mailto:wang-yn22@mails.tsinghua.edu.cn)
++ [Dr. Suqin He](https://github.com/hsqthu2012): [hsq_thu2012@163.com](mailto:hsq_thu2012@163.com)
++ [Dr. Shize Lin](https://github.com/thume4zzzz): [linszthume@gmail.com](mailto:linszthume@gmail.com)
++ [Prof. Chuxiong Hu](https://www.me.tsinghua.edu.cn/en/info/1275/2062.htm): [cxhu@tsinghua.edu.cn](mailto:cxhu@tsinghua.edu.cn)
+
+Furthermore, we would like to thank [Jizhou Yan](https://github.com/yixing312) for his expertise on Rust and robotics, and to thank [Daoming Chen](https://github.com/Daoming-Chen) for his contribution to Python bindings.

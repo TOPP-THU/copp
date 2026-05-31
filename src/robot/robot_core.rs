@@ -145,6 +145,58 @@ impl RobotBasic for usize {
 ///
 /// If you do not have a real inverse-dynamics model yet, use `usize`
 /// as a placeholder implementing [`RobotTorque`](crate::robot::RobotTorque) (`tau = ddq`).
+///
+/// # Example
+/// The example below builds a two-dimensional point-mass robot, writes a station
+/// grid and path derivatives, then adds velocity, acceleration, and jerk
+/// constraints in one chain.
+///
+/// ```rust
+/// # fn main() -> Result<(), copp::diag::CoppError> {
+/// use copp::robot::Robot;
+/// use nalgebra::DMatrix;
+///
+/// let mut robot = Robot::with_capacity(2usize, 3);
+/// let s = [0.0, 0.5, 1.0];
+///
+/// let q = DMatrix::from_row_slice(
+///     2,
+///     3,
+///     &[
+///         0.0, 0.5, 1.0,
+///         1.0, 0.5, 0.0,
+///     ],
+/// );
+/// let dq = DMatrix::from_row_slice(
+///     2,
+///     3,
+///     &[
+///         1.0, 1.0, 1.0,
+///         -1.0, -1.0, -1.0,
+///     ],
+/// );
+/// let ddq = DMatrix::zeros(2, 3);
+/// let dddq = DMatrix::zeros(2, 3);
+/// let dddq_view = dddq.as_view();
+///
+/// let vel_max = [2.0, 2.0];
+/// let vel_min = [-2.0, -2.0];
+/// let acc_max = [3.0, 3.0];
+/// let acc_min = [-3.0, -3.0];
+/// let jerk_max = [10.0, 10.0];
+/// let jerk_min = [-10.0, -10.0];
+///
+/// robot
+///     .with_s(s.as_slice())?
+///     .with_q(&q.as_view(), &dq.as_view(), &ddq.as_view(), Some(&dddq_view), 0)?
+///     .with_axial_velocity((vel_max.as_slice(), s.len()), (vel_min.as_slice(), s.len()), 0)?
+///     .with_axial_acceleration((acc_max.as_slice(), s.len()), (acc_min.as_slice(), s.len()), 0)?
+///     .with_axial_jerk((jerk_max.as_slice(), s.len()), (jerk_min.as_slice(), s.len()), 0)?;
+///
+/// assert_eq!(robot.constraints.len(), 3);
+/// # Ok(())
+/// # }
+/// ```
 pub struct Robot<M: RobotBasic> {
     /// Concrete robot model implementation.
     model: M,
@@ -222,6 +274,11 @@ impl<M: RobotBasic> Robot<M> {
     }
 
     /// Append a new station segment into the internal constraint buffer.
+    ///
+    /// This is the robot-level convenience wrapper for
+    /// [`Constraints::with_s`](crate::constraints::Constraints::with_s). Use
+    /// the lower-level method directly when constructing
+    /// [`Constraints`](crate::constraints::Constraints) without a robot model.
     ///
     /// # Parameters
     /// - `s_new`: station samples accepted as 1D slice or matrix view.
@@ -623,6 +680,32 @@ impl<M: RobotBasic> Robot<M> {
 /// enough.
 ///
 /// A `usize` variable can serve as a trivial [`RobotTorque`](crate::robot::RobotTorque) implementation representing a point-mass model, where `tau = ddq`. For physical robots, users should implement this trait with their own inverse dynamics.
+///
+/// For a fuller closed-form robot implementation, see the test reference model
+/// in [robot_2dof.rs](demo/robot_2dof.rs).
+///
+/// # Example
+/// The example below uses `usize` as the built-in point-mass model for a quick
+/// inverse-dynamics smoke test.
+///
+/// ```rust
+/// # fn main() -> Result<(), copp::diag::CoppError> {
+/// use copp::robot::RobotTorque;
+///
+/// let model = 2usize;
+/// let mut tau = [0.0; 2];
+///
+/// model.inverse_dynamics(
+///     &[0.0, 0.0],
+///     &[0.0, 0.0],
+///     &[1.0, -2.0],
+///     &mut tau,
+/// )?;
+///
+/// assert_eq!(tau, [1.0, -2.0]);
+/// # Ok(())
+/// # }
+/// ```
 pub trait RobotTorque: RobotBasic {
     /// Evaluate inverse dynamics.
     ///
@@ -702,6 +785,7 @@ impl<M: RobotTorque> Robot<M> {
     /// # Errors
     /// Returns shape/range/data-availability errors when prerequisites are not met, and
     /// propagates inverse-dynamics failures from the robot model.
+    #[cfg(any(feature = "c", feature = "python", test))]
     pub(crate) fn get_torque_with_ab(
         &self,
         a_profile: &[f64],
@@ -918,6 +1002,9 @@ impl<M: RobotTorque> Robot<M> {
     /// # Mapping
     /// Using inverse dynamics, torque limits are transformed into second-order
     /// rows on `(a,b)` and appended to the constraint buffer.
+    ///
+    /// For a fuller inverse-dynamics implementation used with this method, see
+    /// the test reference model in [robot_2dof.rs](demo/robot_2dof.rs).
     ///
     /// # Errors
     /// - [`ConstraintError::NoMatchDimensions`](crate::diag::ConstraintError::NoMatchDimensions)

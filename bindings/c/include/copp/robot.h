@@ -71,6 +71,28 @@ enum CoppStatus copp_robot_create(size_t dim, size_t capacity, struct CoppRobot 
  * `inverse_dynamics_user_data` must remain valid until replaced, cleared, or
  * the robot is freed.
  *
+ * # Example
+ * The example below installs point dynamics explicitly as the robot's
+ * inverse-dynamics callback.
+ *
+ * ```c
+ * static enum CoppStatus point_dynamics(
+ *     void *user_data,
+ *     size_t dim,
+ *     const double *q,
+ *     const double *dq,
+ *     const double *ddq,
+ *     double *tau)
+ * {
+ *     for (size_t i = 0; i < dim; ++i) {
+ *         tau[i] = ddq[i];
+ *     }
+ *     return COPP_STATUS_OK;
+ * }
+ *
+ * check(copp_robot_set_inverse_dynamics(robot, point_dynamics, NULL));
+ * ```
+ *
  * \warning Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * `inverse_dynamics`, when non-null, must not unwind and must write a
@@ -339,6 +361,18 @@ enum CoppStatus copp_robot_pop_back_until(struct CoppRobot *robot, size_t idx_s_
  * The interval is `[idx_s_from, idx_s_to)`. The station values must already
  * have been appended to the robot.
  *
+ * # Example
+ * The example below appends a station grid and samples second-order path
+ * derivatives into the robot constraint storage.
+ *
+ * ```c
+ * double s[] = {0.0, 0.5, 1.0};
+ * struct CoppRobot *robot = NULL;
+ * check(copp_robot_create(dim, 3, &robot));
+ * check(copp_robot_append_s(robot, (struct CoppSliceF64){s, 3}));
+ * check(copp_robot_sample_path_2nd(robot, path, 0, 3));
+ * ```
+ *
  * \warning Safety
  * `robot` and `path` must be non-null handles created by COPP and must remain
  * valid for the duration of this call.
@@ -353,6 +387,15 @@ enum CoppStatus copp_robot_sample_path_2nd(struct CoppRobot *robot,
  *
  * The interval is `[idx_s_from, idx_s_to)`. The station values must already
  * have been appended to the robot.
+ *
+ * # Example
+ * The example below samples third-order path derivatives over the current
+ * robot station grid.
+ *
+ * ```c
+ * check(copp_robot_append_s(robot, (struct CoppSliceF64){s, n}));
+ * check(copp_robot_sample_path_3rd(robot, path, 0, n));
+ * ```
  *
  * \warning Safety
  * `robot` and `path` must be non-null handles created by COPP and must remain
@@ -474,6 +517,21 @@ enum CoppStatus copp_add_raw_constraint_3rd(struct CoppRobot *robot,
  * dimension.  The same per-axis limits are applied to every station in
  * `[start_idx_s, start_idx_s + len)`.  `len == 0` is accepted as a no-op.
  *
+ * # Example
+ * The example below applies the same per-axis velocity box to every station
+ * in an interval.
+ *
+ * ```c
+ * double vmax[] = {1.0, 1.0, 1.0};
+ * double vmin[] = {-1.0, -1.0, -1.0};
+ * check(copp_add_axial_velocity_limits(
+ *     robot,
+ *     0,
+ *     n,
+ *     (struct CoppSliceF64){vmax, 3},
+ *     (struct CoppSliceF64){vmin, 3}));
+ * ```
+ *
  * \warning Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * Non-empty slices must point to valid contiguous `double` values.
@@ -553,6 +611,21 @@ enum CoppStatus copp_add_axial_acceleration_limits_matrix(struct CoppRobot *robo
  * If the robot has no stored inverse-dynamics callback, point dynamics
  * (`tau = ddq`) is used.
  *
+ * # Example
+ * The example below applies broadcast torque limits over an interval that
+ * already has second-order path derivative data.
+ *
+ * ```c
+ * double tau_max[] = {40.0, 40.0, 40.0};
+ * double tau_min[] = {-40.0, -40.0, -40.0};
+ * check(copp_add_axial_torque_limits(
+ *     robot,
+ *     0,
+ *     n,
+ *     (struct CoppSliceF64){tau_max, 3},
+ *     (struct CoppSliceF64){tau_min, 3}));
+ * ```
+ *
  * \warning Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * Non-empty slices must point to valid contiguous `double` values.
@@ -602,6 +675,21 @@ enum CoppStatus copp_add_axial_torque_limits_matrix(struct CoppRobot *robot,
  * The robot must already contain third-order path derivative data over the
  * same interval, for example via `copp_robot_set_q_3rd` or
  * `copp_robot_sample_path_3rd`.
+ *
+ * # Example
+ * The example below applies broadcast jerk limits after third-order path
+ * derivative data has been stored.
+ *
+ * ```c
+ * double jmax[] = {5.0, 5.0, 5.0};
+ * double jmin[] = {-5.0, -5.0, -5.0};
+ * check(copp_add_axial_jerk_limits(
+ *     robot,
+ *     0,
+ *     n,
+ *     (struct CoppSliceF64){jmax, 3},
+ *     (struct CoppSliceF64){jmin, 3}));
+ * ```
  *
  * \warning Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.

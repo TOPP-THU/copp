@@ -15,6 +15,36 @@
 //! - Path grid uses station samples `s[0..=n]`.
 //! - Both `a` and `b` are node-based in TOPP3/COPP3 (`a.len() == b.len() == s.len()`).
 //! - `num_stationary = (head, tail)` indicates stationary boundary counts at start/end.
+//!
+//! # Example
+//! The example below converts a third-order profile from station samples to
+//! cumulative time and then samples the inverse map `s(t)`.
+//!
+//! ```rust
+//! # fn main() -> Result<(), copp::diag::CoppError> {
+//! use copp::InterpolationMode;
+//! use copp::solver::topp3_lp::{s_to_t_topp3, t_to_s_topp3, Topp3Profile};
+//!
+//! let s = [0.0, 0.5, 1.0];
+//! let profile = Topp3Profile::new(
+//!     vec![1.0, 1.0, 1.0],
+//!     vec![0.0, 0.0, 0.0],
+//!     (0, 0),
+//! );
+//!
+//! let (_t_final, t_s) = s_to_t_topp3(&s, profile.as_parts(), 0.0)?;
+//! let s_t = t_to_s_topp3(
+//!     &s,
+//!     profile.as_parts(),
+//!     &t_s,
+//!     InterpolationMode::UniformTimeGrid(0.0, 0.25, true),
+//! )?;
+//!
+//! assert_eq!(s_t.first().copied(), Some(0.0));
+//! assert_eq!(s_t.last().copied(), Some(1.0));
+//! # Ok(())
+//! # }
+//! ```
 
 use crate::copp::InterpolationMode;
 use crate::copp::copp3::{Topp3ProfileMut, Topp3ProfileRef};
@@ -221,7 +251,7 @@ pub fn t_to_s_topp3(
     }
 }
 
-/// Core inverse interpolation kernel for [`t_to_s_topp3`](crate::solver::topp3_lp::t_to_s_topp3).
+/// Core inverse interpolation kernel for [`t_to_s_topp3`](crate::solver::topp3_socp::t_to_s_topp3).
 ///
 /// The public wrapper validates dimensions, finiteness, station ordering, and
 /// sample ordering before calling this routine. This core then walks the time
