@@ -1,5 +1,7 @@
 # COPP Python Bindings
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](../../LICENSE) [![Website](https://img.shields.io/badge/website-copp.pro-2ff0d8)](https://copp.pro/) [![Docs](https://img.shields.io/badge/docs-docs.copp.pro-1f6feb)](https://docs.copp.pro/) [![PyPI](https://img.shields.io/pypi/v/copp-py.svg)](https://pypi.org/project/copp-py/) [![Python](https://img.shields.io/badge/Python-bindings-3776ab)](#copp-python-bindings)
+
 ## Convex-Objective Path Parameterization
 
 This directory contains the Python package for COPP. The PyPI distribution is `copp-py` and the import package is `copp_py`; examples usually alias it with `import copp_py as copp`. It wraps the Rust solver core through PyO3 while presenting a NumPy-friendly interface for paths, robot constraints, solver options, and post-processing helpers.
@@ -38,6 +40,20 @@ The Python bindings follow a deliberately small set of rules:
 - build paths with `copp.Path`, constraints with `copp.Robot`, and solver inputs with solver-specific `Problem` classes;
 - call algorithms through Rust-like solver modules such as `copp.solver.topp2_ra`, `copp.solver.copp2_socp`, and `copp.solver.copp3_socp`;
 - use `copp.interpolation` for profile-to-time conversion helpers.
+
+## Install
+
+Install the published package from PyPI:
+
+```sh
+python -m pip install copp-py
+```
+
+Then import it as:
+
+```python
+import copp_py as copp
+```
 
 ## API Availability
 

@@ -1,5 +1,7 @@
 # COPP C Bindings
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](../../LICENSE) [![Website](https://img.shields.io/badge/website-copp.pro-2ff0d8)](https://copp.pro/) [![Docs](https://img.shields.io/badge/docs-docs.copp.pro-1f6feb)](https://docs.copp.pro/) [![C](https://img.shields.io/badge/C-ABI-00599c)](#copp-c-bindings)
+
 ## Convex-Objective Path Parameterization
 
 This directory contains the public C ABI for the open-source COPP library. It focuses on using COPP from C through stable headers, ordinary C data types, and explicit ownership rules.
