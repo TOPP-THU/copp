@@ -9,6 +9,7 @@ on:
       - "src/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "pyproject.toml"
       - ".github/workflows/python-wheels.yml"
   pull_request:
     paths:
@@ -16,6 +17,7 @@ on:
       - "src/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "pyproject.toml"
       - ".github/workflows/python-wheels.yml"
   workflow_dispatch:
 
@@ -49,7 +51,7 @@ jobs:
       - uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist -m bindings/python/Cargo.toml
+          args: --release --out dist
           manylinux: auto
       - uses: actions/upload-artifact@v4
         with:
@@ -63,7 +65,7 @@ jobs:
       - uses: PyO3/maturin-action@v1
         with:
           command: sdist
-          args: --out dist -m bindings/python/Cargo.toml
+          args: --out dist
       - uses: actions/upload-artifact@v4
         with:
           name: sdist
