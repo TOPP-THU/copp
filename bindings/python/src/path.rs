@@ -1,11 +1,14 @@
 use crate::callback_error::PyCallbackErrorSlot;
 use crate::convert::{dmatrix_to_ndarray2, ndarray1_to_vec, ndarray2_to_dmatrix};
 use crate::errors::path_err_to_py;
+use copp::diag::PathError;
 use copp::path::{
-    Jet3, OutOfRangeMode, Path, PathDerivatives, SplineConfig, cos as jet_cos, exp as jet_exp,
-    ln as jet_ln, powi as jet_powi, sin as jet_sin, sqrt as jet_sqrt,
+    Jet3, OutOfRangeMode, Path, PathDerivatives, PathEvaluator2nd, PathEvaluator3rd, SplineConfig,
+    cos as jet_cos, exp as jet_exp, ln as jet_ln, powi as jet_powi, sin as jet_sin,
+    sqrt as jet_sqrt,
 };
-use numpy::{PyArray2, PyReadonlyArray1, PyReadonlyArray2};
+use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use std::sync::Arc;
 
@@ -134,6 +137,16 @@ impl PyJet3 {
         }
     }
 
+    fn __rtruediv__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        if let Ok(l) = other.extract::<f64>() {
+            Ok(Self {
+                inner: Jet3::constant(l) / self.inner,
+            })
+        } else {
+            Err(PyTypeError::new_err("unsupported type"))
+        }
+    }
+
     fn __neg__(&self) -> Self {
         Self {
             inner: Jet3::constant(0.0) - self.inner,
@@ -194,8 +207,15 @@ pub struct PySplineConfig {
 #[pymethods]
 impl PySplineConfig {
     #[new]
-    #[pyo3(signature = (order=5, s_min=0.0, s_max=1.0, clamp=false))]
-    fn new(order: usize, s_min: f64, s_max: f64, clamp: bool) -> Self {
+    #[pyo3(signature = (order=5, s_min=0.0, s_max=1.0, clamp=false, start_state=None, end_state=None))]
+    fn new(
+        order: usize,
+        s_min: f64,
+        s_max: f64,
+        clamp: bool,
+        start_state: Option<PyReadonlyArray2<'_, f64>>,
+        end_state: Option<PyReadonlyArray2<'_, f64>>,
+    ) -> Self {
         let cfg = SplineConfig {
             order,
             s_min,
@@ -205,9 +225,47 @@ impl PySplineConfig {
             } else {
                 OutOfRangeMode::Error
             },
+            start_state: start_state.map(ndarray2_to_dmatrix),
+            end_state: end_state.map(ndarray2_to_dmatrix),
             ..SplineConfig::default()
         };
         Self { inner: cfg }
+    }
+
+    #[getter]
+    fn order(&self) -> usize {
+        self.inner.order
+    }
+
+    #[getter]
+    fn s_min(&self) -> f64 {
+        self.inner.s_min
+    }
+
+    #[getter]
+    fn s_max(&self) -> f64 {
+        self.inner.s_max
+    }
+
+    #[getter]
+    fn clamp(&self) -> bool {
+        matches!(self.inner.out_of_range_mode, OutOfRangeMode::Clamp)
+    }
+
+    #[getter]
+    fn start_state<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        self.inner
+            .start_state
+            .as_ref()
+            .map(|m| dmatrix_to_ndarray2(py, m))
+    }
+
+    #[getter]
+    fn end_state<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        self.inner
+            .end_state
+            .as_ref()
+            .map(|m| dmatrix_to_ndarray2(py, m))
     }
 }
 
@@ -258,10 +316,12 @@ impl PyPath {
         let cfg = match config {
             Some(c) => SplineConfig {
                 order: c.inner.order,
+                parametrization: c.inner.parametrization,
                 s_min: c.inner.s_min,
                 s_max: c.inner.s_max,
                 out_of_range_mode: c.inner.out_of_range_mode,
-                ..SplineConfig::default()
+                start_state: c.inner.start_state.clone(),
+                end_state: c.inner.end_state.clone(),
             },
             None => SplineConfig::default(),
         };
@@ -269,6 +329,60 @@ impl PyPath {
         Ok(Self {
             inner: path,
             callback_error: None,
+        })
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (dim, evaluate_up_to_2nd, s_min, s_max, evaluate_q=None))]
+    fn from_evaluator_2nd(
+        dim: usize,
+        evaluate_up_to_2nd: PyObject,
+        s_min: f64,
+        s_max: f64,
+        evaluate_q: Option<PyObject>,
+    ) -> PyResult<Self> {
+        let callback_error = PyCallbackErrorSlot::new();
+        let evaluator = PyCallbackPathEvaluator2nd {
+            dim,
+            evaluate_q,
+            evaluate_up_to_2nd,
+            callback_error: callback_error.clone(),
+        };
+        let path = Path::from_evaluator_2nd(evaluator, s_min, s_max);
+        if let Some(err) = callback_error.take() {
+            return Err(err);
+        }
+        Ok(Self {
+            inner: path.map_err(path_err_to_py)?,
+            callback_error: Some(callback_error),
+        })
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (dim, evaluate_up_to_3rd, s_min, s_max, evaluate_up_to_2nd=None, evaluate_q=None))]
+    fn from_evaluator_3rd(
+        dim: usize,
+        evaluate_up_to_3rd: PyObject,
+        s_min: f64,
+        s_max: f64,
+        evaluate_up_to_2nd: Option<PyObject>,
+        evaluate_q: Option<PyObject>,
+    ) -> PyResult<Self> {
+        let callback_error = PyCallbackErrorSlot::new();
+        let evaluator = PyCallbackPathEvaluator3rd {
+            dim,
+            evaluate_q,
+            evaluate_up_to_2nd,
+            evaluate_up_to_3rd,
+            callback_error: callback_error.clone(),
+        };
+        let path = Path::from_evaluator_3rd(evaluator, s_min, s_max);
+        if let Some(err) = callback_error.take() {
+            return Err(err);
+        }
+        Ok(Self {
+            inner: path.map_err(path_err_to_py)?,
+            callback_error: Some(callback_error),
         })
     }
 
@@ -369,4 +483,247 @@ impl PyPath {
     pub(crate) fn inner(&self) -> &Path {
         &self.inner
     }
+}
+
+struct PyCallbackPathEvaluator2nd {
+    dim: usize,
+    evaluate_q: Option<PyObject>,
+    evaluate_up_to_2nd: PyObject,
+    callback_error: PyCallbackErrorSlot,
+}
+
+struct PyCallbackPathEvaluator3rd {
+    dim: usize,
+    evaluate_q: Option<PyObject>,
+    evaluate_up_to_2nd: Option<PyObject>,
+    evaluate_up_to_3rd: PyObject,
+    callback_error: PyCallbackErrorSlot,
+}
+
+impl PathEvaluator2nd for PyCallbackPathEvaluator2nd {
+    fn dim(&self) -> usize {
+        self.dim
+    }
+
+    fn evaluate_q(&self, s: &[f64], q: &mut [f64]) -> Result<(), PathError> {
+        if let Some(callback) = self.evaluate_q.as_ref() {
+            return call_python_evaluate_q(callback, s, self.dim, q, &self.callback_error);
+        }
+        let mut dq = vec![0.0; q.len()];
+        let mut ddq = vec![0.0; q.len()];
+        self.evaluate_up_to_2nd(s, q, &mut dq, &mut ddq)
+    }
+
+    fn evaluate_up_to_2nd(
+        &self,
+        s: &[f64],
+        q: &mut [f64],
+        dq: &mut [f64],
+        ddq: &mut [f64],
+    ) -> Result<(), PathError> {
+        call_python_evaluate_2nd(
+            &self.evaluate_up_to_2nd,
+            s,
+            self.dim,
+            q,
+            dq,
+            ddq,
+            &self.callback_error,
+        )
+    }
+}
+
+impl PathEvaluator2nd for PyCallbackPathEvaluator3rd {
+    fn dim(&self) -> usize {
+        self.dim
+    }
+
+    fn evaluate_q(&self, s: &[f64], q: &mut [f64]) -> Result<(), PathError> {
+        if let Some(callback) = self.evaluate_q.as_ref() {
+            return call_python_evaluate_q(callback, s, self.dim, q, &self.callback_error);
+        }
+        let mut dq = vec![0.0; q.len()];
+        let mut ddq = vec![0.0; q.len()];
+        self.evaluate_up_to_2nd(s, q, &mut dq, &mut ddq)
+    }
+
+    fn evaluate_up_to_2nd(
+        &self,
+        s: &[f64],
+        q: &mut [f64],
+        dq: &mut [f64],
+        ddq: &mut [f64],
+    ) -> Result<(), PathError> {
+        if let Some(callback) = self.evaluate_up_to_2nd.as_ref() {
+            return call_python_evaluate_2nd(
+                callback,
+                s,
+                self.dim,
+                q,
+                dq,
+                ddq,
+                &self.callback_error,
+            );
+        }
+        let mut dddq = vec![0.0; q.len()];
+        self.evaluate_up_to_3rd(s, q, dq, ddq, &mut dddq)
+    }
+}
+
+impl PathEvaluator3rd for PyCallbackPathEvaluator3rd {
+    fn evaluate_up_to_3rd(
+        &self,
+        s: &[f64],
+        q: &mut [f64],
+        dq: &mut [f64],
+        ddq: &mut [f64],
+        dddq: &mut [f64],
+    ) -> Result<(), PathError> {
+        call_python_evaluate_3rd(
+            &self.evaluate_up_to_3rd,
+            s,
+            self.dim,
+            q,
+            dq,
+            ddq,
+            dddq,
+            &self.callback_error,
+        )
+    }
+}
+
+fn call_python_evaluate_q(
+    callback: &PyObject,
+    s: &[f64],
+    dim: usize,
+    q: &mut [f64],
+    callback_error: &PyCallbackErrorSlot,
+) -> Result<(), PathError> {
+    if callback_error.has_error() {
+        return Err(PathError::DimensionMismatch);
+    }
+    Python::with_gil(|py| {
+        let s_py = PyArray1::from_slice(py, s);
+        let result = callback.call1(py, (s_py,));
+        match result.and_then(|obj| obj.extract::<PyReadonlyArray2<'_, f64>>(py)) {
+            Ok(q_arr) => copy_py_matrix(q_arr, dim, s.len(), "q", q).map_err(|message| {
+                callback_error.set_once(PyValueError::new_err(message));
+                PathError::DimensionMismatch
+            }),
+            Err(err) => {
+                callback_error.set_once(err);
+                Err(PathError::DimensionMismatch)
+            }
+        }
+    })
+}
+
+fn call_python_evaluate_2nd(
+    callback: &PyObject,
+    s: &[f64],
+    dim: usize,
+    q: &mut [f64],
+    dq: &mut [f64],
+    ddq: &mut [f64],
+    callback_error: &PyCallbackErrorSlot,
+) -> Result<(), PathError> {
+    if callback_error.has_error() {
+        return Err(PathError::DimensionMismatch);
+    }
+    Python::with_gil(|py| {
+        let s_py = PyArray1::from_slice(py, s);
+        let result = callback.call1(py, (s_py,));
+        let parsed = result.and_then(|obj| {
+            obj.extract::<(
+                PyReadonlyArray2<'_, f64>,
+                PyReadonlyArray2<'_, f64>,
+                PyReadonlyArray2<'_, f64>,
+            )>(py)
+        });
+        match parsed {
+            Ok((q_arr, dq_arr, ddq_arr)) => copy_py_matrix(q_arr, dim, s.len(), "q", q)
+                .and_then(|_| copy_py_matrix(dq_arr, dim, s.len(), "dq", dq))
+                .and_then(|_| copy_py_matrix(ddq_arr, dim, s.len(), "ddq", ddq))
+                .map_err(|message| {
+                    callback_error.set_once(PyValueError::new_err(message));
+                    PathError::DimensionMismatch
+                }),
+            Err(err) => {
+                callback_error.set_once(err);
+                Err(PathError::DimensionMismatch)
+            }
+        }
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn call_python_evaluate_3rd(
+    callback: &PyObject,
+    s: &[f64],
+    dim: usize,
+    q: &mut [f64],
+    dq: &mut [f64],
+    ddq: &mut [f64],
+    dddq: &mut [f64],
+    callback_error: &PyCallbackErrorSlot,
+) -> Result<(), PathError> {
+    if callback_error.has_error() {
+        return Err(PathError::DimensionMismatch);
+    }
+    Python::with_gil(|py| {
+        let s_py = PyArray1::from_slice(py, s);
+        let result = callback.call1(py, (s_py,));
+        let parsed = result.and_then(|obj| {
+            obj.extract::<(
+                PyReadonlyArray2<'_, f64>,
+                PyReadonlyArray2<'_, f64>,
+                PyReadonlyArray2<'_, f64>,
+                PyReadonlyArray2<'_, f64>,
+            )>(py)
+        });
+        match parsed {
+            Ok((q_arr, dq_arr, ddq_arr, dddq_arr)) => copy_py_matrix(q_arr, dim, s.len(), "q", q)
+                .and_then(|_| copy_py_matrix(dq_arr, dim, s.len(), "dq", dq))
+                .and_then(|_| copy_py_matrix(ddq_arr, dim, s.len(), "ddq", ddq))
+                .and_then(|_| copy_py_matrix(dddq_arr, dim, s.len(), "dddq", dddq))
+                .map_err(|message| {
+                    callback_error.set_once(PyValueError::new_err(message));
+                    PathError::DimensionMismatch
+                }),
+            Err(err) => {
+                callback_error.set_once(err);
+                Err(PathError::DimensionMismatch)
+            }
+        }
+    })
+}
+
+fn copy_py_matrix(
+    arr: PyReadonlyArray2<'_, f64>,
+    dim: usize,
+    n: usize,
+    name: &'static str,
+    out: &mut [f64],
+) -> Result<(), String> {
+    let shape = arr.shape();
+    if shape != [dim, n] {
+        return Err(format!(
+            "{name} must have shape ({dim}, {n}), got ({}, {})",
+            shape[0], shape[1]
+        ));
+    }
+    if out.len() != dim * n {
+        return Err(format!(
+            "{name} output buffer has length {}, expected {}",
+            out.len(),
+            dim * n
+        ));
+    }
+    let view = arr.as_array();
+    for j in 0..n {
+        for i in 0..dim {
+            out[i + j * dim] = view[[i, j]];
+        }
+    }
+    Ok(())
 }

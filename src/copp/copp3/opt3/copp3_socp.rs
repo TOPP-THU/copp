@@ -1199,7 +1199,7 @@ fn objective_value_linear_copp3(
 }
 
 /// Compute the objective value for COPP3 optimization.
-pub(crate) fn objective_value_copp3_opt<M: RobotTorque>(
+pub fn objective_value_copp3_opt<M: RobotTorque>(
     problem: &Copp3Problem<M>,
     profile: Topp3ProfileRef<'_>,
 ) -> (f64, Vec<f64>) {

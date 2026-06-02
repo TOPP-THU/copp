@@ -27,9 +27,9 @@ robot.with_axial_velocity(np.ones(DIM), -np.ones(DIM))
 robot.with_axial_acceleration(np.ones(DIM), -np.ones(DIM))
 
 # ─── 3) Solve TOPP2-RA ───
-idx_s_interval = (0, N - 1)
-a_boundary = (0.0, 0.0)
-a = copp.topp2_ra(robot, idx_s_interval, a_boundary)
+idx_s_start, idx_s_final = 0, N - 1
+a_start, a_final = 0.0, 0.0
+a = copp.topp2_ra(robot, idx_s_start, idx_s_final, a_start, a_final)
 
 # ─── 4) Post-process: a(s) → t(s) → s(t) ───
 t_final, t_s = copp.s_to_t_topp2(s, a)

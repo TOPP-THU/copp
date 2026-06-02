@@ -29,19 +29,18 @@ robot.with_axial_acceleration(np.ones(DIM), -np.ones(DIM))
 robot.with_axial_jerk(np.ones(DIM), -np.ones(DIM))
 
 # ─── 3) TOPP2-RA for initial linearization ───
-idx_s_interval = (0, N - 1)
-a_boundary = (0.0, 0.0)
-a_ra = copp.topp2_ra(robot, idx_s_interval, a_boundary)
+idx_s_start, idx_s_final = 0, N - 1
+a_ra = copp.topp2_ra(robot, idx_s_start, idx_s_final, 0.0, 0.0)
 
 robot.amax_substitute(a_ra, 0)
 
 # ─── 4) TOPP3-SOCP iteration 1 ───
 options = copp.ClarabelOptions(allow_almost_solved=True)
-a1, b1, ns1 = copp.topp3_socp(robot, 0, a_ra, (0.0, 0.0), (0.0, 0.0), options)
+a1, b1, ns1 = copp.topp3_socp(robot, 0, a_ra, 0.0, 0.0, 0.0, 0.0, options)
 t_final1, t_s1 = copp.s_to_t_topp3(s, a1, b1, ns1)
 
 # ─── 5) TOPP3-SOCP iteration 2 (SCP) ───
-a2, b2, ns2 = copp.topp3_socp(robot, 0, a1, (0.0, 0.0), (0.0, 0.0), options)
+a2, b2, ns2 = copp.topp3_socp(robot, 0, a1, 0.0, 0.0, 0.0, 0.0, options)
 t_final2, t_s2 = copp.s_to_t_topp3(s, a2, b2, ns2)
 
 dt = 1e-3

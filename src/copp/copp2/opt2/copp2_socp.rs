@@ -782,7 +782,7 @@ fn clarable_objective_copp2<M: RobotTorque>(
 }
 
 /// Compute the objective value for COPP2 optimization.
-pub(crate) fn objective_value_copp2_opt<M: RobotTorque>(
+pub fn objective_value_copp2_opt<M: RobotTorque>(
     robot: &Robot<M>,
     start_idx_s: usize,
     objective: &[CoppObjective],

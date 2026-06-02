@@ -32,11 +32,13 @@ objectives = [
     copp.Objective.time(1.0),
     copp.Objective.thermal_energy(0.1, [1.0] * DIM),
 ]
-idx_s_interval = (0, N - 1)
-a_boundary = (0.0, 0.0)
+idx_s_start, idx_s_final = 0, N - 1
+a_start, a_final = 0.0, 0.0
 options = copp.ClarabelOptions(allow_almost_solved=True)
 
-a = copp.copp2_socp(robot, idx_s_interval, a_boundary, objectives, options)
+a = copp.copp2_socp(
+    robot, idx_s_start, idx_s_final, a_start, a_final, objectives, options
+)
 
 # ─── 4) Post-process ───
 t_final, t_s = copp.s_to_t_topp2(s, a)

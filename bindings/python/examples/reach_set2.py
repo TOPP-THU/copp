@@ -25,14 +25,14 @@ robot.with_axial_velocity(np.ones(DIM), -np.ones(DIM))
 robot.with_axial_acceleration(np.ones(DIM), -np.ones(DIM))
 
 # ─── 3) Compute reachable sets ───
-idx_s_interval = (0, N - 1)
-a_boundary = (0.0, 0.0)
+idx_s_start, idx_s_final = 0, N - 1
+a_start, a_final = 0.0, 0.0
 
-a_min_back, a_max_back = copp.reach_set2_backward(
-    robot, idx_s_interval, a_boundary
+a_max_back, a_min_back = copp.reach_set2_backward(
+    robot, idx_s_start, idx_s_final, a_start, a_final
 )
-a_min_bidir, a_max_bidir = copp.reach_set2_bidirectional(
-    robot, idx_s_interval, a_boundary
+a_max_bidir, a_min_bidir = copp.reach_set2_bidirectional(
+    robot, idx_s_start, idx_s_final, a_start, a_final
 )
 
 print(f"reach_set2 done. dim={DIM}, N={N}")

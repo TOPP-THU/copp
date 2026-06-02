@@ -1,5 +1,6 @@
 mod callback_error;
 mod convert;
+mod enums;
 mod errors;
 mod objectives;
 mod options;
@@ -12,6 +13,10 @@ use pyo3::prelude::*;
 #[pymodule]
 fn _copp(m: &Bound<'_, PyModule>) -> PyResult<()> {
     errors::register(m)?;
+
+    m.add_class::<enums::Verbosity>()?;
+    m.add_class::<enums::ClarabelSolverStatus>()?;
+    m.add_class::<enums::DirectSolveMethod>()?;
 
     m.add_class::<path::PyJet3>()?;
     m.add_class::<path::PySplineConfig>()?;
@@ -26,17 +31,28 @@ fn _copp(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_class::<robot::PyRobot>()?;
     m.add_class::<options::PyReachSet2Options>()?;
+    m.add_class::<options::PyClarabelSettings>()?;
     m.add_class::<options::PyClarabelOptions>()?;
     m.add_class::<objectives::PyObjective>()?;
+    m.add_class::<solver::PyTopp3Profile>()?;
+    m.add_class::<solver::PyClarabelSolution>()?;
+    m.add_class::<solver::PyLinearSolverInfo>()?;
+    m.add_function(wrap_pyfunction!(options::set_verbosity_output, m)?)?;
+    m.add_function(wrap_pyfunction!(options::set_verbosity_log_file, m)?)?;
+    m.add_function(wrap_pyfunction!(options::verbosity_output, m)?)?;
 
     // Solvers
     m.add_function(wrap_pyfunction!(solver::topp2_ra, m)?)?;
     m.add_function(wrap_pyfunction!(solver::reach_set2_backward, m)?)?;
     m.add_function(wrap_pyfunction!(solver::reach_set2_bidirectional, m)?)?;
     m.add_function(wrap_pyfunction!(solver::copp2_socp, m)?)?;
+    m.add_function(wrap_pyfunction!(solver::copp2_socp_expert, m)?)?;
     m.add_function(wrap_pyfunction!(solver::topp3_lp, m)?)?;
+    m.add_function(wrap_pyfunction!(solver::topp3_lp_expert, m)?)?;
     m.add_function(wrap_pyfunction!(solver::topp3_socp, m)?)?;
+    m.add_function(wrap_pyfunction!(solver::topp3_socp_expert, m)?)?;
     m.add_function(wrap_pyfunction!(solver::copp3_socp, m)?)?;
+    m.add_function(wrap_pyfunction!(solver::copp3_socp_expert, m)?)?;
 
     // Interpolation
     m.add_function(wrap_pyfunction!(solver::s_to_t_topp2, m)?)?;

@@ -64,9 +64,8 @@ amax_feed = sdot_max ** 2
 robot.amax_substitute(amax_feed, idx_from=0)
 
 # ─── 4) TOPP2-RA for initial linearization ───
-idx_s_interval = (0, N - 1)
-a_boundary = (0.0, 0.0)
-a_ra = copp.topp2_ra(robot, idx_s_interval, a_boundary)
+idx_s_start, idx_s_final = 0, N - 1
+a_ra = copp.topp2_ra(robot, idx_s_start, idx_s_final, 0.0, 0.0)
 
 # Use RA result as tighter amax for COPP3
 robot.amax_substitute(a_ra, 0)
@@ -76,13 +75,13 @@ objectives = [copp.Objective.time(1.0)]
 options = copp.ClarabelOptions(allow_almost_solved=True)
 
 a1, b1, ns1 = copp.copp3_socp(
-    robot, 0, a_ra, (0.0, 0.0), (0.0, 0.0), objectives, options
+    robot, 0, a_ra, 0.0, 0.0, 0.0, 0.0, objectives, options
 )
 t_final1, t_s1 = copp.s_to_t_topp3(s, a1, b1, ns1)
 
 # ─── 6) COPP3-SOCP iteration 2 (SCP) ───
 a2, b2, ns2 = copp.copp3_socp(
-    robot, 0, a1, (0.0, 0.0), (0.0, 0.0), objectives, options
+    robot, 0, a1, 0.0, 0.0, 0.0, 0.0, objectives, options
 )
 t_final2, t_s2 = copp.s_to_t_topp3(s, a2, b2, ns2)
 
