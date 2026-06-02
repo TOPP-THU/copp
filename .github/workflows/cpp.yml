@@ -1,0 +1,229 @@
+name: C++ Bindings
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cpp-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cmake:
+    name: ${{ matrix.os }} ${{ matrix.linkage }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-x86_64-gnu
+            linkage: dynamic
+            link_static: OFF
+          - os: ubuntu-24.04
+            platform: linux-x86_64-gnu
+            linkage: static
+            link_static: ON
+          - os: windows-2022
+            platform: windows-x86_64-msvc
+            linkage: dynamic
+            link_static: OFF
+          - os: windows-2022
+            platform: windows-x86_64-msvc
+            linkage: static
+            link_static: ON
+          - os: macos-15
+            platform: macos-aarch64
+            linkage: dynamic
+            link_static: OFF
+          - os: macos-15
+            platform: macos-aarch64
+            linkage: static
+            link_static: ON
+          - os: macos-15-intel
+            platform: macos-x86_64
+            linkage: dynamic
+            link_static: OFF
+          - os: macos-15-intel
+            platform: macos-x86_64
+            linkage: static
+            link_static: ON
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Prepare package metadata
+        shell: pwsh
+        run: |
+          $refName = "${{ github.ref_name }}"
+          if ("${{ github.event_name }}" -eq "pull_request") {
+            $refName = "pr-${{ github.event.pull_request.number }}"
+          }
+          $safeRefName = $refName -replace '[^A-Za-z0-9._-]', '-'
+          "COPP_PACKAGE_NAME=copp-cpp-$safeRefName-${{ matrix.platform }}-${{ matrix.linkage }}" >> $env:GITHUB_ENV
+
+      - name: Build Rust/C++ native library
+        run: cargo build --release --lib --features cpp
+
+      - name: Configure C++ tests and examples
+        run: >
+          cmake -S bindings/cpp -B bindings/cpp/build
+          -DCOPP_LINK_STATIC=${{ matrix.link_static }}
+          -DCOPP_CPP_WITH_EIGEN=OFF
+          -DCOPP_INSTALL_C_ABI_TARGET=OFF
+          -DCOPP_BUILD_CPP_TESTS=ON
+          -DCOPP_BUILD_CPP_EXAMPLES=ON
+          -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build C++ tests and examples
+        run: cmake --build bindings/cpp/build --config Release --parallel
+
+      - name: Run C++ tests
+        run: ctest --test-dir bindings/cpp/build --output-on-failure -C Release
+
+      - name: Install C++ SDK package
+        shell: pwsh
+        run: |
+          $prefix = Join-Path "dist" $env:COPP_PACKAGE_NAME
+          cmake --install bindings/cpp/build --config Release --prefix $prefix
+
+          Copy-Item README.md (Join-Path $prefix "README.md")
+          Copy-Item CHANGELOG.md (Join-Path $prefix "CHANGELOG.md")
+          Copy-Item bindings/cpp/README.md (Join-Path $prefix "CPP-README.md")
+          Copy-Item bindings/cpp/examples (Join-Path $prefix "examples") -Recurse
+
+          $license = Get-ChildItem -Path . -File |
+            Where-Object { $_.Name -match '^(LICENSE|COPYING)(\..*)?$' } |
+            Select-Object -First 1
+          if ($license) {
+            Copy-Item $license.FullName (Join-Path $prefix $license.Name)
+          }
+
+      - name: Configure package consumer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force cpp-consumer | Out-Null
+          @'
+          cmake_minimum_required(VERSION 3.16)
+          project(copp_cpp_consumer LANGUAGES CXX)
+          find_package(copp CONFIG REQUIRED)
+          add_executable(consumer main.cpp)
+          target_link_libraries(consumer PRIVATE copp::copp)
+          '@ | Set-Content -Encoding UTF8 cpp-consumer/CMakeLists.txt
+          @'
+          #include <copp/copp.hpp>
+
+          #include <iostream>
+
+          int main()
+          {
+              std::cout << copp::version() << "\n";
+              return 0;
+          }
+          '@ | Set-Content -Encoding UTF8 cpp-consumer/main.cpp
+          $prefix = Resolve-Path (Join-Path "dist" $env:COPP_PACKAGE_NAME)
+          cmake -S cpp-consumer -B cpp-consumer/build -DCMAKE_PREFIX_PATH="$prefix" -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build package consumer
+        run: cmake --build cpp-consumer/build --config Release --parallel
+
+      - name: Run package consumer
+        shell: pwsh
+        run: |
+          $install = (Resolve-Path (Join-Path "dist" $env:COPP_PACKAGE_NAME)).Path
+          if ($IsWindows) {
+              $env:PATH = "$install\bin;$install\lib;$env:PATH"
+              & "cpp-consumer/build/Release/consumer.exe"
+          } else {
+              $env:LD_LIBRARY_PATH = "$install/lib:$env:LD_LIBRARY_PATH"
+              $env:DYLD_LIBRARY_PATH = "$install/lib:$env:DYLD_LIBRARY_PATH"
+              & "cpp-consumer/build/consumer"
+          }
+
+      - name: Archive C++ SDK package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release-artifacts | Out-Null
+          $archive = Join-Path "release-artifacts" "$env:COPP_PACKAGE_NAME.zip"
+
+          Push-Location dist
+          cmake -E tar cfv "../$archive" --format=zip $env:COPP_PACKAGE_NAME
+          Pop-Location
+
+          $hash = Get-FileHash $archive -Algorithm SHA256
+          "$($hash.Hash.ToLower())  $(Split-Path $archive -Leaf)" |
+            Set-Content -Path "$archive.sha256" -NoNewline
+
+      - name: Upload release package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.COPP_PACKAGE_NAME }}
+          path: |
+            release-artifacts/${{ env.COPP_PACKAGE_NAME }}.zip
+            release-artifacts/${{ env.COPP_PACKAGE_NAME }}.zip.sha256
+          if-no-files-found: error
+
+  publish-draft:
+    name: Create Draft GitHub Release
+    needs: cmake
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download release package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Create or update draft GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $assetPaths = @(
+            Get-ChildItem release-assets -Recurse -File |
+              Where-Object { $_.Name -like "*.zip" -or $_.Name -like "*.zip.sha256" } |
+              Sort-Object Name |
+              ForEach-Object { $_.FullName }
+          )
+          if ($assetPaths.Count -eq 0) {
+            throw "No release assets were downloaded."
+          }
+
+          $notesFile = "release-notes.md"
+          @'
+          Prebuilt C++ SDK packages are attached below.
+
+          Each package contains the public C++ headers, the Release native library, examples, and the CMake package files needed for `find_package(copp CONFIG REQUIRED)`.
+
+          See CHANGELOG.md in this tag for API changes and breaking changes.
+          '@ | Set-Content -Path $notesFile -NoNewline
+
+          gh release view $env:RELEASE_TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            & gh release upload $env:RELEASE_TAG @assetPaths --clobber
+            & gh release edit $env:RELEASE_TAG `
+              --draft `
+              --title $env:RELEASE_TAG `
+              --notes-file $notesFile
+          } else {
+            & gh release create $env:RELEASE_TAG @assetPaths `
+              --draft `
+              --verify-tag `
+              --title $env:RELEASE_TAG `
+              --notes-file $notesFile
+          }

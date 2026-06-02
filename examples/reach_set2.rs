@@ -1,4 +1,4 @@
-//! This example uses [`reach_set2_backward`] and [`reach_set2_bidirectional`] to
+﻿//! This example uses [`reach_set2_backward`] and [`reach_set2_bidirectional`] to
 //! compute second-order reachable sets for an analytic path whose axial velocity
 //! and acceleration both stay within `[-1, 1]`.
 

@@ -559,4 +559,3 @@ class Path:
         """Evaluate ``q``, ``dq``, ``ddq``, and ``dddq`` at path parameters ``s``."""
         ...
 
-

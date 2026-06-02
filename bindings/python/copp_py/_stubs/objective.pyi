@@ -113,7 +113,7 @@ class TotalVariationTorque:
 
     Public user code should construct this as
     ``copp.objective.TotalVariationTorque(...)``.
-    This objective is supported by COPP2-SOCP.
+    This objective is supported by the SOCP-backed COPP solvers.
     """
 
     weight: float

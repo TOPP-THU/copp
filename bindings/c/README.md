@@ -1,14 +1,14 @@
 # COPP C Bindings
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](../../LICENSE) [![Website](https://img.shields.io/badge/website-copp.pro-2ff0d8)](https://copp.pro/) [![Docs](https://img.shields.io/badge/docs-docs.copp.pro-1f6feb)](https://docs.copp.pro/) [![C](https://img.shields.io/badge/C-ABI-00599c)](#copp-c-bindings)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](../../LICENSE) [![Website](https://img.shields.io/badge/website-copp.pro-2ff0d8)](https://copp.pro/) [![Docs](https://img.shields.io/badge/docs-docs.copp.pro-1f6feb)](https://docs.copp.pro/) [![C](https://img.shields.io/badge/C-ABI-a8b9cc)](#copp-c-bindings)
 
 ## Convex-Objective Path Parameterization
 
 This directory contains the public C ABI for the open-source COPP library. It focuses on using COPP from C through stable headers, ordinary C data types, and explicit ownership rules.
 
-The C ABI is in its feedback and stabilization phase. It is intended to be usable today, but function names, problem descriptors, result structs, and packaging details may still evolve before the first stable C release. Feedback from downstream bindings, robotics applications, and packaging workflows is welcome. For C ABI questions, packaging feedback, compatibility requests, COPP PRO licensing, or commercial collaboration, please contact us at [hello@copp.pro](mailto:hello@copp.pro).
+The C ABI is in its feedback and stabilization phase. It is intended to be usable today, but function names, problem descriptors, result structs, and packaging details may still evolve before the first stable C release. Feedback from downstream bindings, robotics applications, and packaging workflows is welcome. For C ABI questions, packaging feedback, compatibility requests, COPP-Pro licensing, or commercial collaboration, please contact us at [hello@copp.pro](mailto:hello@copp.pro).
 
-> **Open-source / Pro note:** this README documents the open-source C ABI. For the full project overview, open-source vs Pro algorithm matrix, solver-selection guidance, benchmark comparisons, citation information, and collaboration contact details, see the [COPP repository README](https://github.com/TOPP-THU/copp#readme).
+> **Open-source / PRO note:** this README documents the open-source C ABI. For the full project overview, open-source vs PRO algorithm matrix, solver-selection guidance, benchmark comparisons, citation information, and collaboration contact details, see the [COPP repository README](https://github.com/TOPP-THU/copp#readme).
 
 The C API follows a deliberately small set of rules:
 
@@ -25,7 +25,7 @@ The algorithmic background, open-source algorithm availability, benchmark tables
 | Problem class  | Public C API                                                                           |
 | -------------- | -------------------------------------------------------------------------------------- |
 | Core utilities | status, last error, slices, matrix views, owned vectors/matrices                       |
-| Path           | waypoint spline paths, evaluator paths, metadata, 2nd/3rd derivative evaluation        |
+| Path           | waypoint spline, Jet3 parametric, evaluator paths, 2nd/3rd derivative evaluation       |
 | Robot          | station grids, path sampling, raw constraints, axial limits, inverse dynamics callback |
 | TOPP2          | TOPP2-RA, ReachSet2, 2nd-order interpolation                                           |
 | COPP2          | COPP2-SOCP                                                                             |
@@ -132,7 +132,7 @@ ctest --test-dir bindings/c/build --output-on-failure -C Release
 Build one example target:
 
 ```sh
-cmake --build bindings/c/build --config Release --target example_topp3_lp
+cmake --build bindings/c/build --config Release --target example_topp2_ra
 ```
 
 Disable tests or examples when configuring:
@@ -140,6 +140,233 @@ Disable tests or examples when configuring:
 ```sh
 cmake -S bindings/c -B bindings/c/build -DCOPP_BUILD_TESTS=OFF
 cmake -S bindings/c -B bindings/c/build -DCOPP_BUILD_EXAMPLES=OFF
+```
+
+### TOPP2-RA Quick Example
+
+The fastest way to run a C solver example from a source checkout is:
+
+```sh
+cargo build --release --lib --features c
+cmake -S bindings/c -B bindings/c/build -DCOPP_BUILD_TESTS=OFF
+cmake --build bindings/c/build --config Release --target example_topp2_ra
+```
+
+Run the built executable. For Windows multi-config generators:
+
+```powershell
+bindings\c\build\Release\example_topp2_ra.exe
+```
+
+For Windows single-config generators:
+
+```powershell
+bindings\c\build\example_topp2_ra.exe
+```
+
+For Linux or macOS:
+
+```sh
+./bindings/c/build/example_topp2_ra
+```
+
+Typical output:
+
+```text
+TOPP2-RA done.
+dim = 3, N = 1001
+t_final = ... s
+a_profile.len() = 1001
+s(t) samples = ...
+```
+
+The example target is backed by [`examples/topp2_ra.c`](examples/topp2_ra.c). The standalone version below spells out the same TOPP2-RA flow without helper wrappers. The path is written with `CoppJet3`, so COPP obtains `q`, `dq/ds`, and `d2q/ds2` through automatic differentiation instead of requiring hand-written derivative callbacks:
+
+```c
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdio.h>
+
+#include "copp/copp.h"
+
+enum
+{
+    DIM = 3,
+    N = 1001
+};
+
+static int check(enum CoppStatus status, const char *call)
+{
+    if (status == COPP_STATUS_OK)
+    {
+        return 0;
+    }
+
+    fprintf(stderr, "%s failed: %s\n", call, copp_status_message(status));
+    fprintf(stderr, "%s\n", copp_last_error_message());
+    return 1;
+}
+
+static enum CoppStatus eval_lissajous_path(
+    void *user_data,
+    size_t dim,
+    struct CoppJet3 s,
+    struct CoppJet3 *q)
+{
+    (void)user_data;
+    if (dim != DIM || q == NULL)
+    {
+        return COPP_STATUS_INVALID_ARGUMENT;
+    }
+
+    const double pi = 3.14159265358979323846;
+    const double freq[DIM] = {2.0 * pi, 3.0 * pi, 5.0 * pi};
+    const double phase[DIM] = {0.0, 0.3, 0.7};
+
+    for (size_t axis = 0; axis < DIM; ++axis)
+    {
+        struct CoppJet3 x = copp_add_f64(copp_mul_f64(s, freq[axis]), phase[axis]);
+        q[axis] = copp_sin(x);
+    }
+
+    return COPP_STATUS_OK;
+}
+
+int main(void)
+{
+    /*
+     * 1) Deterministic 3-axis Lissajous path q(s), s in [0, 1].
+     * `copp_path_from_parametric` seeds `s` as a `CoppJet3`; the callback only
+     * writes q(s), and COPP propagates derivatives up to third order.
+     */
+    double s[N];
+    struct CoppPath *path = NULL;
+    struct CoppRobot *robot = NULL;
+    struct CoppVecF64 a_ra = {NULL, 0, 0};
+    struct CoppVecF64 t_s = {NULL, 0, 0};
+    struct CoppVecF64 s_t = {NULL, 0, 0};
+    int rc = 1;
+
+    for (size_t k = 0; k < N; ++k)
+    {
+        s[k] = (double)k / (double)(N - 1);
+    }
+
+    if (check(
+            copp_path_from_parametric(DIM, 0.0, 1.0, eval_lissajous_path, NULL, &path),
+            "copp_path_from_parametric"))
+    {
+        goto cleanup;
+    }
+
+    /*
+     * 2) Build robot constraints (3-axis), then apply symmetric limits
+     * velocity/acceleration = [-1, 1].
+     */
+    if (check(copp_robot_create(DIM, N, &robot), "copp_robot_create"))
+    {
+        goto cleanup;
+    }
+    if (check(copp_robot_append_s(robot, (struct CoppSliceF64){s, N}), "copp_robot_append_s"))
+    {
+        goto cleanup;
+    }
+    if (check(copp_robot_sample_path_2nd(robot, path, 0, N), "copp_robot_sample_path_2nd"))
+    {
+        goto cleanup;
+    }
+
+    double upper[DIM] = {1.0, 1.0, 1.0};
+    double lower[DIM] = {-1.0, -1.0, -1.0};
+    if (check(
+            copp_add_axial_velocity_limits(
+                robot,
+                0,
+                N,
+                (struct CoppSliceF64){upper, DIM},
+                (struct CoppSliceF64){lower, DIM}),
+            "copp_add_axial_velocity_limits"))
+    {
+        goto cleanup;
+    }
+    if (check(
+            copp_add_axial_acceleration_limits(
+                robot,
+                0,
+                N,
+                (struct CoppSliceF64){upper, DIM},
+                (struct CoppSliceF64){lower, DIM}),
+            "copp_add_axial_acceleration_limits"))
+    {
+        goto cleanup;
+    }
+
+    /*
+     * 3) Solve TOPP2-RA with boundary values a(0) = 0 and a(1) = 0.
+     * The output profile stores a[k] = (ds/dt)^2 at each station.
+     */
+    struct Topp2RaOptions options;
+    if (check(topp2_ra_default_options(&options), "topp2_ra_default_options"))
+    {
+        goto cleanup;
+    }
+
+    struct Topp2Problem problem = {robot, 0, N - 1, 0.0, 0.0};
+    if (check(topp2_ra(problem, options, &a_ra), "topp2_ra"))
+    {
+        goto cleanup;
+    }
+
+    /*
+     * 4) Post-process TOPP2-RA results: a(s) -> t(s) -> s(t).
+     * `t_s[k]` is the time when station s[k] is reached. `s_t` uses a
+     * uniform time grid with dt = 1e-3 s, which is useful for plotting and
+     * downstream control.
+     */
+    double t_final = 0.0;
+    if (check(
+            copp_s_to_t_2nd(
+                (struct CoppSliceF64){s, N},
+                (struct CoppSliceF64){a_ra.data, a_ra.len},
+                0.0,
+                &t_final,
+                &t_s),
+            "copp_s_to_t_2nd"))
+    {
+        goto cleanup;
+    }
+    if (check(
+            copp_t_to_s_uniform_2nd(
+                (struct CoppSliceF64){s, N},
+                (struct CoppSliceF64){a_ra.data, a_ra.len},
+                (struct CoppSliceF64){t_s.data, t_s.len},
+                0.0,
+                1.0e-3,
+                true,
+                &s_t),
+            "copp_t_to_s_uniform_2nd"))
+    {
+        goto cleanup;
+    }
+
+    /*
+     * 5) Print the tutorial summary.
+     */
+    printf("TOPP2-RA done.\n");
+    printf("dim = %d, N = %d\n", DIM, N);
+    printf("t_final = %.6f s\n", t_final);
+    printf("a_profile.len() = %zu\n", a_ra.len);
+    printf("s(t) samples = %zu\n", s_t.len);
+    rc = 0;
+
+cleanup:
+    copp_vec_f64_free(s_t);
+    copp_vec_f64_free(t_s);
+    copp_vec_f64_free(a_ra);
+    copp_robot_free(robot);
+    copp_path_free(path);
+    return rc;
+}
 ```
 
 ## Install and Link
@@ -234,7 +461,7 @@ ctest --test-dir bindings/c/build --output-on-failure -C Release -R "test_instal
 
 Most C examples follow the same shape:
 
-1. Build a path from waypoints or evaluator callbacks.
+1. Build a path from waypoints, a Jet3 parametric callback, or evaluator callbacks.
 2. Build a station grid.
 3. Create a `CoppRobot`.
 4. Append stations and sample path derivatives into the robot.
@@ -245,6 +472,38 @@ Most C examples follow the same shape:
 9. Release COPP-owned outputs with the matching free function.
 
 The C API intentionally avoids implementation-specific lifetimes, generics, closures, and builders. Problem structs are borrowed descriptors used only during the solver call.
+
+## Parametric Paths
+
+Use `copp_path_from_parametric` when you have a scalar formula for `q(s)` and
+want COPP to propagate derivatives up to third order. The callback receives a
+seeded `struct CoppJet3 s` and writes one `CoppJet3` per path dimension.
+`copp/path.h` provides inline helpers such as `copp_add`, `copp_mul_f64`, and
+`copp_sin`.
+
+```c
+static enum CoppStatus eval_path(
+    void *user_data,
+    size_t dim,
+    struct CoppJet3 s,
+    struct CoppJet3 *q)
+{
+    (void)user_data;
+    if (dim != 1 || q == NULL) {
+        return COPP_STATUS_INVALID_ARGUMENT;
+    }
+
+    q[0] = copp_sin(copp_mul_f64(s, 6.28318530717958647692));
+    return COPP_STATUS_OK;
+}
+
+struct CoppPath *path = NULL;
+copp_path_from_parametric(1, 0.0, 1.0, eval_path, NULL, &path);
+```
+
+The resulting path works with the same `copp_path_evaluate_up_to_2nd`,
+`copp_path_evaluate_up_to_3rd`, `copp_robot_sample_path_2nd`, and
+`copp_robot_sample_path_3rd` calls as waypoint and evaluator paths.
 
 ## Minimal Program
 
@@ -353,7 +612,7 @@ The generated `bindings/c/docs/` directory is ignored by Git.
 | ---------------------- | ------------------------------------------------------- |
 | `copp/copp.h`          | Umbrella header                                         |
 | `copp/core.h`          | status, last error, matrices, vectors, Clarabel options |
-| `copp/path.h`          | path handles and path evaluation                        |
+| `copp/path.h`          | path handles, Jet3 helpers, and path evaluation         |
 | `copp/robot.h`         | robot handles, sampling, constraints, callbacks         |
 | `copp/formulation.h`   | problem descriptors, objectives, profiles               |
 | `copp/interpolation.h` | 2nd/3rd-order interpolation utilities                   |

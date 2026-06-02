@@ -100,6 +100,115 @@ static enum CoppStatus polynomial_evaluate_2nd(
     return COPP_STATUS_OK;
 }
 
+static enum CoppStatus parametric_evaluate(
+    void *user_data,
+    size_t dim,
+    struct CoppJet3 s,
+    struct CoppJet3 *q)
+{
+    (void)user_data;
+    if (dim != 2 || q == NULL)
+    {
+        return COPP_STATUS_INVALID_ARGUMENT;
+    }
+
+    q[0] = copp_sin(copp_add_f64(copp_mul_f64(s, 2.0), 0.25));
+    q[1] = copp_add_f64(
+        copp_sub(
+            copp_add(copp_powi(s, 3), copp_mul_f64(copp_powi(s, 2), 0.5)),
+            s),
+        1.0);
+
+    return COPP_STATUS_OK;
+}
+
+static int run_parametric_path_test(void)
+{
+    const double s_eval[3] = {-0.25, 0.0, 0.5};
+    struct CoppPath *path = NULL;
+    struct CoppMatrixF64 q2 = {NULL, 0, 0, 0};
+    struct CoppMatrixF64 dq2 = {NULL, 0, 0, 0};
+    struct CoppMatrixF64 ddq2 = {NULL, 0, 0, 0};
+    struct CoppMatrixF64 q3 = {NULL, 0, 0, 0};
+    struct CoppMatrixF64 dq3 = {NULL, 0, 0, 0};
+    struct CoppMatrixF64 ddq3 = {NULL, 0, 0, 0};
+    struct CoppMatrixF64 dddq3 = {NULL, 0, 0, 0};
+
+    enum CoppStatus status = copp_path_from_parametric(
+        2,
+        -0.5,
+        0.75,
+        parametric_evaluate,
+        NULL,
+        &path);
+    if (expect_ok(status, "copp_path_from_parametric"))
+    {
+        return 1;
+    }
+
+    struct CoppSliceF64 s_eval_slice = {s_eval, 3};
+    status = copp_path_evaluate_up_to_2nd(path, s_eval_slice, &q2, &dq2, &ddq2);
+    if (expect_ok(status, "copp_path_evaluate_up_to_2nd parametric"))
+    {
+        copp_path_free(path);
+        return 1;
+    }
+
+    status = copp_path_evaluate_up_to_3rd(path, s_eval_slice, &q3, &dq3, &ddq3, &dddq3);
+    if (expect_ok(status, "copp_path_evaluate_up_to_3rd parametric"))
+    {
+        copp_matrix_f64_free(q2);
+        copp_matrix_f64_free(dq2);
+        copp_matrix_f64_free(ddq2);
+        copp_path_free(path);
+        return 1;
+    }
+
+    assert(q2.rows == 2 && q2.cols == 3);
+    assert(dq2.rows == 2 && dq2.cols == 3);
+    assert(ddq2.rows == 2 && ddq2.cols == 3);
+    assert(q3.rows == 2 && q3.cols == 3);
+    assert(dq3.rows == 2 && dq3.cols == 3);
+    assert(ddq3.rows == 2 && ddq3.cols == 3);
+    assert(dddq3.rows == 2 && dddq3.cols == 3);
+
+    for (size_t j = 0; j < 3; ++j)
+    {
+        const double x = s_eval[j];
+        const double angle = 2.0 * x + 0.25;
+        const double expected_q0 = sin(angle);
+        const double expected_dq0 = 2.0 * cos(angle);
+        const double expected_ddq0 = -4.0 * sin(angle);
+        const double expected_dddq0 = -8.0 * cos(angle);
+        const double expected_q1 = x * x * x + 0.5 * x * x - x + 1.0;
+        const double expected_dq1 = 3.0 * x * x + x - 1.0;
+        const double expected_ddq1 = 6.0 * x + 1.0;
+
+        assert(fabs(matrix_get(&q2, 0, j) - expected_q0) < 1e-12);
+        assert(fabs(matrix_get(&dq2, 0, j) - expected_dq0) < 1e-12);
+        assert(fabs(matrix_get(&ddq2, 0, j) - expected_ddq0) < 1e-12);
+        assert(fabs(matrix_get(&q3, 0, j) - expected_q0) < 1e-12);
+        assert(fabs(matrix_get(&dq3, 0, j) - expected_dq0) < 1e-12);
+        assert(fabs(matrix_get(&ddq3, 0, j) - expected_ddq0) < 1e-12);
+        assert(fabs(matrix_get(&dddq3, 0, j) - expected_dddq0) < 1e-12);
+
+        assert(fabs(matrix_get(&q3, 1, j) - expected_q1) < 1e-12);
+        assert(fabs(matrix_get(&dq3, 1, j) - expected_dq1) < 1e-12);
+        assert(fabs(matrix_get(&ddq3, 1, j) - expected_ddq1) < 1e-12);
+        assert(fabs(matrix_get(&dddq3, 1, j) - 6.0) < 1e-12);
+    }
+
+    copp_matrix_f64_free(q3);
+    copp_matrix_f64_free(dq3);
+    copp_matrix_f64_free(ddq3);
+    copp_matrix_f64_free(dddq3);
+    copp_matrix_f64_free(q2);
+    copp_matrix_f64_free(dq2);
+    copp_matrix_f64_free(ddq2);
+    copp_path_free(path);
+    return 0;
+}
+
 static int run_evaluator_path_test(void)
 {
     const double s_eval[3] = {-1.0, 0.0, 0.5};
@@ -455,6 +564,22 @@ int main(void)
             assert(isfinite(matrix_get(&dq_dense, axis, j)));
             assert(isfinite(matrix_get(&ddq_dense, axis, j)));
         }
+    }
+
+    if (run_parametric_path_test())
+    {
+        copp_matrix_f64_free(q_dense);
+        copp_matrix_f64_free(dq_dense);
+        copp_matrix_f64_free(ddq_dense);
+        copp_matrix_f64_free(q3);
+        copp_matrix_f64_free(dq3);
+        copp_matrix_f64_free(ddq3);
+        copp_matrix_f64_free(dddq3);
+        copp_matrix_f64_free(q2);
+        copp_matrix_f64_free(dq2);
+        copp_matrix_f64_free(ddq2);
+        copp_path_free(path);
+        return 1;
     }
 
     if (run_evaluator_path_test())

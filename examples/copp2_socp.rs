@@ -1,4 +1,4 @@
-//! This example uses [`copp2_socp`] to convert an analytic path into a
+﻿//! This example uses [`copp2_socp`] to convert an analytic path into a
 //! second-order convex-objective trajectory whose axial velocity and acceleration
 //! both stay within `[-1, 1]`.
 

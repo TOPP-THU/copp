@@ -255,7 +255,7 @@ size_t copp_last_error_message_len(void);
  * }
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `buffer` must be valid for `capacity` writable bytes when `capacity > 0`.
  * `out_len`, when non-null, must be valid for one `size_t` write.
  */
@@ -300,7 +300,7 @@ void copp_clear_last_error(void);
  * }
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `message` must point to a null-terminated byte string when non-null.
  */
 enum CoppStatus copp_set_last_error_message(enum CoppStatus status, const char *message);
@@ -312,7 +312,7 @@ enum CoppStatus copp_set_last_error_message(enum CoppStatus status, const char *
  * sequences, interior null bytes are replaced, and the stored message is
  * capped at 64 KiB.
  *
- * \warning Safety
+ * \par Safety
  * `message` must be valid for `len` reads when `len > 0`.
  */
 enum CoppStatus copp_set_last_error_message_n(enum CoppStatus status,
@@ -661,7 +661,7 @@ typedef struct CoppClarabelOptions {
  * Defaults use COPP's default Clarabel settings and accept `Solved` and
  * `AlmostSolved` statuses.
  *
- * \warning Safety
+ * \par Safety
  * `out_options` must be valid for one `CoppClarabelOptions` write.
  */
 enum CoppStatus copp_clarabel_default_options(struct CoppClarabelOptions *out_options);
@@ -906,7 +906,7 @@ typedef struct CoppMatrixF64 {
 /**
  * Release a library-owned `f64` vector returned by COPP.
  *
- * \warning Safety
+ * \par Safety
  * `vec` must either be empty/null or have been returned by a COPP C ABI
  * function. Passing arbitrary pointers or modified capacity fields is invalid.
  */
@@ -915,7 +915,7 @@ void copp_vec_f64_free(struct CoppVecF64 vec);
 /**
  * Release a library-owned `usize` vector returned by COPP.
  *
- * \warning Safety
+ * \par Safety
  * `vec` must either be empty/null or have been returned by a COPP C ABI
  * function. Passing arbitrary pointers or modified capacity fields is invalid.
  */
@@ -924,7 +924,7 @@ void copp_vec_usize_free(struct CoppVecUsize vec);
 /**
  * Release a library-owned `f64` matrix returned by COPP.
  *
- * \warning Safety
+ * \par Safety
  * `matrix` must either be empty/null or have been returned by a COPP C ABI
  * function. Passing arbitrary pointers or modified capacity fields is invalid.
  */
@@ -959,7 +959,7 @@ struct CoppProfile3rd;
  * copp_vec_f64_free(a);
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `x.data` must be valid for `x.len` reads when `x.len` is non-zero.
  * `out_a` must be valid for one `CoppVecF64` write and must later be
  * released with `copp_vec_f64_free`.
@@ -991,7 +991,7 @@ enum CoppStatus copp_clarabel_solution_to_profile_2nd(size_t s_len,
  * copp_profile_3rd_free(profile);
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `s.data` and `x.data` must be valid for their declared lengths when those
  * lengths are non-zero. `out_profile` must be valid for one `CoppProfile3rd`
  * write and must later be released with `copp_profile_3rd_free`.

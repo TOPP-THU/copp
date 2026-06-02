@@ -19,18 +19,18 @@ mod solver;
 /// useful.
 const MODULE_DOC: &str = r#"Python bindings for copp-py.
 
-The public package is intended to be imported as:
+Install the distribution as `copp-py`. The public Python module is imported as:
 
     import copp_py as copp
 
 This native extension contains the low-level PyO3 bindings for COPP path
 construction, robot and constraint modeling, interpolation utilities,
 objective terms, Clarabel-backed optimization helpers, and the TOPP/COPP
-solver families exposed by the Python package. Most users should import
-`copp_py` and use public Python namespaces such as `copp.path`,
-`copp.robot`, `copp.constraints`, `copp.objective`, `copp.interpolation`,
-`copp.clarabel`, and `copp.solver.*` instead of importing this module
-directly.
+solver families exposed by the Python package. Most users should import with
+`import copp_py as copp` and use public Python namespaces through that alias,
+such as `copp.path`, `copp.robot`, `copp.constraints`, `copp.objective`,
+`copp.interpolation`, `copp.clarabel`, and `copp.solver.*` instead of
+importing this module directly.
 
 Numerical inputs accept NumPy-compatible ArrayLike values and are copied into
 contiguous float64 buffers at the wrapper boundary. Python-level format errors,

@@ -130,7 +130,7 @@ typedef struct Copp2SocpResult {
  * copp_vec_f64_free(a);
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `problem.robot` must be a non-null handle returned by `copp_robot_create`
  * and must remain valid for the duration of this call. `problem.objectives`
  * must be valid for `problem.num_objectives` reads when
@@ -173,7 +173,7 @@ enum CoppStatus copp2_socp(struct Copp2Problem problem,
  * copp2_socp_result_free(result);
  * ```
  *
- * \warning Safety
+ * \par Safety
  * Same safety requirements as `copp2_socp`. `out_result` must be valid for
  * one `Copp2SocpResult` write and must later be released with
  * `copp2_socp_result_free`.

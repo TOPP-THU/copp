@@ -241,7 +241,7 @@ typedef struct CoppProfile3rd {
 /**
  * Release a third-order profile returned by COPP.
  *
- * \warning Safety
+ * \par Safety
  * `profile` must either be empty/null or have been returned by a successful
  * third-order C ABI solver call.  Passing arbitrary pointers or modified
  * capacity fields is invalid.

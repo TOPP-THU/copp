@@ -29,7 +29,7 @@
 
 use crate::copp::clarabel_backend::{ConstraintsClarabel, ObjConsClarabel};
 use crate::copp::copp3::Topp3Profile;
-#[cfg(any(feature = "c", feature = "python", test))]
+#[cfg(any(feature = "c", feature = "cpp", feature = "python", test))]
 use crate::copp::copp3::Topp3ProfileRef;
 use crate::copp::copp3::formulation::{Copp3Problem, get_weight_a_copp3, get_weight_a_topp3};
 use crate::copp::copp3::opt3::ClarabelExpertInfor3rd;
@@ -1061,7 +1061,7 @@ fn clarabel_objective_linear_copp3(
 
 /// Compute the time value in COPP3 optimization.
 /// Input: a_sqrt_down = 1 / sqrt(a)
-#[cfg(any(feature = "c", feature = "python", test))]
+#[cfg(any(feature = "c", feature = "cpp", feature = "python", test))]
 #[inline(always)]
 fn objective_value_time_copp3(
     a_sqrt_down: &[f64],
@@ -1085,7 +1085,7 @@ fn objective_value_time_copp3(
 }
 
 /// Compute the thermal energy value in COPP3 optimization.
-#[cfg(any(feature = "c", feature = "python", test))]
+#[cfg(any(feature = "c", feature = "cpp", feature = "python", test))]
 #[inline(always)]
 fn objective_value_thermal_energy_copp3(
     a_sqrt_down: &[f64],
@@ -1139,7 +1139,7 @@ fn objective_value_thermal_energy_copp3(
 }
 
 /// Compute the thermal energy value in COPP3 optimization.
-#[cfg(any(feature = "c", feature = "python", test))]
+#[cfg(any(feature = "c", feature = "cpp", feature = "python", test))]
 #[inline(always)]
 fn objective_value_tv_torque_copp3(
     torque: &DMatrix<f64>,
@@ -1188,7 +1188,7 @@ fn objective_value_tv_torque_copp3(
 }
 
 /// Compute the objective value for Linear in COPP3 optimization.
-#[cfg(any(feature = "c", feature = "python", test))]
+#[cfg(any(feature = "c", feature = "cpp", feature = "python", test))]
 #[inline(always)]
 fn objective_value_linear_copp3(
     a_profile: &[f64],
@@ -1210,7 +1210,7 @@ fn objective_value_linear_copp3(
 }
 
 /// Compute the objective value for COPP3 optimization.
-#[cfg(any(feature = "c", feature = "python", test))]
+#[cfg(any(feature = "c", feature = "cpp", feature = "python", test))]
 pub(crate) fn objective_value_copp3_opt<M: RobotTorque>(
     problem: &Copp3Problem<M>,
     profile: Topp3ProfileRef<'_>,

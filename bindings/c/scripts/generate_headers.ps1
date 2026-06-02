@@ -60,7 +60,7 @@ function Convert-CoppDocs {
     $converted = $converted -replace '\[`CoppStatus::Ok`\]', '`COPP_STATUS_OK`'
     $converted = $converted -replace '\[`([^`\]]+)`\]\([^)]*\)', '`$1`'
     $converted = $converted -replace '\[`([^`\]]+)`\]', '`$1`'
-    $converted = $converted -replace '(?m)^ \* # Safety\s*$', ' * \warning Safety'
+    $converted = $converted -replace '(?m)^ \* # Safety\s*$', ' * \par Safety'
     $converted = $converted -replace '(?m)^ \* # Errors\s*$', ' * \par Errors'
     $converted = $converted -replace '(?m)^ \* # Parameters\s*$', ' * \par Parameters'
     $converted = $converted -replace '(?m)^ \* # Returns\s*$', ' * \par Returns'
@@ -238,6 +238,7 @@ $blocks = @{
     CoppClarabelSolverStatus = Get-CoppBlock "CoppClarabelSolverStatus" "typedef enum CoppClarabelSolverStatus\s*\{.*?\}\s*CoppClarabelSolverStatus;"
     CoppPath = Get-CoppBlock "CoppPath" "typedef struct CoppPath\s+CoppPath;"
     CoppRobot = Get-CoppBlock "CoppRobot" "typedef struct CoppRobot\s+CoppRobot;"
+    CoppJet3 = Get-CoppBlock "CoppJet3" "typedef struct CoppJet3\s*\{.*?\}\s*CoppJet3;"
     CoppMatrixLayout = Get-CoppBlock "CoppMatrixLayout" "typedef enum CoppMatrixLayout\s*\{.*?\}\s*CoppMatrixLayout;"
     CoppVecF64 = Get-CoppBlock "CoppVecF64" "typedef struct CoppVecF64\s*\{.*?\}\s*CoppVecF64;"
     CoppVecUsize = Get-CoppBlock "CoppVecUsize" "typedef struct CoppVecUsize\s*\{.*?\}\s*CoppVecUsize;"
@@ -246,6 +247,7 @@ $blocks = @{
     CoppSliceF64 = Get-CoppBlock "CoppSliceF64" "typedef struct CoppSliceF64\s*\{.*?\}\s*CoppSliceF64;"
     CoppSliceMutF64 = Get-CoppBlock "CoppSliceMutF64" "typedef struct CoppSliceMutF64\s*\{.*?\}\s*CoppSliceMutF64;"
     CoppPathOptions = Get-CoppBlock "CoppPathOptions" "typedef struct CoppPathOptions\s*\{.*?\}\s*CoppPathOptions;"
+    CoppPathParametricFn = Get-CoppBlock "CoppPathParametricFn" "typedef enum CoppStatus\s+\(\*CoppPathParametricFn\)\(.*?\);"
     CoppPathEvaluate2ndFn = Get-CoppBlock "CoppPathEvaluate2ndFn" "typedef enum CoppStatus\s+\(\*CoppPathEvaluate2ndFn\)\(.*?\);"
     CoppPathEvaluate3rdFn = Get-CoppBlock "CoppPathEvaluate3rdFn" "typedef enum CoppStatus\s+\(\*CoppPathEvaluate3rdFn\)\(.*?\);"
     CoppInverseDynamicsFn = Get-CoppBlock "CoppInverseDynamicsFn" "typedef enum CoppStatus\s+\(\*CoppInverseDynamicsFn\)\(.*?\);"
@@ -285,6 +287,7 @@ $functions = @{
     copp_set_last_error_message_n = Get-CoppFunction "copp_set_last_error_message_n"
     copp_path_default_options = Get-CoppFunction "copp_path_default_options"
     copp_path_from_waypoints = Get-CoppFunction "copp_path_from_waypoints"
+    copp_path_from_parametric = Get-CoppFunction "copp_path_from_parametric"
     copp_path_from_evaluator_2nd = Get-CoppFunction "copp_path_from_evaluator_2nd"
     copp_path_from_evaluator_3rd = Get-CoppFunction "copp_path_from_evaluator_3rd"
     copp_path_dim = Get-CoppFunction "copp_path_dim"
@@ -359,6 +362,241 @@ $functions = @{
     topp2_ra_default_options = Get-CoppFunction "topp2_ra_default_options"
     topp2_ra = Get-CoppFunction "topp2_ra"
 }
+
+$jet3Helpers = @"
+#ifdef __cplusplus
+}
+#endif
+
+/**
+ * Construct a constant automatic-differentiation scalar.
+ */
+static inline struct CoppJet3 copp_constant(double x)
+{
+    struct CoppJet3 out = {x, 0.0, 0.0, 0.0};
+    return out;
+}
+
+/**
+ * Add two automatic-differentiation scalars.
+ */
+static inline struct CoppJet3 copp_add(struct CoppJet3 a, struct CoppJet3 b)
+{
+    struct CoppJet3 out = {a.v + b.v, a.d1 + b.d1, a.d2 + b.d2, a.d3 + b.d3};
+    return out;
+}
+
+/**
+ * Add a floating-point constant to an automatic-differentiation scalar.
+ */
+static inline struct CoppJet3 copp_add_f64(struct CoppJet3 a, double b)
+{
+    struct CoppJet3 out = {a.v + b, a.d1, a.d2, a.d3};
+    return out;
+}
+
+/**
+ * Subtract two automatic-differentiation scalars.
+ */
+static inline struct CoppJet3 copp_sub(struct CoppJet3 a, struct CoppJet3 b)
+{
+    struct CoppJet3 out = {a.v - b.v, a.d1 - b.d1, a.d2 - b.d2, a.d3 - b.d3};
+    return out;
+}
+
+/**
+ * Subtract a floating-point constant from an automatic-differentiation scalar.
+ */
+static inline struct CoppJet3 copp_sub_f64(struct CoppJet3 a, double b)
+{
+    struct CoppJet3 out = {a.v - b, a.d1, a.d2, a.d3};
+    return out;
+}
+
+/**
+ * Subtract an automatic-differentiation scalar from a floating-point constant.
+ */
+static inline struct CoppJet3 copp_f64_sub(double a, struct CoppJet3 b)
+{
+    struct CoppJet3 out = {a - b.v, -b.d1, -b.d2, -b.d3};
+    return out;
+}
+
+/**
+ * Negate an automatic-differentiation scalar.
+ */
+static inline struct CoppJet3 copp_neg(struct CoppJet3 x)
+{
+    struct CoppJet3 out = {-x.v, -x.d1, -x.d2, -x.d3};
+    return out;
+}
+
+/**
+ * Multiply two automatic-differentiation scalars.
+ */
+static inline struct CoppJet3 copp_mul(struct CoppJet3 a, struct CoppJet3 b)
+{
+    struct CoppJet3 out = {
+        a.v * b.v,
+        a.d1 * b.v + a.v * b.d1,
+        a.d2 * b.v + 2.0 * a.d1 * b.d1 + a.v * b.d2,
+        a.d3 * b.v + 3.0 * (a.d2 * b.d1 + a.d1 * b.d2) + a.v * b.d3};
+    return out;
+}
+
+/**
+ * Multiply an automatic-differentiation scalar by a floating-point constant.
+ */
+static inline struct CoppJet3 copp_mul_f64(struct CoppJet3 a, double b)
+{
+    struct CoppJet3 out = {a.v * b, a.d1 * b, a.d2 * b, a.d3 * b};
+    return out;
+}
+
+/**
+ * Divide a floating-point constant by an automatic-differentiation scalar.
+ */
+static inline struct CoppJet3 copp_f64_div(double a, struct CoppJet3 b)
+{
+    const double inv = 1.0 / b.v;
+    const double inv2 = inv * inv;
+    const double inv3 = inv2 * inv;
+    const double inv4 = inv3 * inv;
+    const double d1sq = b.d1 * b.d1;
+    struct CoppJet3 out = {
+        a * inv,
+        -a * inv2 * b.d1,
+        a * (2.0 * inv3 * d1sq - inv2 * b.d2),
+        a * (-6.0 * inv4 * d1sq * b.d1 + 6.0 * inv3 * b.d1 * b.d2 - inv2 * b.d3)};
+    return out;
+}
+
+/**
+ * Divide an automatic-differentiation scalar by a floating-point constant.
+ */
+static inline struct CoppJet3 copp_div_f64(struct CoppJet3 a, double b)
+{
+    return copp_mul_f64(a, 1.0 / b);
+}
+
+/**
+ * Divide two automatic-differentiation scalars.
+ */
+static inline struct CoppJet3 copp_div(struct CoppJet3 a, struct CoppJet3 b)
+{
+    return copp_mul(a, copp_f64_div(1.0, b));
+}
+
+/**
+ * Apply sine to an automatic-differentiation scalar.
+ */
+static inline struct CoppJet3 copp_sin(struct CoppJet3 x)
+{
+    const double sv = sin(x.v);
+    const double cv = cos(x.v);
+    const double d1sq = x.d1 * x.d1;
+    struct CoppJet3 out = {
+        sv,
+        cv * x.d1,
+        -sv * d1sq + cv * x.d2,
+        -cv * d1sq * x.d1 - 3.0 * sv * x.d1 * x.d2 + cv * x.d3};
+    return out;
+}
+
+/**
+ * Apply cosine to an automatic-differentiation scalar.
+ */
+static inline struct CoppJet3 copp_cos(struct CoppJet3 x)
+{
+    const double sv = sin(x.v);
+    const double cv = cos(x.v);
+    const double d1sq = x.d1 * x.d1;
+    struct CoppJet3 out = {
+        cv,
+        -sv * x.d1,
+        -cv * d1sq - sv * x.d2,
+        sv * d1sq * x.d1 - 3.0 * cv * x.d1 * x.d2 - sv * x.d3};
+    return out;
+}
+
+/**
+ * Apply exponential to an automatic-differentiation scalar.
+ */
+static inline struct CoppJet3 copp_exp(struct CoppJet3 x)
+{
+    const double ev = exp(x.v);
+    const double d1sq = x.d1 * x.d1;
+    struct CoppJet3 out = {
+        ev,
+        ev * x.d1,
+        ev * (d1sq + x.d2),
+        ev * (d1sq * x.d1 + 3.0 * x.d1 * x.d2 + x.d3)};
+    return out;
+}
+
+/**
+ * Apply natural logarithm to an automatic-differentiation scalar.
+ */
+static inline struct CoppJet3 copp_log(struct CoppJet3 x)
+{
+    const double inv = 1.0 / x.v;
+    const double inv2 = inv * inv;
+    const double inv3 = inv2 * inv;
+    const double d1sq = x.d1 * x.d1;
+    struct CoppJet3 out = {
+        log(x.v),
+        inv * x.d1,
+        -inv2 * d1sq + inv * x.d2,
+        2.0 * inv3 * d1sq * x.d1 - 3.0 * inv2 * x.d1 * x.d2 + inv * x.d3};
+    return out;
+}
+
+/**
+ * Apply square root to an automatic-differentiation scalar.
+ */
+static inline struct CoppJet3 copp_sqrt(struct CoppJet3 x)
+{
+    const double sqrtv = sqrt(x.v);
+    const double inv_sqrt = 1.0 / sqrtv;
+    const double inv_v_sqrt = inv_sqrt / x.v;
+    const double inv_v2_sqrt = inv_v_sqrt / x.v;
+    const double d1sq = x.d1 * x.d1;
+    struct CoppJet3 out = {
+        sqrtv,
+        0.5 * inv_sqrt * x.d1,
+        -0.25 * inv_v_sqrt * d1sq + 0.5 * inv_sqrt * x.d2,
+        0.375 * inv_v2_sqrt * d1sq * x.d1 - 0.75 * inv_v_sqrt * x.d1 * x.d2 + 0.5 * inv_sqrt * x.d3};
+    return out;
+}
+
+/**
+ * Raise an automatic-differentiation scalar to an integer power.
+ */
+static inline struct CoppJet3 copp_powi(struct CoppJet3 x, int n)
+{
+    if (n == 0) {
+        return copp_constant(1.0);
+    }
+
+    const double nf = (double)n;
+    const double coeff2 = nf * (nf - 1.0);
+    const double coeff3 = coeff2 * (nf - 2.0);
+    const double dv = nf * pow(x.v, nf - 1.0);
+    const double ddv = coeff2 == 0.0 ? 0.0 : coeff2 * pow(x.v, nf - 2.0);
+    const double dddv = coeff3 == 0.0 ? 0.0 : coeff3 * pow(x.v, nf - 3.0);
+    const double d1sq = x.d1 * x.d1;
+    struct CoppJet3 out = {
+        pow(x.v, (double)n),
+        dv * x.d1,
+        ddv * d1sq + dv * x.d2,
+        dddv * d1sq * x.d1 + 3.0 * ddv * x.d1 * x.d2 + dv * x.d3};
+    return out;
+}
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+"@
 
 Write-CoppUmbrellaHeader
 
@@ -437,16 +675,21 @@ struct CoppProfile3rd;
 
 Write-CoppHeader "path.h" "COPP_PATH_H" @(
     "<stddef.h>",
+    "<math.h>",
     '"copp/core.h"'
 ) (Join-CoppBlocks @(
     $blocks.CoppPath,
+    $blocks.CoppJet3,
     $blocks.CoppPathOutOfRangeMode,
     $blocks.CoppPathParametrization,
     $blocks.CoppPathOptions,
+    $blocks.CoppPathParametricFn,
     $blocks.CoppPathEvaluate2ndFn,
     $blocks.CoppPathEvaluate3rdFn,
+    $jet3Helpers,
     $functions.copp_path_default_options,
     $functions.copp_path_from_waypoints,
+    $functions.copp_path_from_parametric,
     $functions.copp_path_from_evaluator_2nd,
     $functions.copp_path_from_evaluator_3rd,
     $functions.copp_path_dim,
@@ -586,8 +829,7 @@ Write-CoppHeader "copp3.h" "COPP_COPP3_H" @(
     "<stdbool.h>",
     "<stdint.h>",
     '"copp/core.h"',
-    '"copp/formulation.h"',
-    '"copp/topp3.h"'
+    '"copp/formulation.h"'
 ) (Join-CoppBlocks @(
     $blocks.Copp3SocpResult,
     $functions.copp3_socp,

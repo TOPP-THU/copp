@@ -122,4 +122,3 @@ NumStationaryMaxLike = int | tuple[int, int]
 def version() -> str:
     """Return the copp-py package version compiled into the native module."""
     ...
-

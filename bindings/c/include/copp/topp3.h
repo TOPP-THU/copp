@@ -56,7 +56,7 @@ typedef struct Copp3SocpResult Copp3SocpResult;
  * copp_profile_3rd_free(profile);
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `problem.robot` must be a non-null mutable handle returned by
  * `copp_robot_create` and must remain valid for the duration of this call.
  * The solver builds the internal problem by linearizing third-order constraints,
@@ -83,7 +83,7 @@ enum CoppStatus topp3_lp(struct Topp3Problem problem,
  * Use the same advanced-diagnostics pattern as \ref copp2_socp_expert. The
  * result type is `Copp3SocpResult`, and `has_profile` replaces `has_a`.
  *
- * \warning Safety
+ * \par Safety
  * Same safety requirements as `topp3_lp`. `out_result` must be valid for one
  * `Copp3SocpResult` write and must later be released with
  * `copp3_socp_result_free`.
@@ -115,7 +115,7 @@ enum CoppStatus topp3_lp_expert(struct Topp3Problem problem,
  * copp_profile_3rd_free(profile);
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `problem.robot` must be a non-null mutable handle returned by
  * `copp_robot_create` and must remain valid for the duration of this call.
  * The solver builds the internal problem by linearizing third-order constraints,
@@ -142,7 +142,7 @@ enum CoppStatus topp3_socp(struct Topp3Problem problem,
  * Use the same advanced-diagnostics pattern as \ref copp2_socp_expert. The
  * result type is `Copp3SocpResult`, and `has_profile` replaces `has_a`.
  *
- * \warning Safety
+ * \par Safety
  * Same safety requirements as `topp3_socp`. `out_result` must be valid for
  * one `Copp3SocpResult` write and must later be released with
  * `copp3_socp_result_free`.

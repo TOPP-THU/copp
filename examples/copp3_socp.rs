@@ -1,4 +1,4 @@
-//! This example uses [`copp3_socp`] to convert an analytic path into a
+﻿//! This example uses [`copp3_socp`] to convert an analytic path into a
 //! third-order convex-objective trajectory whose axial velocity, acceleration,
 //! and jerk all stay within `[-1, 1]`.
 

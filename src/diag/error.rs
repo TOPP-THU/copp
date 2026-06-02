@@ -215,6 +215,12 @@ pub enum PathError {
         /// Highest derivative order available from the path representation.
         available: usize,
     },
+    /// A user-provided path evaluator returned or threw an error.
+    #[error("path evaluator error: {message}")]
+    EvaluatorError {
+        /// Display-ready evaluator error message.
+        message: String,
+    },
     /// Waypoint sequence is too short to build a valid path.
     #[error("not enough waypoints: {n}, expected >= 2")]
     NotEnoughWaypoints {

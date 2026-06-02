@@ -7,7 +7,6 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .clarabel import ClarabelOptions, Copp2SocpResult
-from .core import Verbosity, VerbosityLike
 from .objective import ObjectiveLike
 from .robot import Robot
 
@@ -72,7 +71,6 @@ class Copp2Problem:
     def validate(self) -> None:
         """Validate the descriptor against the current robot and objectives."""
         ...
-
 
 def copp2_socp(
     problem: Copp2Problem,

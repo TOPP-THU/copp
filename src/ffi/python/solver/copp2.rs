@@ -11,9 +11,8 @@ use crate::ffi::python::robot::{
     PyRobot, PyRobotModel, SharedRobot, shared_has_inverse_dynamics, with_shared_robot_result,
 };
 use crate::solver::copp2_socp::{
-    ClarabelOptions as RustClarabelOptions, Copp2Problem as RustCopp2Problem,
-    Copp2ProblemBuilder, copp2_socp as rust_copp2_socp,
-    copp2_socp_expert_with_info as rust_copp2_socp_expert,
+    ClarabelOptions as RustClarabelOptions, Copp2Problem as RustCopp2Problem, Copp2ProblemBuilder,
+    copp2_socp as rust_copp2_socp, copp2_socp_expert_with_info as rust_copp2_socp_expert,
 };
 use clarabel::solver::{DefaultSolution, LinearSolverInfo};
 use numpy::PyArray1;

@@ -136,7 +136,6 @@ class Topp3Problem:
         """
         ...
 
-
 def topp3_lp(
     problem: Topp3Problem,
     options: ClarabelOptions | None = None,

@@ -51,7 +51,6 @@ def test_solver_module_aliases_native_types() -> None:
     assert copp.solver.topp2_ra.Options is copp.solver.reach_set2.Options
     assert copp.solver.copp2_socp.Options is copp.clarabel.Options
     assert copp.solver.topp3_lp.Problem is copp.solver.topp3_socp.Problem
-    assert copp.solver.topp3_lp.Options is copp.clarabel.Options
     assert copp.solver.topp3_socp.Options is copp.clarabel.Options
     assert copp.solver.copp3_socp.Options is copp.clarabel.Options
 
@@ -61,6 +60,7 @@ def test_old_solver_shortcuts_are_not_exported() -> None:
     for name in (
         "topp2_ra",
         "copp2_socp",
+        "topp3_lp",
         "topp3_socp",
         "copp3_socp",
         "Topp2Problem",

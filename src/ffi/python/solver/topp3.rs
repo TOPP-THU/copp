@@ -7,8 +7,8 @@ use crate::ffi::python::interpolation::PyProfile3rd;
 use crate::ffi::python::robot::{PyConstraints, SharedRobot, with_shared_constraints_mut_result};
 use crate::solver::copp2_socp::ClarabelOptions as RustClarabelOptions;
 use crate::solver::topp3_lp::{
-    Topp3ProblemBuilder as Topp3ProblemBuilder3,
-    topp3_lp as rust_topp3_lp, topp3_lp_expert_with_info as rust_topp3_lp_expert,
+    Topp3ProblemBuilder as Topp3ProblemBuilder3, topp3_lp as rust_topp3_lp,
+    topp3_lp_expert_with_info as rust_topp3_lp_expert,
 };
 use crate::solver::topp3_socp::{
     topp3_socp as rust_topp3_socp, topp3_socp_expert_with_info as rust_topp3_socp_expert,

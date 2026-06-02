@@ -1,0 +1,82 @@
+# Doxygen configuration for the COPP C++ API.
+#
+# Run from the repository root with:
+#   doxygen bindings/cpp/Doxyfile
+#
+# Or use:
+#   powershell -ExecutionPolicy Bypass -File bindings/cpp/scripts/generate_docs.ps1
+
+PROJECT_NAME           = "COPP C++ API"
+PROJECT_BRIEF          = "C++ interface for COPP trajectory optimization"
+OUTPUT_DIRECTORY       = bindings/cpp/docs
+
+INPUT                  = bindings/cpp/docs \
+                         bindings/cpp/include/copp \
+                         bindings/cpp/examples
+RECURSIVE              = YES
+FILE_PATTERNS          = *.hpp *.cpp *.md *.dox
+EXCLUDE                = bindings/cpp/docs/html \
+                         bindings/cpp/include/copp/detail
+EXCLUDE_PATTERNS       =
+USE_MDFILE_AS_MAINPAGE = bindings/cpp/docs/mainpage.md
+
+EXAMPLE_PATH           = bindings/cpp/examples
+EXAMPLE_PATTERNS       = *.cpp *.hpp
+EXAMPLE_RECURSIVE      = YES
+
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+GENERATE_LATEX         = NO
+GENERATE_XML           = NO
+GENERATE_TREEVIEW      = YES
+FULL_SIDEBAR           = YES
+SEARCHENGINE           = YES
+ALPHABETICAL_INDEX     = YES
+SHOW_FILES             = YES
+SHOW_NAMESPACES        = YES
+
+OPTIMIZE_OUTPUT_FOR_C  = NO
+EXTRACT_ALL            = YES
+EXTRACT_STATIC         = NO
+HIDE_UNDOC_MEMBERS     = NO
+HIDE_UNDOC_CLASSES     = NO
+
+MARKDOWN_SUPPORT       = YES
+JAVADOC_AUTOBRIEF      = YES
+MULTILINE_CPP_IS_BRIEF = NO
+
+# Doxygen 1.x emits MathJax-v2 style configuration (`MathJax.Hub.Config`), so
+# keep this path on MathJax 2.  Pointing it at `mathjax@3/es5` leaves formulas
+# detected by Doxygen but not rendered by the browser.
+USE_MATHJAX            = YES
+MATHJAX_RELPATH        = https://cdn.jsdelivr.net/npm/mathjax@2
+FORMULA_FONTSIZE       = 10
+
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = NO
+WARN_IF_DOC_ERROR      = YES
+WARN_NO_PARAMDOC       = NO
+
+QUIET                  = NO
+ABBREVIATE_BRIEF       =
+BRIEF_MEMBER_DESC      = YES
+REPEAT_BRIEF           = YES
+ALWAYS_DETAILED_SEC    = NO
+INLINE_INHERITED_MEMB  = NO
+
+SORT_MEMBER_DOCS       = NO
+SORT_BRIEF_DOCS        = NO
+SORT_GROUP_NAMES       = NO
+SORT_BY_SCOPE_NAME     = NO
+DISTRIBUTE_GROUP_DOC   = YES
+
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = NO
+SKIP_FUNCTION_MACROS   = NO
+PREDEFINED             = COPP_CPP_WITH_EIGEN=1 \
+                         COPP_CPP_SHARED=0 \
+                         COPP_API=
+
+SOURCE_BROWSER         = YES
+REFERENCED_BY_RELATION = NO
+REFERENCES_RELATION    = NO

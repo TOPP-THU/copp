@@ -1,4 +1,4 @@
-r"""Python interface for copp-py.
+r"""Python interface for COPP.
 
 Import the package as::
 

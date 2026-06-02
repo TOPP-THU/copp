@@ -21,7 +21,7 @@ option(COPP_TEST_EXAMPLES "Register COPP C examples as CTest tests" OFF)
 option(COPP_INSTALL "Install COPP C headers, native library, and CMake package config" ON)
 option(COPP_BUILD_INSTALL_TESTS "Build CTest smoke tests for the installed CMake package" OFF)
 
-set(COPP_TARGET_DIR "${COPP_ROOT}/target/release")
+set(COPP_TARGET_DIR "${COPP_ROOT}/target/release" CACHE PATH "Cargo release directory containing the COPP native library")
 set(COPP_INSTALL_CMAKE_DIR "${CMAKE_INSTALL_LIBDIR}/cmake/copp" CACHE STRING "Install directory for coppConfig.cmake")
 set(COPP_STATIC_LINK_LIBRARIES "" CACHE STRING "Extra native libraries required by consumers of the static COPP library")
 
@@ -32,15 +32,28 @@ else()
 endif()
 
 if(WIN32)
-    if(COPP_LINK_STATIC)
-        set(COPP_LIBRARY_CANDIDATES
-            "${COPP_TARGET_DIR}/copp.lib"
-        )
+    if(MINGW)
+        if(COPP_LINK_STATIC)
+            set(COPP_LIBRARY_CANDIDATES
+                "${COPP_TARGET_DIR}/libcopp.a"
+            )
+        else()
+            set(COPP_LIBRARY_CANDIDATES
+                "${COPP_TARGET_DIR}/libcopp.dll.a"
+            )
+            set(COPP_RUNTIME_DLL "${COPP_TARGET_DIR}/copp.dll")
+        endif()
     else()
-        set(COPP_LIBRARY_CANDIDATES
-            "${COPP_TARGET_DIR}/copp.dll.lib"
-        )
-        set(COPP_RUNTIME_DLL "${COPP_TARGET_DIR}/copp.dll")
+        if(COPP_LINK_STATIC)
+            set(COPP_LIBRARY_CANDIDATES
+                "${COPP_TARGET_DIR}/copp.lib"
+            )
+        else()
+            set(COPP_LIBRARY_CANDIDATES
+                "${COPP_TARGET_DIR}/copp.dll.lib"
+            )
+            set(COPP_RUNTIME_DLL "${COPP_TARGET_DIR}/copp.dll")
+        endif()
     endif()
 elseif(APPLE)
     if(COPP_LINK_STATIC)
@@ -73,11 +86,11 @@ foreach(candidate IN LISTS COPP_LIBRARY_CANDIDATES)
 endforeach()
 
 if(NOT COPP_LIBRARY)
-    message(FATAL_ERROR "Could not find COPP library in ${COPP_TARGET_DIR}. Run `cargo build --release` first.")
+    message(FATAL_ERROR "Could not find COPP library in ${COPP_TARGET_DIR}. Run `cargo build --release --lib --features c` first, or pass -DCOPP_TARGET_DIR for target-specific builds.")
 endif()
 
 if(WIN32 AND NOT COPP_LINK_STATIC AND NOT EXISTS "${COPP_RUNTIME_DLL}")
-    message(FATAL_ERROR "Could not find COPP runtime DLL at ${COPP_RUNTIME_DLL}. Run `cargo build --release` first.")
+    message(FATAL_ERROR "Could not find COPP runtime DLL at ${COPP_RUNTIME_DLL}. Run `cargo build --release --lib --features c` first, or pass -DCOPP_TARGET_DIR for target-specific builds.")
 endif()
 
 add_library(copp_ffi ${COPP_IMPORTED_LIBRARY_TYPE} IMPORTED GLOBAL)

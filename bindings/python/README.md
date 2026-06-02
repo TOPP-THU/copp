@@ -1,10 +1,10 @@
 # COPP Python Bindings
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](../../LICENSE) [![Website](https://img.shields.io/badge/website-copp.pro-2ff0d8)](https://copp.pro/) [![Docs](https://img.shields.io/badge/docs-docs.copp.pro-1f6feb)](https://docs.copp.pro/) [![PyPI](https://img.shields.io/pypi/v/copp-py.svg)](https://pypi.org/project/copp-py/) [![Python](https://img.shields.io/badge/Python-bindings-3776ab)](#copp-python-bindings)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](../../LICENSE) [![Website](https://img.shields.io/badge/website-copp.pro-2ff0d8)](https://copp.pro/) [![Docs](https://img.shields.io/badge/docs-docs.copp.pro-1f6feb)](https://docs.copp.pro/) [![PyPI](https://img.shields.io/pypi/v/copp-py.svg?color=3A6DA8)](https://pypi.org/project/copp-py/) [![Python](https://img.shields.io/badge/Python-bindings-3776ab)](#copp-python-bindings)
 
 ## Convex-Objective Path Parameterization
 
-This directory contains the Python package for COPP. The PyPI distribution is `copp-py` and the import package is `copp_py`; examples usually alias it with `import copp_py as copp`. It wraps the Rust solver core through PyO3 while presenting a NumPy-friendly interface for paths, robot constraints, solver options, and post-processing helpers.
+This directory contains the Python package for COPP. Install the open-source distribution as `copp-py` and import the Python package with `import copp_py as copp`. It wraps the Rust solver core through PyO3 while presenting a NumPy-friendly interface for paths, robot constraints, solver options, and post-processing helpers.
 
 COPP solves optimal path-parameterization problems. A geometric path
 
@@ -30,44 +30,32 @@ $$
 a(s) = \dot{s}^2,\qquad b(s) = \ddot{s}.
 $$
 
-The Python API follows the Rust crate layout: core modeling namespaces live at `copp.path`, `copp.robot`, `copp.constraints`, `copp.objective`, `copp.interpolation`, and `copp.clarabel`, while algorithms live under `copp.solver.<algorithm>`. This README focuses on installing, building, running examples, and using the Python interface. For the full project overview, benchmark tables, citation information, and collaboration contact details, see the [COPP GitHub README](https://github.com/TOPP-THU/copp#readme).
+The Python API follows the Rust crate layout: core modeling namespaces live under `copp_py.path`, `copp_py.robot`, `copp_py.constraints`, `copp_py.objective`, `copp_py.interpolation`, and `copp_py.clarabel`, while algorithms live under `copp_py.solver.<algorithm>`. Examples import `copp_py as copp`, so user code can use the short `copp.Path` and `copp.solver.*` aliases. This README focuses on installing, building, running examples, and using the Python interface. For the full project overview, benchmark tables, citation information, and collaboration contact details, see the [COPP GitHub README](https://github.com/TOPP-THU/copp#readme).
+
+> **Open-source / PRO note:** this README documents the open-source Python package distributed as `copp-py` and imported as `copp_py`. COPP PRO provides additional licensed solvers and support options; see the repository-level PRO section or contact [hello@copp.pro](mailto:hello@copp.pro) if those capabilities are relevant to your application.
 
 The Python bindings follow a deliberately small set of rules:
 
-- import the package with `import copp_py as copp`;
+- install the distribution as `copp-py` and import the Python module with `import copp_py as copp`;
 - pass numerical data as NumPy-compatible arrays or ordinary Python sequences;
 - use `float64` data for predictable behavior and fewer copies;
 - build paths with `copp.Path`, constraints with `copp.Robot`, and solver inputs with solver-specific `Problem` classes;
 - call algorithms through Rust-like solver modules such as `copp.solver.topp2_ra`, `copp.solver.copp2_socp`, and `copp.solver.copp3_socp`;
 - use `copp.interpolation` for profile-to-time conversion helpers.
 
-## Install
-
-Install the published package from PyPI:
-
-```sh
-python -m pip install copp-py
-```
-
-Then import it as:
-
-```python
-import copp_py as copp
-```
-
 ## API Availability
 
-| Problem class  | Python API |
-| -------------- | ---------- |
-| Core utilities | `copp.core`, root aliases for `version`, `__version__`, errors, and common enums |
-| Path           | `copp.path.Path`, spline paths, evaluator paths, path derivative evaluation |
+| Problem class  | Python API                                                                                                                                  |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Core utilities | `copp.core`, root aliases for `version`, `__version__`, errors, and common enums                                                            |
+| Path           | `copp.path.Path`, spline paths, evaluator paths, path derivative evaluation                                                                 |
 | Robot          | `copp.robot.Robot`, station grids, sampled path derivatives, velocity/acceleration/jerk limits, raw constraints, inverse-dynamics callbacks |
-| TOPP2          | `copp.solver.topp2_ra.solve`, `copp.solver.reach_set2.backward`, `copp.solver.reach_set2.bidirectional` |
-| COPP2          | `copp.solver.copp2_socp.solve`, `copp.solver.copp2_socp.solve_expert` |
-| TOPP3          | `copp.solver.topp3_lp.solve`, `copp.solver.topp3_lp.solve_expert`, `copp.solver.topp3_socp.solve`, `copp.solver.topp3_socp.solve_expert` |
-| COPP3          | `copp.solver.copp3_socp.solve`, `copp.solver.copp3_socp.solve_expert` |
-| Objectives     | `copp.objective.Time`, `ThermalEnergy`, `TotalVariationTorque`, `Linear` |
-| Interpolation  | `copp.interpolation.s_to_t_topp2`, `t_to_s_topp2_uniform`, `s_to_t_topp3`, `t_to_s_topp3_uniform`, sample-based variants |
+| TOPP2          | `copp.solver.topp2_ra.solve`, `copp.solver.reach_set2.backward`, `copp.solver.reach_set2.bidirectional`                                     |
+| COPP2          | `copp.solver.copp2_socp.solve`, `copp.solver.copp2_socp.solve_expert`                                                                       |
+| TOPP3          | `copp.solver.topp3_lp.solve`, `copp.solver.topp3_lp.solve_expert`, `copp.solver.topp3_socp.solve`, `copp.solver.topp3_socp.solve_expert`    |
+| COPP3          | `copp.solver.copp3_socp.solve`, `copp.solver.copp3_socp.solve_expert`                                                                       |
+| Objectives     | `copp.objective.Time`, `ThermalEnergy`, `TotalVariationTorque`, `Linear`                                                                    |
+| Interpolation  | `copp.interpolation.s_to_t_topp2`, `t_to_s_topp2_uniform`, `s_to_t_topp3`, `t_to_s_topp3_uniform`, sample-based variants                    |
 
 Runnable examples are in [examples](examples/). The Sphinx tutorials include those same files with `literalinclude`, so examples and documentation stay aligned.
 
@@ -75,34 +63,53 @@ Runnable examples are in [examples](examples/). The Sphinx tutorials include tho
 
 ### Prerequisites
 
-You need:
+For the published Python package, you need:
 
 - Python 3.9 or newer;
-- Rust and Cargo;
-- a native compiler toolchain suitable for Rust extension modules;
-- `maturin` for building the Python extension;
 - `numpy`;
-- `jax` for examples that build differentiable paths with `Path.from_jax`;
-- `sphinx` if you want to build the local documentation.
+- `jax` for examples that build differentiable paths with `Path.from_jax`.
 
 Create and activate any Python environment you prefer before running the commands below. The commands intentionally avoid machine-specific activation scripts, user directories, or environment names.
 
-Install the Python build tools once:
+### Install from [PyPI](https://pypi.org/project/copp-py/)
+
+Install COPP with pip:
 
 ```sh
 python -m pip install -U pip
-python -m pip install -U maturin numpy jax
+python -m pip install -U copp-py
 ```
 
-### Build and Install the Local Package
+For examples that use `Path.from_jax`, install JAX as well:
+
+```sh
+python -m pip install -U jax
+```
+
+After installation:
+
+```sh
+python -c "import copp_py as copp; print(copp.version())"
+```
+
+### Build and Install from Source
+
+Use the source build path when you are working from a checkout or changing the Rust/Python binding code. You also need Rust, Cargo, a native compiler toolchain suitable for Rust extension modules, and `maturin`.
+
+Install the local build tools once:
+
+```sh
+python -m pip install -U maturin numpy jax
+```
 
 Run from the repository root:
 
 ```sh
+cargo build --release --lib --features python
 maturin develop --release --features python
 ```
 
-This compiles the Rust core with the Python feature enabled and installs the extension module directly into the active Python environment. For normal local development, examples, and documentation builds, this is the only build/install command you need. After the build:
+The Cargo command makes the Rust/Python feature build explicit. `maturin develop` then builds and installs the Python extension module into the active Python environment. After the build:
 
 ```sh
 python -c "import copp_py as copp; print(copp.version())"
@@ -110,7 +117,7 @@ python -c "import copp_py as copp; print(copp.version())"
 
 ### Run Examples
 
-Run examples from the repository root after installing the local package:
+Run examples from the repository root after installing the package:
 
 ```sh
 python bindings/python/examples/topp2_ra.py
@@ -356,11 +363,18 @@ The native extension module is built as `copp_py._native`.
 
 ## Troubleshooting
 
-### `import copp_py` Fails
+### `import copp_py as copp` Fails
 
-Build and install the local extension into the active Python environment:
+Install the published package into the active Python environment:
 
 ```sh
+python -m pip install -U copp-py
+```
+
+If you are working from a source checkout, build and install the local extension instead:
+
+```sh
+cargo build --release --lib --features python
 maturin develop --release --features python
 ```
 
@@ -372,11 +386,11 @@ python -c "import sys, copp_py as copp; print(sys.executable); print(copp.versio
 
 ### Sphinx Cannot Import `copp_py`
 
-Build the local package first with `maturin develop --release --features python`, then run the Sphinx command using the same Python interpreter.
+Install the package first with `python -m pip install -U copp-py`, or build the local checkout with `cargo build --release --lib --features python` followed by `maturin develop --release --features python`. Then run the Sphinx command using the same Python interpreter.
 
 ### Native Build Fails
 
-Check that Rust, Cargo, Python headers, and the platform compiler toolchain are available. On Windows, install a Visual Studio C++ build toolchain compatible with your Python interpreter. On Linux and macOS, ensure that the usual compiler and linker tools are available on `PATH`.
+For source builds, check that Rust, Cargo, Python headers, and the platform compiler toolchain are available. On Windows, install a Visual Studio C++ build toolchain compatible with your Python interpreter. On Linux and macOS, ensure that the usual compiler and linker tools are available on `PATH`.
 
 ### Array Shape or Type Errors
 

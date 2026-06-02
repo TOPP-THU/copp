@@ -56,7 +56,7 @@ typedef enum CoppStatus (*CoppInverseDynamicsFn)(void *user_data,
  * On success, `*out_robot` receives a non-null handle that must be released
  * with `copp_robot_free`.
  *
- * \warning Safety
+ * \par Safety
  * `out_robot` must be valid for one `CoppRobot*` write. C callers can pass the
  * address of an ordinary pointer variable; heap allocation is not required for
  * the output pointer itself.
@@ -93,7 +93,7 @@ enum CoppStatus copp_robot_create(size_t dim, size_t capacity, struct CoppRobot 
  * check(copp_robot_set_inverse_dynamics(robot, point_dynamics, NULL));
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * `inverse_dynamics`, when non-null, must not unwind and must write a
  * `dim`-element `tau` vector when returning `COPP_STATUS_OK`.
@@ -108,7 +108,7 @@ enum CoppStatus copp_robot_set_inverse_dynamics(struct CoppRobot *robot,
  * After this call, torque-related operations use default point dynamics
  * (`tau = ddq`).
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  */
 enum CoppStatus copp_robot_clear_inverse_dynamics(struct CoppRobot *robot);
@@ -119,7 +119,7 @@ enum CoppStatus copp_robot_clear_inverse_dynamics(struct CoppRobot *robot);
  * Empty input is accepted as a no-op.  Non-empty input must be strictly
  * increasing and must start after the current last stored station.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * `s.data` must be valid for `s.len` reads when `s.len` is non-zero.
  */
@@ -133,7 +133,7 @@ enum CoppStatus copp_robot_append_s(struct CoppRobot *robot, struct CoppSliceF64
  * `[idx_s, idx_s + amax.len)`.  This is useful before TOPP3 solvers when a
  * TOPP2 profile is used as a tighter linearization/reachability seed.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * `amax.data` must be valid for `amax.len` reads when `amax.len` is non-zero.
  */
@@ -144,7 +144,7 @@ enum CoppStatus copp_robot_amax_substitute(struct CoppRobot *robot,
 /**
  * Return the robot/path dimension stored in a robot handle.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * `out_dim` must be valid for one `size_t` write.
  */
@@ -153,7 +153,7 @@ enum CoppStatus copp_robot_dim(const struct CoppRobot *robot, size_t *out_dim);
 /**
  * Return the current number of logical station samples stored in a robot.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * `out_len` must be valid for one `size_t` write.
  */
@@ -162,7 +162,7 @@ enum CoppStatus copp_robot_len(const struct CoppRobot *robot, size_t *out_len);
 /**
  * Return the allocated station capacity of the robot constraint buffer.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * `out_capacity` must be valid for one `size_t` write.
  */
@@ -171,7 +171,7 @@ enum CoppStatus copp_robot_capacity(const struct CoppRobot *robot, size_t *out_c
 /**
  * Report whether the robot constraint buffer currently has no stations.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * `out_is_empty` must be valid for one `bool` write.
  */
@@ -182,7 +182,7 @@ enum CoppStatus copp_robot_is_empty(const struct CoppRobot *robot, bool *out_is_
  *
  * The active station window is `[idx_s_start, idx_s_end)`.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * `out_idx_s_start` must be valid for one `size_t` write.
  */
@@ -193,7 +193,7 @@ enum CoppStatus copp_robot_idx_s_start(const struct CoppRobot *robot, size_t *ou
  *
  * The active station window is `[idx_s_start, idx_s_end)`.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * `out_idx_s_end` must be valid for one `size_t` write.
  */
@@ -202,7 +202,7 @@ enum CoppStatus copp_robot_idx_s_end(const struct CoppRobot *robot, size_t *out_
 /**
  * Return the allocated row counts for first-, second-, and third-order constraints.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * Every output pointer must be valid for one `size_t` write.
  */
@@ -214,7 +214,7 @@ enum CoppStatus copp_robot_constraint_rows(const struct CoppRobot *robot,
 /**
  * Read one station value `s[idx_s]` from the robot constraint buffer.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * `out_s` must be valid for one `double` write.
  */
@@ -223,7 +223,7 @@ enum CoppStatus copp_robot_get_s(const struct CoppRobot *robot, size_t idx_s, do
 /**
  * Read one first-order upper bound `amax[idx_s]` from the robot.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * `out_amax` must be valid for one `double` write.
  */
@@ -235,7 +235,7 @@ enum CoppStatus copp_robot_get_amax(const struct CoppRobot *robot, size_t idx_s,
  * On success, `out_s` owns a COPP-allocated vector and must be released with
  * `copp_vec_f64_free`.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * `out_s` must be valid for one `CoppVecF64` write.
  */
@@ -250,7 +250,7 @@ enum CoppStatus copp_robot_s_vec(const struct CoppRobot *robot,
  * On success, `out_amax` owns a COPP-allocated vector and must be released
  * with `copp_vec_f64_free`.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * `out_amax` must be valid for one `CoppVecF64` write.
  */
@@ -265,7 +265,7 @@ enum CoppStatus copp_robot_amax_vec(const struct CoppRobot *robot,
  * On success, the three output matrices are `valid_rows x 1` column-major
  * matrices and must each be released with `copp_matrix_f64_free`.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * Every output pointer must be valid for one `CoppMatrixF64` write.
  */
@@ -281,7 +281,7 @@ enum CoppStatus copp_robot_acc_constraints_at(const struct CoppRobot *robot,
  * On success, the five output matrices are `valid_rows x 1` column-major
  * matrices and must each be released with `copp_matrix_f64_free`.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * Every output pointer must be valid for one `CoppMatrixF64` write.
  */
@@ -301,7 +301,7 @@ enum CoppStatus copp_robot_jerk_constraints_at(const struct CoppRobot *robot,
  * matrices are `valid_rows x 1` column-major matrices and must each be
  * released with `copp_matrix_f64_free`.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * Every output pointer must be valid for one `CoppMatrixF64` write.
  */
@@ -318,7 +318,7 @@ enum CoppStatus copp_robot_jerk_linear_constraints_at(const struct CoppRobot *ro
  * When `keep_idx_s` is true, the current global station origin is preserved;
  * otherwise the origin is reset to zero.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  */
 enum CoppStatus copp_robot_clear_constraints(struct CoppRobot *robot, bool keep_idx_s);
@@ -326,7 +326,7 @@ enum CoppStatus copp_robot_clear_constraints(struct CoppRobot *robot, bool keep_
 /**
  * Remove `n_cols` logical stations from the front of the robot buffer.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  */
 enum CoppStatus copp_robot_pop_front_n(struct CoppRobot *robot, size_t n_cols);
@@ -334,7 +334,7 @@ enum CoppStatus copp_robot_pop_front_n(struct CoppRobot *robot, size_t n_cols);
 /**
  * Remove `n_cols` logical stations from the back of the robot buffer.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  */
 enum CoppStatus copp_robot_pop_back_n(struct CoppRobot *robot, size_t n_cols);
@@ -342,7 +342,7 @@ enum CoppStatus copp_robot_pop_back_n(struct CoppRobot *robot, size_t n_cols);
 /**
  * Remove front stations so the kept window starts at `idx_s_cut` or later.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  */
 enum CoppStatus copp_robot_pop_front_until(struct CoppRobot *robot, size_t idx_s_cut);
@@ -350,7 +350,7 @@ enum CoppStatus copp_robot_pop_front_until(struct CoppRobot *robot, size_t idx_s
 /**
  * Remove back stations so the kept window ends before `idx_s_cut`.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  */
 enum CoppStatus copp_robot_pop_back_until(struct CoppRobot *robot, size_t idx_s_cut);
@@ -373,7 +373,7 @@ enum CoppStatus copp_robot_pop_back_until(struct CoppRobot *robot, size_t idx_s_
  * check(copp_robot_sample_path_2nd(robot, path, 0, 3));
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `robot` and `path` must be non-null handles created by COPP and must remain
  * valid for the duration of this call.
  */
@@ -397,7 +397,7 @@ enum CoppStatus copp_robot_sample_path_2nd(struct CoppRobot *robot,
  * check(copp_robot_sample_path_3rd(robot, path, 0, n));
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `robot` and `path` must be non-null handles created by COPP and must remain
  * valid for the duration of this call.
  */
@@ -418,7 +418,7 @@ enum CoppStatus copp_robot_sample_path_3rd(struct CoppRobot *robot,
  * interval.  Use `copp_robot_set_q_3rd` when third-order derivative data is
  * needed.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.  Non-empty
  * matrices must point to valid `double` arrays for their declared layouts.
  */
@@ -436,7 +436,7 @@ enum CoppStatus copp_robot_set_q_2nd(struct CoppRobot *robot,
  * input is the fast path; other valid `CoppMatrixViewF64` layouts are copied
  * once into column-major temporary storage.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.  Non-empty
  * matrices must point to valid `double` arrays for their declared layouts.
  */
@@ -457,7 +457,7 @@ enum CoppStatus copp_robot_set_q_3rd(struct CoppRobot *robot,
  * Contiguous column-major input is the fast path; other valid layouts are
  * copied once into column-major temporary storage.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * Non-empty matrices must point to valid `double` arrays for their declared
  * layouts.
@@ -476,7 +476,7 @@ enum CoppStatus copp_add_raw_constraint_1st(struct CoppRobot *robot,
  * Contiguous column-major input is the fast path; other valid layouts are
  * copied once into column-major temporary storage.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * Non-empty matrices must point to valid `double` arrays for their declared
  * layouts.
@@ -497,7 +497,7 @@ enum CoppStatus copp_add_raw_constraint_2nd(struct CoppRobot *robot,
  * Contiguous column-major input is the fast path; other valid layouts are
  * copied once into column-major temporary storage.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * Non-empty matrices must point to valid `double` arrays for their declared
  * layouts.
@@ -532,7 +532,7 @@ enum CoppStatus copp_add_raw_constraint_3rd(struct CoppRobot *robot,
  *     (struct CoppSliceF64){vmin, 3}));
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * Non-empty slices must point to valid contiguous `double` values.
  */
@@ -551,7 +551,7 @@ enum CoppStatus copp_add_axial_velocity_limits(struct CoppRobot *robot,
  * input is the fast path; other valid layouts are copied once into
  * column-major temporary storage.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * Non-empty matrices must point to valid `double` arrays for their declared
  * layouts.
@@ -568,7 +568,7 @@ enum CoppStatus copp_add_axial_velocity_limits_matrix(struct CoppRobot *robot,
  * robot dimension.  The same per-axis limits are applied to every station in
  * `[start_idx_s, start_idx_s + len)`.  `len == 0` is accepted as a no-op.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * Non-empty slices must point to valid contiguous `double` values.
  */
@@ -587,7 +587,7 @@ enum CoppStatus copp_add_axial_acceleration_limits(struct CoppRobot *robot,
  * column-major input is the fast path; other valid layouts are copied once
  * into column-major temporary storage.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * Non-empty matrices must point to valid `double` arrays for their declared
  * layouts.
@@ -626,7 +626,7 @@ enum CoppStatus copp_add_axial_acceleration_limits_matrix(struct CoppRobot *robo
  *     (struct CoppSliceF64){tau_min, 3}));
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * Non-empty slices must point to valid contiguous `double` values.
  * If a callback was set with `copp_robot_set_inverse_dynamics`, it must remain
@@ -654,7 +654,7 @@ enum CoppStatus copp_add_axial_torque_limits(struct CoppRobot *robot,
  * If the robot has no stored inverse-dynamics callback, point dynamics
  * (`tau = ddq`) is used.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * Non-empty matrices must point to valid `double` arrays for their declared
  * layouts. If a callback was set with `copp_robot_set_inverse_dynamics`, it
@@ -691,7 +691,7 @@ enum CoppStatus copp_add_axial_torque_limits_matrix(struct CoppRobot *robot,
  *     (struct CoppSliceF64){jmin, 3}));
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * Non-empty slices must point to valid contiguous `double` values.
  */
@@ -714,7 +714,7 @@ enum CoppStatus copp_add_axial_jerk_limits(struct CoppRobot *robot,
  * same interval, for example via `copp_robot_set_q_3rd` or
  * `copp_robot_sample_path_3rd`.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must be a non-null handle returned by `copp_robot_create`.
  * Non-empty matrices must point to valid `double` arrays for their declared
  * layouts.
@@ -729,7 +729,7 @@ enum CoppStatus copp_add_axial_jerk_limits_matrix(struct CoppRobot *robot,
  *
  * Passing null is allowed and has no effect.
  *
- * \warning Safety
+ * \par Safety
  * `robot` must either be null or a handle returned by `copp_robot_create` that
  * has not already been freed.
  */

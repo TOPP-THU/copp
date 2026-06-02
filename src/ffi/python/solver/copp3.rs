@@ -350,7 +350,6 @@ impl PyCopp3Problem {
             })
         }
     }
-
 }
 
 /// Solve COPP3 with the Clarabel SOCP backend.

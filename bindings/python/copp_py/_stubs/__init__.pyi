@@ -1,1 +1,1 @@
-﻿"""Private type stubs for the native extension."""
+"""Private type stubs for the native extension."""

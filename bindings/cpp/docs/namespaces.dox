@@ -1,0 +1,97 @@
+/**
+ * \namespace copp
+ * \brief Root namespace for the C++ facade: paths, robots, constraints,
+ * matrices, profiles, errors, objectives, interpolation, and solver entry
+ * points.
+ */
+
+/**
+ * \namespace copp::clarabel
+ * \brief Clarabel option, raw setting, status, and linear-solver diagnostic
+ * types shared by Clarabel-backed TOPP/COPP solvers.
+ */
+
+/**
+ * \namespace copp::clarabel::detail
+ * \brief Internal construction tags used to fetch Rust-side Clarabel defaults
+ * without double-initializing nested settings.
+ *
+ * This namespace is an implementation detail of the public C++ headers; normal
+ * user code should construct `copp::clarabel::Settings` or
+ * `copp::clarabel::Options` directly.
+ */
+
+/**
+ * \namespace copp::detail
+ * \brief Internal helpers for error conversion, no-throw overloads, and small
+ * implementation utilities used by the public facade.
+ *
+ * This namespace is not intended as an application API.
+ */
+
+/**
+ * \namespace copp::eigen
+ * \brief Optional Eigen adapters that convert Eigen objects to COPP matrix
+ * views or map COPP-owned matrices without changing the core API types.
+ */
+
+/**
+ * \namespace copp::interpolation
+ * \brief Time-conversion helpers for TOPP2/TOPP3 profiles, including `s -> t`,
+ * uniform `t -> s`, explicit-sample `t -> s`, and third-order profile slicing.
+ */
+
+/**
+ * \namespace copp::objective
+ * \brief Python-like factory namespace for constructing COPP objective
+ * descriptors such as time, linear, thermal-energy, and torque-variation costs.
+ */
+
+/**
+ * \namespace copp::solver
+ * \brief Solver entry namespace containing TOPP2, COPP2, TOPP3, COPP3,
+ * reachable-set, RA, LP, and SOCP solver families.
+ */
+
+/**
+ * \namespace copp::solver::topp2_ra
+ * \brief Second-order time-optimal reachability-analysis solver plus
+ * second-order reachable-set artifacts and options.
+ */
+
+/**
+ * \namespace copp::solver::reach_set2
+ * \brief Standalone second-order reachable-set helpers for feasibility
+ * analysis or diagnostics before TOPP2/COPP2 recovery.
+ */
+
+/**
+ * \namespace copp::solver::copp2_socp
+ * \brief Second-order convex-objective Clarabel SOCP backend with normal
+ * profile-returning APIs and expert diagnostic results.
+ */
+
+/**
+ * \namespace copp::solver::topp3
+ * \brief Shared third-order problem, boundary, stationary-bound, and expert
+ * result types used by TOPP3-LP, TOPP3-SOCP, and COPP3-SOCP.
+ */
+
+/**
+ * \namespace copp::solver::topp3_lp
+ * \brief Third-order time-optimal Clarabel LP backend over a pre-linearized
+ * `topp3::Problem`.
+ */
+
+/**
+ * \namespace copp::solver::topp3_socp
+ * \brief Third-order time-optimal Clarabel SOCP backend, commonly used as an
+ * iterative convex refinement by rebuilding the problem with the returned
+ * `profile.a`.
+ */
+
+/**
+ * \namespace copp::solver::copp3_socp
+ * \brief Third-order convex-objective Clarabel SOCP backend with COPP objective
+ * support and expert objective/solver diagnostics.
+ */

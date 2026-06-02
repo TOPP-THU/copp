@@ -17,7 +17,6 @@
 #include <stdint.h>
 #include "copp/core.h"
 #include "copp/formulation.h"
-#include "copp/topp3.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -135,7 +134,7 @@ typedef struct Copp3SocpResult {
  * copp_profile_3rd_free(profile);
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `problem.robot` must be a non-null mutable handle returned by
  * `copp_robot_create` and must remain valid for the duration of this call.
  * `problem.objectives` must be valid for `problem.num_objectives` reads when
@@ -160,7 +159,7 @@ enum CoppStatus copp3_socp(struct Copp3Problem problem,
  * Use the same advanced-diagnostics pattern as \ref copp2_socp_expert. The
  * result type is `Copp3SocpResult`, and `has_profile` replaces `has_a`.
  *
- * \warning Safety
+ * \par Safety
  * Same safety requirements as `copp3_socp`. `out_result` must be valid for
  * one `Copp3SocpResult` write and must later be released with
  * `copp3_socp_result_free`.

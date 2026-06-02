@@ -41,7 +41,7 @@ use core::f64;
 use itertools::{Itertools, izip};
 use nalgebra::{DMatrix, DVectorView};
 
-#[cfg(any(feature = "c", feature = "python", test))]
+#[cfg(any(feature = "c", feature = "cpp", feature = "python", test))]
 use crate::copp::copp2::stable::basic::a_to_b_topp2;
 
 /// Strict COPP2-SOCP API for production use.
@@ -789,7 +789,7 @@ fn clarable_objective_copp2<M: RobotTorque>(
 }
 
 /// Compute the objective value for COPP2 optimization.
-#[cfg(any(feature = "c", feature = "python", test))]
+#[cfg(any(feature = "c", feature = "cpp", feature = "python", test))]
 pub(crate) fn objective_value_copp2_opt<M: RobotTorque>(
     robot: &Robot<M>,
     start_idx_s: usize,
@@ -865,7 +865,7 @@ pub(crate) fn objective_value_copp2_opt<M: RobotTorque>(
 
 /// Compute the time value in COPP2 optimization.
 /// Input: s, a_sqrt = sqrt(a)
-#[cfg(any(feature = "c", feature = "python", test))]
+#[cfg(any(feature = "c", feature = "cpp", feature = "python", test))]
 #[inline(always)]
 fn objective_value_time_copp2(s: &[f64], a_sqrt: &[f64]) -> f64 {
     // objective: minimize 2 * weight * \sum (s[k+1]-s[k]) / (sqrt(a[k]) + sqrt(a[k+1]))
@@ -877,7 +877,7 @@ fn objective_value_time_copp2(s: &[f64], a_sqrt: &[f64]) -> f64 {
 }
 
 /// Compute the thermal energy value in COPP2 optimization.
-#[cfg(any(feature = "c", feature = "python", test))]
+#[cfg(any(feature = "c", feature = "cpp", feature = "python", test))]
 #[inline(always)]
 fn objective_value_thermal_energy_copp2(
     s: &[f64],
@@ -900,7 +900,7 @@ fn objective_value_thermal_energy_copp2(
 }
 
 /// Compute the total variation of torque value in COPP2 optimization.
-#[cfg(any(feature = "c", feature = "python", test))]
+#[cfg(any(feature = "c", feature = "cpp", feature = "python", test))]
 #[inline(always)]
 fn objective_value_tv_torque_copp2(torque: &DMatrix<f64>, normalize: &[f64]) -> f64 {
     // minimize: weight * \sum |tau[i][k+1]-tau[i][k]| * normalize[i]
@@ -918,7 +918,7 @@ fn objective_value_tv_torque_copp2(torque: &DMatrix<f64>, normalize: &[f64]) -> 
 }
 
 /// Compute the objective value for Linear in COPP2 optimization.
-#[cfg(any(feature = "c", feature = "python", test))]
+#[cfg(any(feature = "c", feature = "cpp", feature = "python", test))]
 #[inline(always)]
 fn objective_value_linear_copp2(s: &[f64], a_profile: &[f64], alpha: &[f64], beta: &[f64]) -> f64 {
     // objective: minimize \sum (alpha[k]*a[k] + beta[k]*b[k])

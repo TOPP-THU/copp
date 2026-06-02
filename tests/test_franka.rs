@@ -1,4 +1,4 @@
-//! Franka Panda no-viscous RobotTorque integration model.
+﻿//! Franka Panda no-viscous RobotTorque integration model.
 
 #![allow(clippy::float_cmp)]
 #![allow(clippy::many_single_char_names)]

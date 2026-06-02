@@ -1,0 +1,105 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+set_and_check(COPP_INCLUDE_DIR "@PACKAGE_CMAKE_INSTALL_INCLUDEDIR@")
+set_and_check(COPP_LIBRARY_LOCATION "${PACKAGE_PREFIX_DIR}/@COPP_CONFIG_LOCATION_RELPATH@")
+
+if("@COPP_CONFIG_IMPLIB_RELPATH@" STREQUAL "")
+    set(COPP_IMPORT_LIBRARY "")
+else()
+    set_and_check(COPP_IMPORT_LIBRARY "${PACKAGE_PREFIX_DIR}/@COPP_CONFIG_IMPLIB_RELPATH@")
+endif()
+
+if("@COPP_CONFIG_IS_STATIC@" STREQUAL "ON")
+    find_dependency(Threads)
+endif()
+
+set(COPP_STATIC_LINK_LIBRARIES "@COPP_CONFIG_STATIC_LINK_LIBRARIES@")
+set(COPP_STATIC_LINK_OPTIONS "@COPP_CONFIG_STATIC_LINK_OPTIONS@")
+
+if(@COPP_CONFIG_CPP_WITH_EIGEN@)
+    find_dependency(Eigen3 CONFIG)
+endif()
+
+if(NOT TARGET copp::copp)
+    add_library(copp::copp @COPP_CONFIG_TARGET_TYPE@ IMPORTED)
+    set_target_properties(copp::copp PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${COPP_INCLUDE_DIR}"
+        INTERFACE_COMPILE_FEATURES cxx_std_17
+        INTERFACE_COMPILE_DEFINITIONS "COPP_CPP_WITH_EIGEN=@COPP_CONFIG_CPP_WITH_EIGEN@;COPP_CPP_SHARED=@COPP_CONFIG_CPP_SHARED@"
+    )
+
+    if(COPP_IMPORT_LIBRARY)
+        set_target_properties(copp::copp PROPERTIES
+            IMPORTED_IMPLIB "${COPP_IMPORT_LIBRARY}"
+            IMPORTED_LOCATION "${COPP_LIBRARY_LOCATION}"
+        )
+    else()
+        set_target_properties(copp::copp PROPERTIES
+            IMPORTED_LOCATION "${COPP_LIBRARY_LOCATION}"
+        )
+    endif()
+
+    if(@COPP_CONFIG_CPP_WITH_EIGEN@)
+        set_property(TARGET copp::copp APPEND PROPERTY
+            INTERFACE_LINK_LIBRARIES Eigen3::Eigen
+        )
+    endif()
+
+    if("@COPP_CONFIG_IS_STATIC@" STREQUAL "ON")
+        set_property(TARGET copp::copp PROPERTY
+            IMPORTED_LINK_INTERFACE_LANGUAGES CXX
+        )
+
+        if(COPP_STATIC_LINK_LIBRARIES)
+            set_property(TARGET copp::copp APPEND PROPERTY
+                INTERFACE_LINK_LIBRARIES ${COPP_STATIC_LINK_LIBRARIES}
+            )
+        endif()
+
+        if(COPP_STATIC_LINK_OPTIONS)
+            set_property(TARGET copp::copp APPEND PROPERTY
+                INTERFACE_LINK_OPTIONS ${COPP_STATIC_LINK_OPTIONS}
+            )
+        endif()
+    endif()
+endif()
+
+if(@COPP_INSTALL_C_ABI_TARGET@ AND NOT TARGET copp::c_abi)
+    add_library(copp::c_abi @COPP_CONFIG_TARGET_TYPE@ IMPORTED)
+    set_target_properties(copp::c_abi PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${COPP_INCLUDE_DIR}"
+    )
+
+    if(COPP_IMPORT_LIBRARY)
+        set_target_properties(copp::c_abi PROPERTIES
+            IMPORTED_IMPLIB "${COPP_IMPORT_LIBRARY}"
+            IMPORTED_LOCATION "${COPP_LIBRARY_LOCATION}"
+        )
+    else()
+        set_target_properties(copp::c_abi PROPERTIES
+            IMPORTED_LOCATION "${COPP_LIBRARY_LOCATION}"
+        )
+    endif()
+
+    if("@COPP_CONFIG_IS_STATIC@" STREQUAL "ON")
+        set_property(TARGET copp::c_abi PROPERTY
+            IMPORTED_LINK_INTERFACE_LANGUAGES CXX
+        )
+
+        if(COPP_STATIC_LINK_LIBRARIES)
+            set_property(TARGET copp::c_abi APPEND PROPERTY
+                INTERFACE_LINK_LIBRARIES ${COPP_STATIC_LINK_LIBRARIES}
+            )
+        endif()
+
+        if(COPP_STATIC_LINK_OPTIONS)
+            set_property(TARGET copp::c_abi APPEND PROPERTY
+                INTERFACE_LINK_OPTIONS ${COPP_STATIC_LINK_OPTIONS}
+            )
+        endif()
+    endif()
+endif()
+
+check_required_components(copp)

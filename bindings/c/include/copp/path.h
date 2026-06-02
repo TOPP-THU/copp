@@ -13,6 +13,7 @@
  */
 
 #include <stddef.h>
+#include <math.h>
 #include "copp/core.h"
 
 #ifdef __cplusplus
@@ -27,11 +28,38 @@ extern "C" {
 /**
  * Opaque C handle for a library-owned `Path`.
  *
- * Create with `copp_path_from_waypoints`, `copp_path_from_evaluator_2nd`, or
- * `copp_path_from_evaluator_3rd` and release exactly once with
- * `copp_path_free`. C callers must not inspect or allocate this type directly.
+ * Create with `copp_path_from_waypoints`, `copp_path_from_parametric`,
+ * `copp_path_from_evaluator_2nd`, or `copp_path_from_evaluator_3rd` and
+ * release exactly once with `copp_path_free`. C callers must not inspect or
+ * allocate this type directly.
  */
 typedef struct CoppPath CoppPath;
+
+/**
+ * C-compatible third-order automatic-differentiation scalar.
+ *
+ * `v` stores the scalar value, while `d1`, `d2`, and `d3` store derivatives
+ * with respect to the path parameter `s`. Parametric path callbacks receive a
+ * seeded value (`d1 = 1`) and should return one `CoppJet3` per path dimension.
+ */
+typedef struct CoppJet3 {
+    /**
+     * Function value.
+     */
+    double v;
+    /**
+     * First derivative with respect to `s`.
+     */
+    double d1;
+    /**
+     * Second derivative with respect to `s`.
+     */
+    double d2;
+    /**
+     * Third derivative with respect to `s`.
+     */
+    double d3;
+} CoppJet3;
 
 /**
  * C ABI path out-of-range behavior.
@@ -97,6 +125,19 @@ typedef struct CoppPathOptions {
 } CoppPathOptions;
 
 /**
+ * C callback for evaluating a scalar-parametric path with automatic derivatives.
+ *
+ * The callback receives one seeded `CoppJet3` path parameter and must write
+ * `dim` `CoppJet3` values into `q`. COPP extracts each returned value and
+ * its first three derivatives to serve the existing path evaluation and robot
+ * sampling APIs.
+ */
+typedef enum CoppStatus (*CoppPathParametricFn)(void *user_data,
+                                                size_t dim,
+                                                struct CoppJet3 s,
+                                                struct CoppJet3 *q);
+
+/**
  * C callback for evaluating `q`, `dq`, and `ddq`.
  *
  * The callback receives `n` path samples in `s` and must write column-major
@@ -125,13 +166,246 @@ typedef enum CoppStatus (*CoppPathEvaluate3rdFn)(void *user_data,
                                                  double *ddq,
                                                  double *dddq);
 
+#ifdef __cplusplus
+}
+#endif
+
+/**
+ * Construct a constant automatic-differentiation scalar.
+ */
+static inline struct CoppJet3 copp_constant(double x)
+{
+    struct CoppJet3 out = {x, 0.0, 0.0, 0.0};
+    return out;
+}
+
+/**
+ * Add two automatic-differentiation scalars.
+ */
+static inline struct CoppJet3 copp_add(struct CoppJet3 a, struct CoppJet3 b)
+{
+    struct CoppJet3 out = {a.v + b.v, a.d1 + b.d1, a.d2 + b.d2, a.d3 + b.d3};
+    return out;
+}
+
+/**
+ * Add a floating-point constant to an automatic-differentiation scalar.
+ */
+static inline struct CoppJet3 copp_add_f64(struct CoppJet3 a, double b)
+{
+    struct CoppJet3 out = {a.v + b, a.d1, a.d2, a.d3};
+    return out;
+}
+
+/**
+ * Subtract two automatic-differentiation scalars.
+ */
+static inline struct CoppJet3 copp_sub(struct CoppJet3 a, struct CoppJet3 b)
+{
+    struct CoppJet3 out = {a.v - b.v, a.d1 - b.d1, a.d2 - b.d2, a.d3 - b.d3};
+    return out;
+}
+
+/**
+ * Subtract a floating-point constant from an automatic-differentiation scalar.
+ */
+static inline struct CoppJet3 copp_sub_f64(struct CoppJet3 a, double b)
+{
+    struct CoppJet3 out = {a.v - b, a.d1, a.d2, a.d3};
+    return out;
+}
+
+/**
+ * Subtract an automatic-differentiation scalar from a floating-point constant.
+ */
+static inline struct CoppJet3 copp_f64_sub(double a, struct CoppJet3 b)
+{
+    struct CoppJet3 out = {a - b.v, -b.d1, -b.d2, -b.d3};
+    return out;
+}
+
+/**
+ * Negate an automatic-differentiation scalar.
+ */
+static inline struct CoppJet3 copp_neg(struct CoppJet3 x)
+{
+    struct CoppJet3 out = {-x.v, -x.d1, -x.d2, -x.d3};
+    return out;
+}
+
+/**
+ * Multiply two automatic-differentiation scalars.
+ */
+static inline struct CoppJet3 copp_mul(struct CoppJet3 a, struct CoppJet3 b)
+{
+    struct CoppJet3 out = {
+        a.v * b.v,
+        a.d1 * b.v + a.v * b.d1,
+        a.d2 * b.v + 2.0 * a.d1 * b.d1 + a.v * b.d2,
+        a.d3 * b.v + 3.0 * (a.d2 * b.d1 + a.d1 * b.d2) + a.v * b.d3};
+    return out;
+}
+
+/**
+ * Multiply an automatic-differentiation scalar by a floating-point constant.
+ */
+static inline struct CoppJet3 copp_mul_f64(struct CoppJet3 a, double b)
+{
+    struct CoppJet3 out = {a.v * b, a.d1 * b, a.d2 * b, a.d3 * b};
+    return out;
+}
+
+/**
+ * Divide a floating-point constant by an automatic-differentiation scalar.
+ */
+static inline struct CoppJet3 copp_f64_div(double a, struct CoppJet3 b)
+{
+    const double inv = 1.0 / b.v;
+    const double inv2 = inv * inv;
+    const double inv3 = inv2 * inv;
+    const double inv4 = inv3 * inv;
+    const double d1sq = b.d1 * b.d1;
+    struct CoppJet3 out = {
+        a * inv,
+        -a * inv2 * b.d1,
+        a * (2.0 * inv3 * d1sq - inv2 * b.d2),
+        a * (-6.0 * inv4 * d1sq * b.d1 + 6.0 * inv3 * b.d1 * b.d2 - inv2 * b.d3)};
+    return out;
+}
+
+/**
+ * Divide an automatic-differentiation scalar by a floating-point constant.
+ */
+static inline struct CoppJet3 copp_div_f64(struct CoppJet3 a, double b)
+{
+    return copp_mul_f64(a, 1.0 / b);
+}
+
+/**
+ * Divide two automatic-differentiation scalars.
+ */
+static inline struct CoppJet3 copp_div(struct CoppJet3 a, struct CoppJet3 b)
+{
+    return copp_mul(a, copp_f64_div(1.0, b));
+}
+
+/**
+ * Apply sine to an automatic-differentiation scalar.
+ */
+static inline struct CoppJet3 copp_sin(struct CoppJet3 x)
+{
+    const double sv = sin(x.v);
+    const double cv = cos(x.v);
+    const double d1sq = x.d1 * x.d1;
+    struct CoppJet3 out = {
+        sv,
+        cv * x.d1,
+        -sv * d1sq + cv * x.d2,
+        -cv * d1sq * x.d1 - 3.0 * sv * x.d1 * x.d2 + cv * x.d3};
+    return out;
+}
+
+/**
+ * Apply cosine to an automatic-differentiation scalar.
+ */
+static inline struct CoppJet3 copp_cos(struct CoppJet3 x)
+{
+    const double sv = sin(x.v);
+    const double cv = cos(x.v);
+    const double d1sq = x.d1 * x.d1;
+    struct CoppJet3 out = {
+        cv,
+        -sv * x.d1,
+        -cv * d1sq - sv * x.d2,
+        sv * d1sq * x.d1 - 3.0 * cv * x.d1 * x.d2 - sv * x.d3};
+    return out;
+}
+
+/**
+ * Apply exponential to an automatic-differentiation scalar.
+ */
+static inline struct CoppJet3 copp_exp(struct CoppJet3 x)
+{
+    const double ev = exp(x.v);
+    const double d1sq = x.d1 * x.d1;
+    struct CoppJet3 out = {
+        ev,
+        ev * x.d1,
+        ev * (d1sq + x.d2),
+        ev * (d1sq * x.d1 + 3.0 * x.d1 * x.d2 + x.d3)};
+    return out;
+}
+
+/**
+ * Apply natural logarithm to an automatic-differentiation scalar.
+ */
+static inline struct CoppJet3 copp_log(struct CoppJet3 x)
+{
+    const double inv = 1.0 / x.v;
+    const double inv2 = inv * inv;
+    const double inv3 = inv2 * inv;
+    const double d1sq = x.d1 * x.d1;
+    struct CoppJet3 out = {
+        log(x.v),
+        inv * x.d1,
+        -inv2 * d1sq + inv * x.d2,
+        2.0 * inv3 * d1sq * x.d1 - 3.0 * inv2 * x.d1 * x.d2 + inv * x.d3};
+    return out;
+}
+
+/**
+ * Apply square root to an automatic-differentiation scalar.
+ */
+static inline struct CoppJet3 copp_sqrt(struct CoppJet3 x)
+{
+    const double sqrtv = sqrt(x.v);
+    const double inv_sqrt = 1.0 / sqrtv;
+    const double inv_v_sqrt = inv_sqrt / x.v;
+    const double inv_v2_sqrt = inv_v_sqrt / x.v;
+    const double d1sq = x.d1 * x.d1;
+    struct CoppJet3 out = {
+        sqrtv,
+        0.5 * inv_sqrt * x.d1,
+        -0.25 * inv_v_sqrt * d1sq + 0.5 * inv_sqrt * x.d2,
+        0.375 * inv_v2_sqrt * d1sq * x.d1 - 0.75 * inv_v_sqrt * x.d1 * x.d2 + 0.5 * inv_sqrt * x.d3};
+    return out;
+}
+
+/**
+ * Raise an automatic-differentiation scalar to an integer power.
+ */
+static inline struct CoppJet3 copp_powi(struct CoppJet3 x, int n)
+{
+    if (n == 0) {
+        return copp_constant(1.0);
+    }
+
+    const double nf = (double)n;
+    const double coeff2 = nf * (nf - 1.0);
+    const double coeff3 = coeff2 * (nf - 2.0);
+    const double dv = nf * pow(x.v, nf - 1.0);
+    const double ddv = coeff2 == 0.0 ? 0.0 : coeff2 * pow(x.v, nf - 2.0);
+    const double dddv = coeff3 == 0.0 ? 0.0 : coeff3 * pow(x.v, nf - 3.0);
+    const double d1sq = x.d1 * x.d1;
+    struct CoppJet3 out = {
+        pow(x.v, (double)n),
+        dv * x.d1,
+        ddv * d1sq + dv * x.d2,
+        dddv * d1sq * x.d1 + 3.0 * ddv * x.d1 * x.d2 + dv * x.d3};
+    return out;
+}
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * Write default waypoint spline options into `out_options`.
  *
  * Defaults are quintic order 5, uniform parametrization, zero boundary
  * derivatives, and out-of-range errors.
  *
- * \warning Safety
+ * \par Safety
  * `out_options` must be valid for one `CoppPathOptions` write.
  */
 enum CoppStatus copp_path_default_options(double s_min,
@@ -177,7 +451,7 @@ enum CoppStatus copp_path_default_options(double s_min,
  * copp_path_free(path);
  * ```
  *
- * \warning Safety
+ * \par Safety
  * Non-empty matrix views in `waypoints` and `options` must point to valid
  * `double` arrays for their declared layouts for the duration of this call.
  * `out_path` must be valid for one `CoppPath*` write.
@@ -185,6 +459,60 @@ enum CoppStatus copp_path_default_options(double s_min,
 enum CoppStatus copp_path_from_waypoints(struct CoppMatrixViewF64 waypoints,
                                          struct CoppPathOptions options,
                                          struct CoppPath **out_path);
+
+/**
+ * Build a path from a scalar-parametric C callback.
+ *
+ * COPP calls `evaluate` once per path sample with a seeded `CoppJet3` value
+ * for `s`. The callback writes `dim` output entries describing only `q(s)`;
+ * the returned `CoppJet3` derivative fields provide `dq`, `ddq`, and `dddq`.
+ * Use the inline helpers in `copp/path.h` such as `copp_add`, `copp_mul`, and
+ * `copp_sin` to write formulas without hand-differentiating them.
+ *
+ * The resulting path supports position, second-order, and third-order
+ * evaluation and can be sampled by `copp_robot_sample_path_2nd` or
+ * `copp_robot_sample_path_3rd`.
+ *
+ * The callback pointer and `user_data` are borrowed by the created path and
+ * must remain valid until `copp_path_free` is called. Calls into the callback
+ * are serialized per path handle.
+ *
+ * On success, `*out_path` receives a non-null handle that must be released
+ * with `copp_path_free`.
+ *
+ * # Example
+ * The example below builds a one-dimensional `q(s) = sin(2*pi*s)` path.
+ *
+ * ```c
+ * static enum CoppStatus eval_path_parametric(
+ *     void *user_data,
+ *     size_t dim,
+ *     struct CoppJet3 s,
+ *     struct CoppJet3 *q)
+ * {
+ *     (void)user_data;
+ *     if (dim != 1 || q == NULL) {
+ *         return COPP_STATUS_INVALID_ARGUMENT;
+ *     }
+ *     q[0] = copp_sin(copp_mul_f64(s, 6.28318530717958647692));
+ *     return COPP_STATUS_OK;
+ * }
+ *
+ * struct CoppPath *path = NULL;
+ * check(copp_path_from_parametric(1, 0.0, 1.0, eval_path_parametric, NULL, &path));
+ * ```
+ *
+ * \par Safety
+ * `evaluate` must be non-null and valid until `copp_path_free`.
+ * `user_data` must remain valid for all callback calls. `out_path` must be
+ * valid for one `CoppPath*` write.
+ */
+enum CoppStatus copp_path_from_parametric(size_t dim,
+                                          double s_min,
+                                          double s_max,
+                                          CoppPathParametricFn evaluate,
+                                          void *user_data,
+                                          struct CoppPath **out_path);
 
 /**
  * Build a path from a C callback that provides derivatives up to 2nd order.
@@ -228,7 +556,7 @@ enum CoppStatus copp_path_from_waypoints(struct CoppMatrixViewF64 waypoints,
  * check(copp_path_from_evaluator_2nd(1, 0.0, 1.0, eval_path_2nd, NULL, &path));
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `evaluate_2nd` must be non-null and valid until `copp_path_free`.
  * `user_data` must remain valid for all callback calls. `out_path` must be
  * valid for one `CoppPath*` write.
@@ -283,7 +611,7 @@ enum CoppStatus copp_path_from_evaluator_2nd(size_t dim,
  * check(copp_path_from_evaluator_3rd(1, 0.0, 1.0, NULL, eval_path_3rd, NULL, &path));
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `evaluate_3rd` must be non-null and valid until `copp_path_free`.
  * `evaluate_2nd`, when non-null, must follow the same lifetime rule.
  * `user_data` must remain valid for all callback calls. `out_path` must be
@@ -300,7 +628,7 @@ enum CoppStatus copp_path_from_evaluator_3rd(size_t dim,
 /**
  * Return the path dimension.
  *
- * \warning Safety
+ * \par Safety
  * `path` must be a non-null handle created by this module.
  * `out_dim` must be valid for one `size_t` write.
  */
@@ -309,7 +637,7 @@ enum CoppStatus copp_path_dim(const struct CoppPath *path, size_t *out_dim);
 /**
  * Return the valid path parameter range.
  *
- * \warning Safety
+ * \par Safety
  * `path` must be a non-null handle created by this module.
  * `out_s_min` and `out_s_max` must be valid for one `double` write each.
  */
@@ -346,7 +674,7 @@ enum CoppStatus copp_path_s_range(const struct CoppPath *path,
  * copp_matrix_f64_free(q);
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `path` must be a non-null handle created by this module.
  * `s.data` must be valid for `s.len` reads when non-empty. Output pointers
  * must be valid for one `CoppMatrixF64` write each.
@@ -376,7 +704,7 @@ enum CoppStatus copp_path_evaluate_up_to_2nd(const struct CoppPath *path,
  * copp_matrix_f64_free(q);
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `path` must be a non-null handle created by this module.
  * `s.data` must be valid for `s.len` reads when non-empty. Output pointers
  * must be valid for one `CoppMatrixF64` write each.
@@ -393,7 +721,7 @@ enum CoppStatus copp_path_evaluate_up_to_3rd(const struct CoppPath *path,
  *
  * Passing null is allowed and has no effect.
  *
- * \warning Safety
+ * \par Safety
  * `path` must either be null or a live path handle that has not already been
  * freed.
  */

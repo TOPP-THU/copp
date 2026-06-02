@@ -1,11 +1,10 @@
-//! Incremental linear-programming kernels in 1D/2D/3D.
+//! Incremental linear-programming kernels in 1D/2D.
 //!
 //! # Method identity
 //! The functions in this module are low-level numeric engines used by TOPP/COPP
 //! planners. They operate on half-space form constraints and provide:
-//! - direct 1D/2D/3D incremental LP solves,
+//! - direct 1D/2D incremental LP solves,
 //! - warm-start interfaces,
-//! - geometric contour extraction utilities,
 //! - helper normalization and tiny linear-system primitives.
 
 use crate::math::numerical::cross_product_2d;
@@ -34,21 +33,13 @@ pub(crate) const LP_BOUND: f64 = 1e6;
 pub(crate) struct LpToleranceOptions {
     /// Base feasibility tolerance used by LP inequality checks.
     pub(crate) feas_tol: f64,
-    /// Near-zero threshold for coefficient and objective-direction checks.
-    pub(crate) zero_tol: f64,
-    /// Lower bound used in row normalization to avoid aggressive scaling.
-    #[cfg(test)]
-    pub(crate) normalize_floor: f64,
-    /// Tolerance scale factor used when reducing dimension (3D->2D->1D).
+    /// Tolerance scale factor used when reducing dimension (2D->1D).
     pub(crate) reduce_dim_scale: f64,
 }
 
 /// Builder for [`LpToleranceOptions`].
 pub(crate) struct LpToleranceOptionsBuilder {
     pub feas_tol: f64,
-    pub zero_tol: f64,
-    #[cfg(test)]
-    pub normalize_floor: f64,
     pub reduce_dim_scale: f64,
 }
 
@@ -56,9 +47,6 @@ impl Default for LpToleranceOptionsBuilder {
     fn default() -> Self {
         Self {
             feas_tol: EPS_ZERO,
-            zero_tol: EPS_ZERO,
-            #[cfg(test)]
-            normalize_floor: EPS_NORMALIZE,
             reduce_dim_scale: EPS_SCALE,
         }
     }
@@ -77,19 +65,6 @@ impl LpToleranceOptionsBuilder {
     }
 
     #[inline(always)]
-    pub(crate) fn zero_tol(mut self, zero_tol: f64) -> Self {
-        self.zero_tol = zero_tol;
-        self
-    }
-
-    #[inline(always)]
-    #[cfg(test)]
-    pub(crate) fn normalize_floor(mut self, normalize_floor: f64) -> Self {
-        self.normalize_floor = normalize_floor;
-        self
-    }
-
-    #[inline(always)]
     pub(crate) fn reduce_dim_scale(mut self, reduce_dim_scale: f64) -> Self {
         self.reduce_dim_scale = reduce_dim_scale;
         self
@@ -99,9 +74,6 @@ impl LpToleranceOptionsBuilder {
     pub(crate) fn build(self) -> LpToleranceOptions {
         LpToleranceOptions {
             feas_tol: self.feas_tol,
-            zero_tol: self.zero_tol,
-            #[cfg(test)]
-            normalize_floor: self.normalize_floor,
             reduce_dim_scale: self.reduce_dim_scale,
         }
     }
@@ -110,279 +82,11 @@ impl LpToleranceOptionsBuilder {
 impl LpToleranceOptions {
     #[inline(always)]
     pub(crate) fn with_feas_tol(feas_tol: f64) -> Self {
-        let builder = LpToleranceOptionsBuilder::builder()
+        LpToleranceOptionsBuilder::builder()
             .feas_tol(feas_tol)
-            .zero_tol(EPS_ZERO)
-            .reduce_dim_scale(EPS_SCALE);
-        #[cfg(test)]
-        let builder = builder.normalize_floor(EPS_NORMALIZE);
-        builder.build()
+            .reduce_dim_scale(EPS_SCALE)
+            .build()
     }
-}
-
-/// Temporary buffers used by 3D LP solver internals.
-#[cfg(test)]
-pub(crate) type Lp3dWorkSpace<'a> = (
-    &'a mut Vec<(f64, f64, f64, f64)>,
-    &'a mut Vec<(f64, f64, f64)>,
-);
-
-/// Linear programming in 3D space plane based on geometric method.
-/// max J:=w_x*X+w_y*Y+w_z*Y, s.t. Ab[i].0*X+Ab[i].1*Y+Ab[i].2*Z<=Ab[i].3
-/// return (X,Y,Z,J)
-#[cfg(test)]
-pub(crate) fn lp_3d_incre<W: WarmStartLp3d>(
-    a_b: &[(f64, f64, f64, f64)],
-    w: (f64, f64, f64),
-    warm_start: &W,
-    tol: &LpToleranceOptions,
-    buffer: Lp3dWorkSpace,
-) -> (f64, f64, f64, f64) {
-    let (w_x, w_y, w_z) = w;
-    if w_x.abs() < tol.zero_tol && w_y.abs() < tol.zero_tol && w_z.abs() < tol.zero_tol {
-        return (f64::NAN, f64::NAN, f64::NAN, 0.0);
-    }
-    let w_ = (w_x * w_x + w_y * w_y + w_z * w_z).sqrt();
-    let w_inv = 1.0 / w_;
-    let w_x = w_x * w_inv;
-    let w_y = w_y * w_inv;
-    let w_z = w_z * w_inv;
-    // Now w_x^2 + w_y^2 + w_z^2 ==1
-    // Generate orthonormal basis (Duff's Method)
-    // Duff, T., Burgess, J., Christensen, P., Hery, C., Kensler, A., Liani, M. and Villemin, R., 2017. Building an orthonormal basis, revisited. JCGT, 6(1).
-    let s = if w_z >= 0.0 { 1.0 } else { -1.0 };
-    let d = 1.0 / (1.0 + s * w_z);
-    let e = -s * w_x * w_y * d;
-    let u = (1.0 - w_x * w_x * d, s * e, -s * w_x);
-    let v = (e, s * (1.0 - w_y * w_y * d), -w_y);
-    // (u,v,w) forms a orthonormal basis
-
-    let (a_b_3d_buffer, a_b_2d_buffer) = buffer;
-    a_b_3d_buffer.clear();
-    a_b_3d_buffer.extend([
-        (-1.0, 0.0, 0.0, LP_BOUND),
-        (1.0, 0.0, 0.0, LP_BOUND),
-        (0.0, -1.0, 0.0, LP_BOUND),
-        (0.0, 1.0, 0.0, LP_BOUND),
-        (0.0, 0.0, -1.0, LP_BOUND),
-        (0.0, 0.0, 1.0, LP_BOUND),
-    ]);
-    a_b_3d_buffer.extend(a_b.iter().map(|&(a, b, c, d)| {
-        let w = (
-            a * u.0 + b * u.1 + c * u.2,
-            a * v.0 + b * v.1 + c * v.2,
-            a * w_x + b * w_y + c * w_z,
-            d,
-        );
-        let w_norm_inf_inv = 1.0
-            / w.0
-                .abs()
-                .max(w.1.abs())
-                .max(w.2.abs())
-                .max(tol.normalize_floor);
-        (
-            w.0 * w_norm_inf_inv,
-            w.1 * w_norm_inf_inv,
-            w.2 * w_norm_inf_inv,
-            w.3 * w_norm_inf_inv,
-        )
-    }));
-
-    let mut warm_start_new = warm_start.rotate_with_new_skip(u, v, (w_x, w_y, w_z), 6);
-    if warm_start_new.x0.0.abs() > LP_BOUND
-        || warm_start_new.x0.1.abs() > LP_BOUND
-        || warm_start_new.x0.2.abs() > LP_BOUND
-    {
-        warm_start_new.x0 = (0.0, 0.0, LP_BOUND);
-        warm_start_new.skip = 6;
-    }
-    let (x, y, z) = lp_3d_incre_max_z(a_b_3d_buffer, &warm_start_new, tol, a_b_2d_buffer);
-
-    (
-        u.0 * x + v.0 * y + w_x * z,
-        u.1 * x + v.1 * y + w_y * z,
-        u.2 * x + v.2 * y + w_z * z,
-        w_ * z,
-    )
-}
-
-/// Linear programming in 3D space based on incremental method. (only maximize Z).
-/// max Z, s.t. Ab[i].0*X+Ab[i].1*Y+Ab[i].2*Z<=Ab[i].3
-#[cfg(test)]
-fn lp_3d_incre_max_z<W: WarmStartLp3d>(
-    a_b: &[(f64, f64, f64, f64)],
-    warm_start: &W,
-    tol: &LpToleranceOptions,
-    buffer: &mut Vec<(f64, f64, f64)>,
-) -> (f64, f64, f64) {
-    let eps_feas_tol = tol.feas_tol;
-    if a_b.len() < 3 {
-        let mut z = f64::INFINITY;
-        for &(a, b, c, d) in a_b {
-            // a*x + b*y + c*z <= d
-            if a.abs() < tol.zero_tol && b.abs() < tol.zero_tol {
-                if c > eps_feas_tol {
-                    // z <= d/c
-                    z = z.min(d / c); // Unbounded
-                } else if c < -eps_feas_tol {
-                    // -z <= -d/c
-                    return (f64::NAN, f64::NAN, f64::NAN); // Infeasible
-                }
-            }
-        }
-        return (f64::NAN, f64::NAN, z);
-    }
-
-    let a_b_2d = buffer;
-
-    let (mut x, mut y, mut z) = warm_start.get_initial_point();
-    let epsilon_2d = eps_feas_tol * tol.reduce_dim_scale;
-    for (i, &(a, b, c, d)) in warm_start.iter_skip(a_b.iter().enumerate()) {
-        // a*x + b*y + c*z <= d
-        if a * x + b * y + c * z > d {
-            // Infeasible for this constraint
-            // Let a*x + b*y + c*z == d
-            // Apply 2-dim LP
-            if a.abs() < EPS_ZERO && b.abs() < EPS_ZERO {
-                if c.abs() < EPS_ZERO {
-                    if d < eps_feas_tol {
-                        return (f64::NAN, f64::NAN, f64::NAN); // Infeasible
-                    }
-                } else {
-                    // c*z == d
-                    let c_inv = 1.0 / c;
-                    z = d * c_inv; // Fix
-                    // a_*x + b_*y + c_*z <= d_
-                    a_b_2d.clear();
-                    a_b_2d.extend(
-                        a_b.iter()
-                            .take(i)
-                            .map(|&(a_, b_, c_, d_)| (a_, b_, d_ - c_ * z)),
-                    );
-                    let tol_2d = LpToleranceOptions::with_feas_tol(epsilon_2d);
-                    (x, y) = lp_2d_incre_max_y::<_, true>(a_b_2d, &Lp2dNoWarmStart, &tol_2d);
-                    if y.is_nan() {
-                        return (f64::NAN, f64::NAN, f64::NAN); // Infeasible
-                    }
-                    z = (d - a * x - b * y) * c_inv;
-                }
-            } else if a.abs() < EPS_ZERO {
-                // b*y + c*z == d
-                if b.abs() >= c.abs() {
-                    // y == d/b - (c/b)*z == p*z - q
-                    let b_inv = 1.0 / b;
-                    let p = -c * b_inv;
-                    let q = -d * b_inv;
-                    // a_*x + b_*y + c_*z <= d_
-                    // a_*x + b_*(p*z - q) + c_*z <= d_
-                    // a_*x + (b_*p + c_)*z <= d_ + b_*q
-                    a_b_2d.clear();
-                    a_b_2d.extend(
-                        a_b.iter()
-                            .take(i)
-                            .map(|&(a_, b_, c_, d_)| (a_, b_ * p + c_, d_ + b_ * q)),
-                    );
-                    let tol_2d = LpToleranceOptions::with_feas_tol(epsilon_2d);
-                    let (x_, zmax) =
-                        lp_2d_incre_max_y::<_, true>(a_b_2d, &Lp2dNoWarmStart, &tol_2d);
-                    if zmax.is_nan() {
-                        return (f64::NAN, f64::NAN, f64::NAN); // Infeasible
-                    }
-                    x = x_;
-                    z = zmax.min(z);
-                    y = p * z - q - a / b * x;
-                } else {
-                    // z == d/c - (b/c)*y == p*y - q
-                    let c_inv = 1.0 / c;
-                    let p = -b * c_inv;
-                    let q = -d * c_inv;
-                    // a_*x + b_*y + c_*z <= d_
-                    // a_*x + b_*y + c_*(p*y - q) <= d_
-                    // a_*x + (b_ + c_*p)*y <= d_ + c_*q
-                    (x, y) = if p > 0.0 {
-                        // max y
-                        a_b_2d.clear();
-                        a_b_2d.extend(
-                            a_b.iter()
-                                .take(i)
-                                .map(|&(a_, b_, c_, d_)| (a_, b_ + c_ * p, d_ + c_ * q)),
-                        );
-                        let tol_2d = LpToleranceOptions::with_feas_tol(epsilon_2d);
-                        lp_2d_incre_max_y::<_, true>(a_b_2d, &Lp2dNoWarmStart, &tol_2d)
-                    } else {
-                        // min y
-                        a_b_2d.clear();
-                        a_b_2d.extend(
-                            a_b.iter()
-                                .take(i)
-                                .map(|&(a_, b_, c_, d_)| (a_, -b_ - c_ * p, d_ + c_ * q)),
-                        );
-                        let tol_2d = LpToleranceOptions::with_feas_tol(epsilon_2d);
-                        let (x_, y_neg) =
-                            lp_2d_incre_max_y::<_, true>(a_b_2d, &Lp2dNoWarmStart, &tol_2d);
-                        (x_, -y_neg)
-                    };
-                    if y.is_nan() {
-                        return (f64::NAN, f64::NAN, f64::NAN); // Infeasible
-                    }
-                    z = p * y - q - a * c_inv * x;
-                }
-            } else {
-                // a*x + b*y + c*z == d
-                if a.abs() > b.abs() {
-                    // x == (d - b*y - c*z)/a == p*y + q*z - r
-                    let a_inv = 1.0 / a;
-                    let p = -b * a_inv;
-                    let q = -c * a_inv;
-                    let r = -d * a_inv;
-                    // a_*x + b_*y + c_*z <= d_
-                    // a_*(p*y + q*z - r) + b_*y + c_*z <= d_
-                    // (a_*p + b_)*y + (a_*q + c_)*z <= d_ + a_*r
-                    a_b_2d.clear();
-                    a_b_2d.extend(
-                        a_b.iter()
-                            .take(i)
-                            .map(|&(a_, b_, c_, d_)| (a_ * p + b_, a_ * q + c_, d_ + a_ * r)),
-                    );
-                    let tol_2d = LpToleranceOptions::with_feas_tol(epsilon_2d);
-                    let (y_, zmax) =
-                        lp_2d_incre_max_y::<_, true>(a_b_2d, &Lp2dNoWarmStart, &tol_2d);
-                    if zmax.is_nan() {
-                        return (f64::NAN, f64::NAN, f64::NAN); // Infeasible
-                    }
-                    z = zmax.min(z);
-                    y = y_;
-                    x = p * y + q * z - r;
-                } else {
-                    // y == (d - a*x - c*z)/b == p*x + q*z - r
-                    let b_inv = 1.0 / b;
-                    let p = -a * b_inv;
-                    let q = -c * b_inv;
-                    let r = -d * b_inv;
-                    // a_*x + b_*y + c_*z <= d_
-                    // a_*x + b_*(p*x + q*z - r) + c_*z <= d_
-                    // (a_ + b_*p)*x + (b_*q + c_)*z <= d_ + b_*r
-                    a_b_2d.clear();
-                    a_b_2d.extend(
-                        a_b.iter()
-                            .take(i)
-                            .map(|&(a_, b_, c_, d_)| (a_ + b_ * p, b_ * q + c_, d_ + b_ * r)),
-                    );
-                    let tol_2d = LpToleranceOptions::with_feas_tol(epsilon_2d);
-                    let (x_, zmax) =
-                        lp_2d_incre_max_y::<_, true>(a_b_2d, &Lp2dNoWarmStart, &tol_2d);
-                    if zmax.is_nan() {
-                        return (f64::NAN, f64::NAN, f64::NAN); // Infeasible
-                    }
-                    z = zmax.min(z);
-                    x = x_;
-                    y = p * x + q * z - r;
-                }
-            }
-        }
-    }
-
-    (x, y, z)
 }
 
 /// Linear programming in 2D plane of extreme direction.
@@ -448,6 +152,7 @@ pub(crate) fn lp_2d_extreme_direction(
 /// Linear programming in 2D plane based on geometric method.
 /// max J:=w_x*X+w_y*Y, s.t. Ab[i].0*X+Ab[i].1*Y<=Ab[i].2
 /// return (X,Y,J)
+#[cfg(test)]
 pub(crate) fn lp_2d_incre<W: WarmStartLp2d, const NORMALIZE: bool>(
     a_b: &[(f64, f64, f64)],
     w: (f64, f64),
@@ -456,7 +161,7 @@ pub(crate) fn lp_2d_incre<W: WarmStartLp2d, const NORMALIZE: bool>(
     buffer: &mut Vec<(f64, f64, f64)>,
 ) -> (f64, f64, f64) {
     let (w_x, w_y) = w;
-    if w_x.abs() < tol.zero_tol && w_y.abs() < tol.zero_tol {
+    if w_x.abs() < EPS_ZERO && w_y.abs() < EPS_ZERO {
         return (f64::NAN, f64::NAN, 0.0);
     }
     let w = (w_x * w_x + w_y * w_y).sqrt();
@@ -727,11 +432,14 @@ pub(crate) trait WarmStartLp2d {
     where
         I: Iterator;
     /// Rotate warm-start state under objective-space rotation.
+    #[cfg(test)]
     fn rotate(&self, w: (f64, f64)) -> impl WarmStartLp2d;
 }
 
 /// 2D warm-start policy: always start from default point without skipping.
+#[cfg(test)]
 pub(crate) struct Lp2dNoWarmStart;
+#[cfg(test)]
 impl WarmStartLp2d for Lp2dNoWarmStart {
     #[inline(always)]
     fn get_initial_point(&self) -> (f64, f64) {
@@ -745,6 +453,7 @@ impl WarmStartLp2d for Lp2dNoWarmStart {
         a_b
     }
     #[allow(refining_impl_trait)]
+    #[cfg(test)]
     #[inline(always)]
     fn rotate(&self, _w: (f64, f64)) -> Lp2dNoWarmStart {
         Lp2dNoWarmStart
@@ -770,6 +479,7 @@ impl WarmStartLp2d for Lp2dWarmStart {
         a_b.skip(self.skip)
     }
     #[allow(refining_impl_trait)]
+    #[cfg(test)]
     #[inline(always)]
     fn rotate(&self, w: (f64, f64)) -> Lp2dWarmStart {
         Lp2dWarmStart {
@@ -782,104 +492,9 @@ impl WarmStartLp2d for Lp2dWarmStart {
     }
 }
 
-/// Warm-start interface for 3D incremental LP.
-#[cfg(test)]
-pub(crate) trait WarmStartLp3d {
-    /// Initial feasible guess.
-    fn get_initial_point(&self) -> (f64, f64, f64);
-    /// Iterate constraints while skipping known-prefix constraints if desired.
-    fn iter_skip<I>(&self, a_b: I) -> impl Iterator<Item = I::Item>
-    where
-        I: Iterator;
-    /// Rotate warm-start state into new `(u,v,w)` basis and update skip offset.
-    fn rotate_with_new_skip(
-        &self,
-        u: (f64, f64, f64),
-        v: (f64, f64, f64),
-        w: (f64, f64, f64),
-        skip_new: usize,
-    ) -> Lp3dWarmStart;
-}
-
-/// 3D warm-start policy: default point only.
-#[cfg(test)]
-pub(crate) struct Lp3dNoWarmStart;
-#[cfg(test)]
-impl WarmStartLp3d for Lp3dNoWarmStart {
-    #[inline(always)]
-    fn get_initial_point(&self) -> (f64, f64, f64) {
-        (0.0, 0.0, LP_BOUND)
-    }
-    #[inline(always)]
-    fn iter_skip<I>(&self, a_b: I) -> impl Iterator<Item = I::Item>
-    where
-        I: Iterator,
-    {
-        a_b
-    }
-    #[inline(always)]
-    fn rotate_with_new_skip(
-        &self,
-        _u: (f64, f64, f64),
-        _v: (f64, f64, f64),
-        _w: (f64, f64, f64),
-        skip_new: usize,
-    ) -> Lp3dWarmStart {
-        Lp3dWarmStart {
-            x0: (0.0, 0.0, LP_BOUND),
-            skip: skip_new,
-        }
-    }
-}
-/// 3D warm-start policy with explicit initial point and skip length.
-#[cfg(test)]
-pub(crate) struct Lp3dWarmStart {
-    /// Initial point in transformed 3D LP coordinates.
-    pub x0: (f64, f64, f64),
-    /// Number of leading constraints to skip.
-    pub skip: usize,
-}
-#[cfg(test)]
-impl WarmStartLp3d for Lp3dWarmStart {
-    #[inline(always)]
-    fn get_initial_point(&self) -> (f64, f64, f64) {
-        self.x0
-    }
-    #[inline(always)]
-    fn iter_skip<I>(&self, a_b: I) -> impl Iterator<Item = I::Item>
-    where
-        I: Iterator,
-    {
-        a_b.skip(self.skip)
-    }
-    #[inline(always)]
-    fn rotate_with_new_skip(
-        &self,
-        u: (f64, f64, f64),
-        v: (f64, f64, f64),
-        w: (f64, f64, f64),
-        skip_new: usize,
-    ) -> Lp3dWarmStart {
-        Lp3dWarmStart {
-            x0: (
-                u.0 * self.x0.0 + u.1 * self.x0.1 + u.2 * self.x0.2,
-                v.0 * self.x0.0 + v.1 * self.x0.1 + v.2 * self.x0.2,
-                w.0 * self.x0.0 + w.1 * self.x0.1 + w.2 * self.x0.2,
-            ),
-            skip: self.skip + skip_new,
-        }
-    }
-}
-
 /// Lightweight key adapter for LP collector implementations.
 trait Lp1dKey: Copy {
     fn get_key(&self) -> usize;
-}
-impl Lp1dKey for usize {
-    #[inline(always)]
-    fn get_key(&self) -> usize {
-        *self
-    }
 }
 impl Lp1dKey for () {
     #[inline(always)]
@@ -1722,117 +1337,6 @@ pub(crate) fn lp_2d_geo_contour_bounded<const CLOCKWISE: bool>(
     }
 }
 
-/// Contour of linear set in 2D plane based on projection method.
-/// Ab[i].0*X+Ab[i].1*Y<=Ab[i].2
-/// If infeasible or unbounded, return empty vec.
-/// This code doesn't work now.
-#[allow(dead_code)]
-fn lp_2d_contour_project(
-    a_b: &mut [(f64, f64, f64)],
-    tol: &LpToleranceOptions,
-    buffer: &mut Vec<(f64, f64, f64)>,
-) -> Vec<(f64, f64)> {
-    let epsilon = tol.feas_tol;
-    // #[derive(Debug)]
-    struct Vertex {
-        x: f64,
-        y: f64,
-        prev: usize,
-        next: usize,
-    }
-
-    let mut vertexes = Vec::<Vertex>::new();
-    // Step 1. The initial three vertexes
-    for (i, &w) in [(1.0, 0.0), (0.0, -1.0), (0.0, 1.0)].iter().enumerate() {
-        let (x_opt, y_opt, j_opt) = lp_2d_incre::<_, true>(a_b, w, &Lp2dNoWarmStart, tol, buffer);
-        if j_opt.is_nan()
-            || j_opt.is_infinite()
-            || x_opt.is_nan()
-            || x_opt.is_infinite()
-            || y_opt.is_nan()
-            || y_opt.is_infinite()
-        {
-            return vec![];
-        }
-        vertexes.push(Vertex {
-            x: x_opt,
-            y: y_opt,
-            prev: (i + 2) % 3,
-            next: (i + 1) % 3,
-        });
-    }
-    if cross_product_2d(
-        (
-            (vertexes[2].x - vertexes[1].x),
-            (vertexes[2].y - vertexes[1].y),
-        ),
-        (vertexes[0].x - vertexes[1].x, vertexes[0].y - vertexes[1].y),
-    ) > 0.0
-    {
-        for (i, v) in vertexes.iter_mut().enumerate() {
-            v.prev = (i + 1) % 3;
-            v.next = (i + 2) % 3;
-        }
-    }
-    // Step 2. Iteratively add vertexes
-    let mut i_curr = 0_usize;
-    loop {
-        let i_next = vertexes[i_curr].next;
-        // Consider the edge from i_curr to i_next
-        let w = (
-            vertexes[i_curr].y - vertexes[i_next].y,
-            vertexes[i_next].x - vertexes[i_curr].x,
-        );
-        let norm = (w.0 * w.0 + w.1 * w.1).sqrt();
-        let w = (w.0 / norm, w.1 / norm);
-
-        let (x_opt, y_opt, j_opt) = lp_2d_incre::<_, true>(a_b, w, &Lp2dNoWarmStart, tol, buffer);
-        if j_opt.is_nan() || j_opt.is_infinite() {
-            return vec![];
-        }
-        if (w.0 * vertexes[i_curr].x + w.1 * vertexes[i_curr].y - j_opt).abs() <= epsilon
-            && ((w.1 * x_opt - w.0 * y_opt) - (w.1 * vertexes[i_curr].x - w.0 * vertexes[i_curr].y))
-                * ((w.1 * x_opt - w.0 * y_opt)
-                    - (w.1 * vertexes[i_next].x - w.0 * vertexes[i_next].y))
-                <= 0.0
-        {
-            // No new vertex found
-            i_curr = i_next;
-            if i_curr == 0 {
-                break;
-            }
-            continue;
-        }
-        // New vertex found, insert it between i_curr and i_next
-        let i_new = vertexes.len();
-        vertexes.push(Vertex {
-            x: x_opt,
-            y: y_opt,
-            prev: i_curr,
-            next: i_next,
-        });
-        vertexes[i_curr].next = i_new;
-        vertexes[i_next].prev = i_new;
-    }
-    // Step 3. Collect the vertexes
-    let mut contour = Vec::<(f64, f64)>::with_capacity(vertexes.len());
-    let mut i_curr = 0_usize;
-    loop {
-        contour.push((vertexes[i_curr].x, vertexes[i_curr].y));
-        i_curr = vertexes[i_curr].next;
-        if i_curr == 0 {
-            if contour.len() >= 2
-                && (contour[0].0 - contour[contour.len() - 1].0).abs() <= epsilon
-                && (contour[0].1 - contour[contour.len() - 1].1).abs() <= epsilon
-            {
-                contour.pop();
-            }
-            break;
-        }
-    }
-    contour
-}
-
 /// Find the piecewise linear representation to the given constraints.
 /// # Arguments
 /// `kb` - A vector of tuples representing the coefficients (k, b) of linear functions.
@@ -1842,8 +1346,8 @@ fn lp_2d_contour_project(
 /// The first tuple is the leftmost line's (k, b), and the last tuple is the rightmost line's (k, b).
 /// For maximize==true, 0<=i<size, Y<=k[i]*X+b[i]
 /// For maximize==false, 0<=i<size, Y>=k[i]*X+b[i]
-#[allow(clippy::type_complexity)]
 #[cfg(test)]
+#[allow(clippy::type_complexity)]
 fn piecewise_linear_2d(
     kb: &[(f64, f64)],
     maximize: bool,
@@ -1991,71 +1495,6 @@ fn lp_2d_clarabel(
     }
 }
 
-/// Linear programming in 3D plane, based on clarabel library.
-/// max J:=w_x*X+w_y*Y+w_z*Z, s.t. Ab[i].0*X+Ab[i].1*Y+Ab[i].2*Z<=Ab[i].3
-/// return (X,Y,Z,J)
-#[cfg(test)]
-fn lp_3d_clarabel(
-    a_b: impl Iterator<Item = (f64, f64, f64, f64)> + Clone,
-    len: usize,
-    w: (f64, f64, f64),
-) -> (f64, f64, f64, f64) {
-    if len == 0 {
-        return (f64::NAN, f64::NAN, f64::NAN, f64::NAN);
-    }
-
-    let (w_x, w_y, w_z) = w;
-    let p_csc = CscMatrix::zeros((3, 3));
-    let q = vec![-w_x, -w_y, -w_z];
-
-    let mut colptr = vec![0];
-    let mut rowval = Vec::with_capacity(len * 3);
-    let mut nzval = Vec::with_capacity(len * 3);
-
-    for (i, item) in a_b.clone().enumerate().take(len) {
-        rowval.push(i);
-        nzval.push(item.0);
-    }
-    colptr.push(rowval.len());
-
-    for (i, item) in a_b.clone().enumerate().take(len) {
-        rowval.push(i);
-        nzval.push(item.1);
-    }
-    colptr.push(rowval.len());
-
-    for (i, item) in a_b.clone().enumerate().take(len) {
-        rowval.push(i);
-        nzval.push(item.2);
-    }
-    colptr.push(rowval.len());
-
-    let a_csc = CscMatrix::new(len, 3, colptr, rowval, nzval);
-
-    let b_vec: Vec<f64> = a_b.clone().map(|item| item.3).collect();
-
-    let cones = [NonnegativeConeT(len)];
-    let settings = DefaultSettings {
-        verbose: false,
-        ..DefaultSettings::default()
-    };
-
-    let mut solver = DefaultSolver::new(&p_csc, &q, &a_csc, &b_vec, &cones, settings).unwrap();
-
-    solver.solve();
-
-    let solution = &solver.solution;
-    match solution.status {
-        SolverStatus::Solved => {
-            let x = solution.x[0];
-            let y = solution.x[1];
-            let z = solution.x[2];
-            (x, y, z, w_x * x + w_y * y + w_z * z)
-        }
-        _ => (f64::NAN, f64::NAN, f64::NAN, f64::NAN),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2080,19 +1519,6 @@ mod tests {
     }
 
     #[test]
-    fn test_lp_3d_multi() {
-        run_test_lp_3d_multi_repeated(1, false);
-    }
-
-    /// Conditions: release, --include-ignored, CPU = Intel(R) Core(TM) Ultra 9 285K.
-    /// Average time per constraint: incremental = 69.837 ns, clarabel = 2060.738 ns
-    #[test]
-    #[ignore = "slow"]
-    fn test_lp_3d_multi_robust() {
-        run_test_lp_3d_multi_repeated(100000, true);
-    }
-
-    #[test]
     fn test_lp_2d_contour() {
         run_test_lp_2d_contour_repeated(1, false);
     }
@@ -2113,17 +1539,6 @@ mod tests {
     #[ignore = "slow"]
     fn test_lp_2d_extreme_direction_robust() {
         run_test_lp_2d_extreme_direction_repeated(100000, true);
-    }
-
-    #[test]
-    fn test_lp_3d_warm_start() {
-        run_test_lp_3d_warm_start_repeated(1, false);
-    }
-
-    #[test]
-    #[ignore = "slow"]
-    fn test_lp_3d_warm_start_robust() {
-        run_test_lp_3d_warm_start_repeated(100000, true);
     }
 
     #[test]
@@ -2330,202 +1745,6 @@ mod tests {
             crate::diag::Verbosity::Summary,
             "Average time per constraint: geometric = {:.3} ns, incremental = {:.3} ns, clarabel = {:.3} ns",
             time_sum_geo / n_exp as f64,
-            time_sum_incre / n_exp as f64,
-            time_sum_clarabel / n_exp as f64
-        );
-    }
-
-    fn run_test_lp_3d_multi_repeated(n_exp: usize, flag_print_step: bool) {
-        let path_str = "data/test/lp_3d_compare.csv";
-        let path = Path::new(path_str);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("Fail to create directory for lp_3d_compare.csv");
-        }
-        let file = fs::File::create(path).expect("Fail to create lp_3d_compare.csv");
-        let mut writer = BufWriter::new(file);
-        writeln!(
-            writer,
-            "n,incremental time (us),clarabel time (us),incremental objective,clarabel objective"
-        )
-        .unwrap();
-
-        let mut time_sum_incre = 0.0_f64;
-        let mut time_sum_clarabel = 0.0_f64;
-        let mut a_b_3d_buffer = Vec::<(f64, f64, f64, f64)>::with_capacity(106);
-        let mut a_b_2d_buffer = Vec::<(f64, f64, f64)>::with_capacity(106);
-
-        let epsilon = 1E-8;
-        for i in 0..n_exp {
-            let mut rng = rand::rng();
-            let n = rng.random_range(0..100); // number of constraints
-            // let n = 6_usize;
-            let a_b: Vec<(f64, f64, f64, f64)> = (0..n)
-                .map(|_| {
-                    (
-                        rng.random_range(-1.0..1.0),
-                        rng.random_range(-1.0..1.0),
-                        rng.random_range(-1.0..1.0),
-                        rng.random_range(0.0..2.0),
-                    )
-                })
-                .collect();
-            let w = (
-                rng.random_range(-1.0..1.0),
-                rng.random_range(-1.0..1.0),
-                rng.random_range(-1.0..1.0),
-            );
-
-            // let a_b: Vec<(f64, f64, f64, f64)> = [
-            //     (
-            //         4.778680415282513e-5,
-            //         0.04778680415282513,
-            //         0.0,
-            //         1.934939646979154e-5,
-            //     ),
-            // ]
-            // .into();
-            // let w = (0.0, 0.0, 1.0);
-            // let n = a_b.len();
-
-            let start = Instant::now();
-            let (x_clarabel, y_clarabel, z_clarabel, j_clarabel) =
-                lp_3d_clarabel(a_b.iter().copied(), a_b.len(), w);
-            let time_clarabel = start.elapsed().as_secs_f64() * 1E9; // ns
-
-            let start = Instant::now();
-            // a_b.shuffle(&mut rng);
-            let (x_inc, y_inc, z_inc, j_inc) = lp_3d_incre(
-                &a_b,
-                w,
-                &mut Lp3dNoWarmStart,
-                &LpToleranceOptions::with_feas_tol(epsilon),
-                (&mut a_b_3d_buffer, &mut a_b_2d_buffer),
-            );
-            let time_incre = start.elapsed().as_secs_f64() * 1E9; // ns
-
-            // println!(
-            //     "x_inc = ({}, {}, {}), j_inc = {}",
-            //     x_inc, y_inc, z_inc, j_inc
-            // );
-
-            writeln!(
-                writer,
-                "{n},{time_incre},{time_clarabel},{j_inc},{j_clarabel}"
-            )
-            .unwrap();
-
-            if flag_print_step && (i + 1) % 1000 == 0 {
-                crate::verbosity_log!(
-                    crate::diag::Verbosity::Summary,
-                    "Exp #{}: num_cons: {}, time_incre/n: {:.3} ns, time_clarabel/n: {:.3} ns, j_incre: {:.5e}, j_clarabel: {:.5e}, j_diff: {}",
-                    i + 1,
-                    n,
-                    time_incre / n.max(1) as f64,
-                    time_clarabel / n.max(1) as f64,
-                    j_inc,
-                    j_clarabel,
-                    j_inc - j_clarabel
-                );
-            }
-            time_sum_incre += time_incre / n.max(1) as f64;
-            time_sum_clarabel += time_clarabel / n.max(1) as f64;
-
-            let clarabel_failed = j_clarabel.is_nan()
-                || j_clarabel.is_infinite()
-                || x_clarabel.abs() > 1E8
-                || y_clarabel.abs() > 1E8
-                || z_clarabel.abs() > 1E8;
-            let inc_failed = j_inc.is_nan()
-                || j_inc.is_infinite()
-                || x_inc.abs() > 1E8
-                || y_inc.abs() > 1E8
-                || z_inc.abs() > 1E8;
-            let flag_assert = (clarabel_failed != inc_failed)
-                || (!clarabel_failed
-                    && (j_inc - j_clarabel).abs() >= 1E-3 * j_clarabel.abs().max(1.0)); //  / 
-            if flag_assert {
-                let flag = if !inc_failed && (clarabel_failed || j_inc > j_clarabel) {
-                    let delta = a_b
-                        .iter()
-                        .map(|(a, b, c, d)| -(d - a * x_inc - b * y_inc - c * z_inc))
-                        .collect::<Vec<f64>>();
-                    let delta_max = delta.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-                    // println!("(INC) delta_max={}, Delta={:?}", delta_max, delta);
-                    delta_max < epsilon * 2.0
-                } else if !clarabel_failed && (inc_failed || j_inc < j_clarabel) {
-                    let delta = a_b
-                        .iter()
-                        .map(|(a, b, c, d)| -(d - a * x_clarabel - b * y_clarabel - c * z_clarabel))
-                        .collect::<Vec<f64>>();
-                    let delta_max = delta.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-                    crate::verbosity_log!(
-                        crate::diag::Verbosity::Summary,
-                        "(CLARABEL) delta_max={delta_max}, Delta={delta:?}"
-                    );
-                    delta_max >= epsilon * 2.0
-                } else {
-                    false
-                };
-                if !flag {
-                    crate::verbosity_log!(crate::diag::Verbosity::Summary, "Constraints: {a_b:?}");
-                    crate::verbosity_log!(crate::diag::Verbosity::Summary, "w: {w:?}");
-                    crate::verbosity_log!(
-                        crate::diag::Verbosity::Summary,
-                        "clarabel: x={:?}, obj={}",
-                        (x_clarabel, y_clarabel, z_clarabel),
-                        j_clarabel
-                    );
-                    crate::verbosity_log!(
-                        crate::diag::Verbosity::Summary,
-                        "incremental: x={:?}, obj={}, obj_real={}",
-                        (x_inc, y_inc, z_inc),
-                        j_inc,
-                        w.0 * x_inc + w.1 * y_inc + w.2 * z_inc
-                    );
-                    crate::verbosity_log!(
-                        crate::diag::Verbosity::Summary,
-                        "Diff: dx={:?}, dj={}",
-                        (x_inc - x_clarabel, y_inc - y_clarabel, z_inc - z_clarabel),
-                        j_inc - j_clarabel
-                    );
-                    panic!("Incremental solution is worse than clarabel's.");
-                }
-            }
-
-            // let delta = a_b
-            //     .iter()
-            //     .map(|(a, b, c, d)| -(d - a * x_inc - b * y_inc - c * z_inc))
-            //     .collect::<Vec<f64>>();
-            // let delta_max = delta.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            // if delta_max > 0.0 {
-            //     println!("Constraints: {:?}", a_b);
-            //     for j in 0..n {
-            //         println!("A_b[{}] = {:?};", j, a_b[j]);
-            //     }
-            //     println!("w: {:?}", w);
-            //     println!(
-            //         "incremental: x={:?}, obj={}, obj_real={}",
-            //         (x_inc, y_inc, z_inc),
-            //         j_inc,
-            //         w.0 * x_inc + w.1 * y_inc + w.2 * z_inc
-            //     );
-            //     let delta_max_clarabel = a_b
-            //         .iter()
-            //         .map(|(a, b, c, d)| -(d - a * x_clarabel - b * y_clarabel - c * z_clarabel))
-            //         .collect::<Vec<f64>>()
-            //         .iter()
-            //         .cloned()
-            //         .fold(f64::NEG_INFINITY, f64::max);
-            //     println!(
-            //         "Delta max: inc={}, clarabel={}",
-            //         delta_max, delta_max_clarabel
-            //     );
-            //     panic!("Incremental solution violates constraints.");
-            // }
-        }
-        crate::verbosity_log!(
-            crate::diag::Verbosity::Summary,
-            "Average time per constraint: incremental = {:.3} ns, clarabel = {:.3} ns",
             time_sum_incre / n_exp as f64,
             time_sum_clarabel / n_exp as f64
         );
@@ -2964,198 +2183,6 @@ mod tests {
             "Average ratio over {} experiments: {}",
             n_exp,
             ratio_sum / n_exp as f64
-        );
-    }
-
-    fn run_test_lp_3d_warm_start_repeated(n_exp: usize, flag_print_step: bool) {
-        let mut time_sum_warm = 0.0_f64;
-        let mut time_sum_cold = 0.0_f64;
-        let mut a_b_3d_buffer = Vec::<(f64, f64, f64, f64)>::with_capacity(206);
-        let mut a_b_2d_buffer = Vec::<(f64, f64, f64)>::with_capacity(206);
-
-        let epsilon = 1E-8;
-        for i in 0..n_exp {
-            let mut rng = rand::rng();
-            let n = rng.random_range(2..200); // number of constraints
-            let n_warm = rng.random_range(0..=n);
-
-            let a_b: Vec<(f64, f64, f64, f64)> = (0..n)
-                .map(|_| {
-                    (
-                        rng.random_range(-1.0..1.0),
-                        rng.random_range(-1.0..1.0),
-                        rng.random_range(-1.0..1.0),
-                        rng.random_range(0.0..2.0),
-                    )
-                })
-                .collect();
-            let w = (
-                rng.random_range(-1.0..1.0),
-                rng.random_range(-1.0..1.0),
-                rng.random_range(-1.0..1.0),
-            );
-
-            // let a_b: Vec<(f64, f64, f64, f64)> = [
-            //     (
-            //         -0.6161749104276977,
-            //         -0.8749188501246645,
-            //         -0.0002830663984241255,
-            //         0.4159317018893933,
-            //     ),
-            //     (
-            //         -0.8641178719086673,
-            //         0.738692238652491,
-            //         0.14693343212358023,
-            //         0.5049130217285707,
-            //     ),
-            //     (
-            //         0.10550509188443513,
-            //         0.5618117100428561,
-            //         -0.6838165189182517,
-            //         1.6105804236565242,
-            //     ),
-            // ]
-            // .into();
-            // let w = (-0.7914049336723097, 0.4928306584242561, 0.6241300421402882);
-            // let n = a_b.len();
-            // let n_warm = 2;
-
-            let start = Instant::now();
-            // a_b.shuffle(&mut rng);
-            let (x_inc_cold, y_inc_cold, z_inc_cold, j_inc_cold) = lp_3d_incre(
-                &a_b,
-                w,
-                &Lp3dNoWarmStart,
-                &LpToleranceOptions::with_feas_tol(epsilon),
-                (&mut a_b_3d_buffer, &mut a_b_2d_buffer),
-            );
-            let time_inc_cold = start.elapsed().as_secs_f64() * 1E9; // ns
-
-            let start = Instant::now();
-            // a_b.shuffle(&mut rng);
-            let (x_mid, y_mid, z_mid, _) = lp_3d_incre(
-                &a_b[0..n_warm],
-                w,
-                &Lp3dNoWarmStart,
-                &LpToleranceOptions::with_feas_tol(epsilon),
-                (&mut a_b_3d_buffer, &mut a_b_2d_buffer),
-            );
-            let (x_inc_warm, y_inc_warm, z_inc_warm, j_inc_warm) = lp_3d_incre(
-                &a_b,
-                w,
-                &mut Lp3dWarmStart {
-                    x0: (x_mid, y_mid, z_mid),
-                    skip: n_warm,
-                },
-                &LpToleranceOptions::with_feas_tol(epsilon),
-                (&mut a_b_3d_buffer, &mut a_b_2d_buffer),
-            );
-            let time_inc_warm = start.elapsed().as_secs_f64() * 1E9; // ns
-
-            // println!(
-            //     "x_inc = ({}, {}, {}), j_inc = {}",
-            //     x_inc, y_inc, z_inc, j_inc
-            // );
-            if flag_print_step && (i + 1) % 1000 == 0 {
-                crate::verbosity_log!(
-                    crate::diag::Verbosity::Summary,
-                    "Exp #{}: num_cons: {}, time_inc_warm/n: {:.3} ns, time_inc_cold/n: {:.3} ns, j_inc_warm: {:.5e}, j_inc_cold: {:.5e}, j_diff: {}",
-                    i + 1,
-                    n,
-                    time_inc_warm / n.max(1) as f64,
-                    time_inc_cold / n.max(1) as f64,
-                    j_inc_warm,
-                    j_inc_cold,
-                    j_inc_warm - j_inc_cold
-                );
-            }
-            time_sum_warm += time_inc_warm / n.max(1) as f64;
-            time_sum_cold += time_inc_cold / n.max(1) as f64;
-
-            let cold_failed = j_inc_cold.is_nan()
-                || j_inc_cold.is_infinite()
-                || x_inc_cold.abs() > 1E8
-                || y_inc_cold.abs() > 1E8
-                || z_inc_cold.abs() > 1E8;
-            let warm_failed = j_inc_warm.is_nan()
-                || j_inc_warm.is_infinite()
-                || x_inc_warm.abs() > 1E8
-                || y_inc_warm.abs() > 1E8
-                || z_inc_warm.abs() > 1E8;
-            let flag_assert = (cold_failed != warm_failed)
-                || (!cold_failed
-                    && (j_inc_warm - j_inc_cold).abs() >= 1E-3 * j_inc_cold.abs().max(1.0)); //  / 
-            if flag_assert {
-                crate::verbosity_log!(crate::diag::Verbosity::Summary, "Constraints: {a_b:?}");
-                crate::verbosity_log!(crate::diag::Verbosity::Summary, "n_warm: {n_warm}");
-                crate::verbosity_log!(crate::diag::Verbosity::Summary, "w: {w:?}");
-                crate::verbosity_log!(
-                    crate::diag::Verbosity::Summary,
-                    "cold: x={:?}, obj={}",
-                    (x_inc_cold, y_inc_cold, z_inc_cold),
-                    j_inc_cold
-                );
-                crate::verbosity_log!(
-                    crate::diag::Verbosity::Summary,
-                    "mid: x={:?}",
-                    (x_mid, y_mid, z_mid)
-                );
-                crate::verbosity_log!(
-                    crate::diag::Verbosity::Summary,
-                    "warm: x={:?}, obj={}, obj_real={}",
-                    (x_inc_warm, y_inc_warm, z_inc_warm),
-                    j_inc_warm,
-                    w.0 * x_inc_warm + w.1 * y_inc_warm + w.2 * z_inc_warm
-                );
-                crate::verbosity_log!(
-                    crate::diag::Verbosity::Summary,
-                    "Diff: dx={:?}, dj={}",
-                    (
-                        x_inc_warm - x_inc_cold,
-                        y_inc_warm - y_inc_cold,
-                        z_inc_warm - z_inc_cold
-                    ),
-                    j_inc_warm - j_inc_cold
-                );
-                panic!("Warm solution is worse than cold one.");
-            }
-
-            // let delta = a_b
-            //     .iter()
-            //     .map(|(a, b, c, d)| -(d - a * x_inc - b * y_inc - c * z_inc))
-            //     .collect::<Vec<f64>>();
-            // let delta_max = delta.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            // if delta_max > 0.0 {
-            //     println!("Constraints: {:?}", a_b);
-            //     for j in 0..n {
-            //         println!("A_b[{}] = {:?};", j, a_b[j]);
-            //     }
-            //     println!("w: {:?}", w);
-            //     println!(
-            //         "incremental: x={:?}, obj={}, obj_real={}",
-            //         (x_inc, y_inc, z_inc),
-            //         j_inc,
-            //         w.0 * x_inc + w.1 * y_inc + w.2 * z_inc
-            //     );
-            //     let delta_max_clarabel = a_b
-            //         .iter()
-            //         .map(|(a, b, c, d)| -(d - a * x_clarabel - b * y_clarabel - c * z_clarabel))
-            //         .collect::<Vec<f64>>()
-            //         .iter()
-            //         .cloned()
-            //         .fold(f64::NEG_INFINITY, f64::max);
-            //     println!(
-            //         "Delta max: inc={}, clarabel={}",
-            //         delta_max, delta_max_clarabel
-            //     );
-            //     panic!("Incremental solution violates constraints.");
-            // }
-        }
-        crate::verbosity_log!(
-            crate::diag::Verbosity::Summary,
-            "Average time per constraint: warm = {:.3} ns, cold = {:.3} ns",
-            time_sum_warm / n_exp as f64,
-            time_sum_cold / n_exp as f64
         );
     }
 

@@ -450,7 +450,7 @@ pub struct Copp3ProblemBuilder<'a, M: RobotTorque> {
     /// Discrete code form:
     /// `1.0 / max(a_linearization, a_linearization_floor).sqrt()`.
     ///
-    /// More details are available in the [`Topp3Problem`](crate::solver::topp3_lp::Topp3Problem) documentation.
+    /// More details are available in the [`Topp3Problem`] documentation.
     pub a_linearization_floor: f64,
 }
 

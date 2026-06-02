@@ -30,12 +30,12 @@ use crate::diag::CoppError;
 /// entry points that accept a custom objective trait can represent other costs
 /// under the contract documented by that trait.
 ///
-/// | Objective | COPP2/3 SOCP |
-/// |---|---|
-/// | [`Time`](CoppObjective::Time) | yes |
-/// | [`ThermalEnergy`](CoppObjective::ThermalEnergy) | yes |
-/// | [`Linear`](CoppObjective::Linear) | yes |
-/// | [`TotalVariationTorque`](CoppObjective::TotalVariationTorque) | yes |
+/// | Objective | COPP2-SOCP | COPP3-SOCP |
+/// |---|---|---|
+/// | [`Time`](CoppObjective::Time) | yes | yes |
+/// | [`ThermalEnergy`](CoppObjective::ThermalEnergy) | yes | yes |
+/// | [`Linear`](CoppObjective::Linear) | yes | yes |
+/// | [`TotalVariationTorque`](CoppObjective::TotalVariationTorque) | yes | yes |
 ///
 /// For [`Linear`](CoppObjective::Linear), `beta` has length `s_len - 1` in
 /// COPP2 and length `s_len` in COPP3.

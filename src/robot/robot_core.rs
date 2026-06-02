@@ -785,7 +785,7 @@ impl<M: RobotTorque> Robot<M> {
     /// # Errors
     /// Returns shape/range/data-availability errors when prerequisites are not met, and
     /// propagates inverse-dynamics failures from the robot model.
-    #[cfg(any(feature = "c", feature = "python", test))]
+    #[cfg(any(feature = "c", feature = "cpp", feature = "python", test))]
     pub(crate) fn get_torque_with_ab(
         &self,
         a_profile: &[f64],

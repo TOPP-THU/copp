@@ -5,6 +5,9 @@
 #[cfg(feature = "c")]
 pub mod c;
 
+#[cfg(feature = "cpp")]
+pub mod cpp;
+
 #[cfg(feature = "python")]
 pub(crate) mod python;
 

@@ -43,7 +43,7 @@ extern "C" {
  * copp_vec_f64_free(b);
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `s.data` and `a.data` must be valid for `len` reads when their lengths are
  * non-zero. `out_b` must be valid for one `CoppVecF64` write.
  */
@@ -73,7 +73,7 @@ enum CoppStatus copp_a_to_b_2nd(struct CoppSliceF64 s,
  * copp_vec_f64_free(t_s);
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `s.data` and `a.data` must be valid for `len` reads when their lengths are
  * non-zero. `out_t_final` must be valid for one `double` write and `out_t_s`
  * must be valid for one `CoppVecF64` write. C callers can pass the address of
@@ -107,7 +107,7 @@ enum CoppStatus copp_s_to_t_2nd(struct CoppSliceF64 s,
  * copp_vec_f64_free(s_t);
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `s.data`, `a.data`, and `t_s.data` must be valid for `len` reads when their
  * lengths are non-zero. `out_s_t` must be valid for one `CoppVecF64` write.
  */
@@ -125,7 +125,7 @@ enum CoppStatus copp_t_to_s_uniform_2nd(struct CoppSliceF64 s,
  * On success, `out_s_t` owns a COPP-allocated vector and must be released with
  * `copp_vec_f64_free`.
  *
- * \warning Safety
+ * \par Safety
  * `s.data`, `a.data`, `t_s.data`, and `t_sample.data` must be valid for `len`
  * reads when their lengths are non-zero. `out_s_t` must be valid for one
  * `CoppVecF64` write.
@@ -166,7 +166,7 @@ enum CoppStatus copp_t_to_s_non_uniform_2nd(struct CoppSliceF64 s,
  * copp_vec_f64_free(t_s);
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `s.data`, `a.data`, and `b.data` must be valid for reads when their lengths
  * are non-zero. `out_t_final` must be valid for one `double` write and
  * `out_t_s` must be valid for one `CoppVecF64` write.
@@ -205,7 +205,7 @@ enum CoppStatus copp_s_to_t_3rd(struct CoppSliceF64 s,
  * copp_vec_f64_free(s_t);
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `s.data`, `a.data`, `b.data`, and `t_s.data` must be valid for reads when
  * their lengths are non-zero. `out_s_t` must be valid for one `CoppVecF64`
  * write.
@@ -228,7 +228,7 @@ enum CoppStatus copp_t_to_s_uniform_3rd(struct CoppSliceF64 s,
  * C callers pass profile parts explicitly. On success, `out_s_t` owns a
  * COPP-allocated vector and must be released with `copp_vec_f64_free`.
  *
- * \warning Safety
+ * \par Safety
  * `s.data`, `a.data`, `b.data`, `t_s.data`, and `t_sample.data` must be valid
  * for reads when their lengths are non-zero. `out_s_t` must be valid for one
  * `CoppVecF64` write.
@@ -267,7 +267,7 @@ enum CoppStatus copp_t_to_s_non_uniform_3rd(struct CoppSliceF64 s,
  *     &succeeded));
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `s.data` must be valid for reads when non-empty. `a.data` and `b.data` must
  * be valid for unique mutable access when non-empty and must not alias each
  * other. `out_succeed` must be valid for one `bool` write.

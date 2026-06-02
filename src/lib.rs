@@ -53,7 +53,7 @@ pub(crate) mod math;
 pub mod path;
 pub mod robot;
 
-#[cfg(any(feature = "c", feature = "python"))]
+#[cfg(any(feature = "c", feature = "cpp", feature = "python"))]
 #[doc(hidden)]
 pub mod ffi;
 

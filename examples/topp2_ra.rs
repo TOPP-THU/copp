@@ -1,4 +1,4 @@
-//! This example uses [`topp2_ra`] to convert an analytic path into a second-order
+﻿//! This example uses [`topp2_ra`] to convert an analytic path into a second-order
 //! time-optimal trajectory whose axial velocity and acceleration both stay within
 //! `[-1, 1]`.
 

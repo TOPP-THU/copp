@@ -3,7 +3,7 @@
 use crate::ffi::c::core::status::{clear_last_error, panic_to_status};
 use crate::ffi::c::{CoppMatrixF64, CoppMatrixViewF64, CoppRobot, CoppSliceF64, CoppStatus};
 use crate::path::{
-    OutOfRangeMode, Parametrization, Path, PathEvaluator2nd, PathEvaluator3rd, SplineConfig,
+    Jet3, OutOfRangeMode, Parametrization, Path, PathEvaluator2nd, PathEvaluator3rd, SplineConfig,
 };
 use nalgebra::DMatrix;
 use std::{
@@ -15,14 +15,72 @@ use std::{
 
 /// Opaque C handle for a library-owned `Path`.
 ///
-/// Create with `copp_path_from_waypoints`, `copp_path_from_evaluator_2nd`, or
-/// `copp_path_from_evaluator_3rd` and release exactly once with
-/// `copp_path_free`. C callers must not inspect or allocate this type directly.
+/// Create with `copp_path_from_waypoints`, `copp_path_from_parametric`,
+/// `copp_path_from_evaluator_2nd`, or `copp_path_from_evaluator_3rd` and
+/// release exactly once with `copp_path_free`. C callers must not inspect or
+/// allocate this type directly.
 pub struct CoppPath;
 
 struct CoppPathInner {
     path: Path,
 }
+
+/// C-compatible third-order automatic-differentiation scalar.
+///
+/// `v` stores the scalar value, while `d1`, `d2`, and `d3` store derivatives
+/// with respect to the path parameter `s`. Parametric path callbacks receive a
+/// seeded value (`d1 = 1`) and should return one `CoppJet3` per path dimension.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CoppJet3 {
+    /// Function value.
+    pub v: f64,
+    /// First derivative with respect to `s`.
+    pub d1: f64,
+    /// Second derivative with respect to `s`.
+    pub d2: f64,
+    /// Third derivative with respect to `s`.
+    pub d3: f64,
+}
+
+impl From<Jet3> for CoppJet3 {
+    #[inline(always)]
+    fn from(value: Jet3) -> Self {
+        Self {
+            v: value.v,
+            d1: value.d1,
+            d2: value.d2,
+            d3: value.d3,
+        }
+    }
+}
+
+impl From<CoppJet3> for Jet3 {
+    #[inline(always)]
+    fn from(value: CoppJet3) -> Self {
+        Self {
+            v: value.v,
+            d1: value.d1,
+            d2: value.d2,
+            d3: value.d3,
+        }
+    }
+}
+
+/// C callback for evaluating a scalar-parametric path with automatic derivatives.
+///
+/// The callback receives one seeded [`CoppJet3`] path parameter and must write
+/// `dim` [`CoppJet3`] values into `q`. COPP extracts each returned value and
+/// its first three derivatives to serve the existing path evaluation and robot
+/// sampling APIs.
+pub type CoppPathParametricFn = Option<
+    unsafe extern "C" fn(
+        user_data: *mut c_void,
+        dim: usize,
+        s: CoppJet3,
+        q: *mut CoppJet3,
+    ) -> CoppStatus,
+>;
 
 /// C callback for evaluating `q`, `dq`, and `ddq`.
 ///
@@ -62,6 +120,138 @@ struct CallbackScratch {
     dq: Vec<f64>,
     ddq: Vec<f64>,
     dddq: Vec<f64>,
+    q_jet: Vec<CoppJet3>,
+}
+
+struct CoppParametricPathEvaluator {
+    dim: usize,
+    evaluate: unsafe extern "C" fn(
+        user_data: *mut c_void,
+        dim: usize,
+        s: CoppJet3,
+        q: *mut CoppJet3,
+    ) -> CoppStatus,
+    user_data: *mut c_void,
+    scratch: Mutex<CallbackScratch>,
+}
+
+// SAFETY: Calls into the C callback are serialized by `scratch`. The callback
+// and `user_data` must remain valid until `copp_path_free`; any concurrent
+// access to the pointed-to user data outside COPP is the caller's responsibility.
+unsafe impl Send for CoppParametricPathEvaluator {}
+// SAFETY: Same reasoning as `Send`; shared evaluator references serialize
+// callback calls before touching the opaque C user data.
+unsafe impl Sync for CoppParametricPathEvaluator {}
+
+impl CoppParametricPathEvaluator {
+    #[inline(always)]
+    fn check_output_len(
+        &self,
+        s: &[f64],
+        buffers: &[&[f64]],
+    ) -> Result<(), crate::diag::PathError> {
+        let expected = self.dim * s.len();
+        if buffers.iter().any(|buffer| buffer.len() != expected) {
+            return Err(crate::diag::PathError::DimensionMismatch);
+        }
+        Ok(())
+    }
+
+    #[inline(always)]
+    fn scratch(&self) -> std::sync::MutexGuard<'_, CallbackScratch> {
+        self.scratch
+            .lock()
+            .unwrap_or_else(|_| std::panic::panic_any(CoppStatus::Panic))
+    }
+
+    fn evaluate_common(
+        &self,
+        s: &[f64],
+        q: &mut [f64],
+        mut dq: Option<&mut [f64]>,
+        mut ddq: Option<&mut [f64]>,
+        mut dddq: Option<&mut [f64]>,
+    ) -> Result<(), crate::diag::PathError> {
+        {
+            let mut buffers = Vec::with_capacity(4);
+            buffers.push(&*q);
+            if let Some(buffer) = dq.as_deref() {
+                buffers.push(buffer);
+            }
+            if let Some(buffer) = ddq.as_deref() {
+                buffers.push(buffer);
+            }
+            if let Some(buffer) = dddq.as_deref() {
+                buffers.push(buffer);
+            }
+            self.check_output_len(s, &buffers)?;
+        }
+
+        let mut scratch = self.scratch();
+        scratch.q_jet.resize(self.dim, CoppJet3::default());
+
+        for (col, &s_value) in s.iter().enumerate() {
+            let seed = CoppJet3::from(Jet3::seed(s_value));
+            // SAFETY: The C ABI contract requires the callback to remain valid
+            // until `copp_path_free` and to write exactly `dim` `CoppJet3`
+            // values into `q`.
+            let status = unsafe {
+                (self.evaluate)(self.user_data, self.dim, seed, scratch.q_jet.as_mut_ptr())
+            };
+            CoppCallbackPathEvaluator2nd::callback_status(status)?;
+
+            for row in 0..self.dim {
+                let idx = row + col * self.dim;
+                let jet = scratch.q_jet[row];
+                q[idx] = jet.v;
+                if let Some(buffer) = dq.as_deref_mut() {
+                    buffer[idx] = jet.d1;
+                }
+                if let Some(buffer) = ddq.as_deref_mut() {
+                    buffer[idx] = jet.d2;
+                }
+                if let Some(buffer) = dddq.as_deref_mut() {
+                    buffer[idx] = jet.d3;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl PathEvaluator2nd for CoppParametricPathEvaluator {
+    #[inline(always)]
+    fn dim(&self) -> usize {
+        self.dim
+    }
+
+    fn evaluate_q(&self, s: &[f64], q: &mut [f64]) -> Result<(), crate::diag::PathError> {
+        self.evaluate_common(s, q, None, None, None)
+    }
+
+    fn evaluate_up_to_2nd(
+        &self,
+        s: &[f64],
+        q: &mut [f64],
+        dq: &mut [f64],
+        ddq: &mut [f64],
+    ) -> Result<(), crate::diag::PathError> {
+        self.evaluate_common(s, q, Some(dq), Some(ddq), None)
+    }
+}
+
+impl PathEvaluator3rd for CoppParametricPathEvaluator {
+    fn evaluate_up_to_3rd(
+        &self,
+        s: &[f64],
+        q: &mut [f64],
+        dq: &mut [f64],
+        ddq: &mut [f64],
+        dddq: &mut [f64],
+    ) -> Result<(), crate::diag::PathError> {
+        self.evaluate_common(s, q, Some(dq), Some(ddq), Some(dddq))
+    }
 }
 
 struct CoppCallbackPathEvaluator2nd {
@@ -540,6 +730,94 @@ pub unsafe extern "C" fn copp_path_from_waypoints(
         // `options` to be valid for the duration of this call.
         let cfg = unsafe { options.to_spline_config()? };
         let path = Path::from_waypoints_view(waypoints.as_view(), cfg)
+            .map_err(|error| CoppStatus::from(&error))?;
+        let path = Box::new(CoppPathInner { path });
+
+        // SAFETY: Same checked output location as above.
+        unsafe {
+            out_path.write(Box::into_raw(path).cast::<CoppPath>());
+        }
+        Ok(CoppStatus::Ok)
+    })) {
+        Ok(Ok(status)) | Ok(Err(status)) => status.into_ffi_status(),
+        Err(payload) => panic_to_status(payload).into_ffi_status(),
+    }
+}
+
+/// Build a path from a scalar-parametric C callback.
+///
+/// COPP calls `evaluate` once per path sample with a seeded [`CoppJet3`] value
+/// for `s`. The callback writes `dim` output entries describing only `q(s)`;
+/// the returned `CoppJet3` derivative fields provide `dq`, `ddq`, and `dddq`.
+/// Use the inline helpers in `copp/path.h` such as `copp_add`, `copp_mul`, and
+/// `copp_sin` to write formulas without hand-differentiating them.
+///
+/// The resulting path supports position, second-order, and third-order
+/// evaluation and can be sampled by `copp_robot_sample_path_2nd` or
+/// `copp_robot_sample_path_3rd`.
+///
+/// The callback pointer and `user_data` are borrowed by the created path and
+/// must remain valid until `copp_path_free` is called. Calls into the callback
+/// are serialized per path handle.
+///
+/// On success, `*out_path` receives a non-null handle that must be released
+/// with `copp_path_free`.
+///
+/// # Example
+/// The example below builds a one-dimensional `q(s) = sin(2*pi*s)` path.
+///
+/// ```c
+/// static enum CoppStatus eval_path_parametric(
+///     void *user_data,
+///     size_t dim,
+///     struct CoppJet3 s,
+///     struct CoppJet3 *q)
+/// {
+///     (void)user_data;
+///     if (dim != 1 || q == NULL) {
+///         return COPP_STATUS_INVALID_ARGUMENT;
+///     }
+///     q[0] = copp_sin(copp_mul_f64(s, 6.28318530717958647692));
+///     return COPP_STATUS_OK;
+/// }
+///
+/// struct CoppPath *path = NULL;
+/// check(copp_path_from_parametric(1, 0.0, 1.0, eval_path_parametric, NULL, &path));
+/// ```
+///
+/// # Safety
+/// `evaluate` must be non-null and valid until `copp_path_free`.
+/// `user_data` must remain valid for all callback calls. `out_path` must be
+/// valid for one `CoppPath*` write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn copp_path_from_parametric(
+    dim: usize,
+    s_min: f64,
+    s_max: f64,
+    evaluate: CoppPathParametricFn,
+    user_data: *mut c_void,
+    out_path: *mut *mut CoppPath,
+) -> CoppStatus {
+    crate::ffi::c::core::status::clear_last_error();
+    if out_path.is_null() {
+        return CoppStatus::NullPointer.into_ffi_status();
+    }
+
+    // SAFETY: `out_path` was checked for null above and is expected to be valid
+    // for one pointer write by the C ABI contract.
+    unsafe {
+        out_path.write(ptr::null_mut());
+    }
+
+    match catch_unwind(AssertUnwindSafe(|| {
+        let evaluate = evaluate.ok_or(CoppStatus::NullPointer)?;
+        let evaluator = CoppParametricPathEvaluator {
+            dim,
+            evaluate,
+            user_data,
+            scratch: Mutex::new(CallbackScratch::default()),
+        };
+        let path = Path::from_evaluator_3rd(evaluator, s_min, s_max)
             .map_err(|error| CoppStatus::from(&error))?;
         let path = Box::new(CoppPathInner { path });
 
@@ -1079,7 +1357,7 @@ pub unsafe extern "C" fn copp_path_free(path: *mut CoppPath) {
     }
 
     // SAFETY: The C ABI contract requires `path` to come from `Box::into_raw`
-    // in `copp_path_from_waypoints` and to be freed at most once.
+    // in this module and to be freed at most once.
     unsafe {
         drop(Box::from_raw(path.cast::<CoppPathInner>()));
     }

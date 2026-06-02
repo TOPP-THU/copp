@@ -2,7 +2,7 @@
 
 These examples mirror the open-source algorithm examples in the repository where the C ABI currently exposes the same solver. They use the same analytic Lissajous path, `N = 1001` station grid, symmetric axis limits `[-1, 1]`, solver objectives, and TOPP3/COPP3 setup flow.
 
-The examples use callback-backed paths so their output can match the native parametric-path examples exactly. C users do not need automatic differentiation for ordinary usage: if your path is available as waypoints, use `copp_path_from_waypoints` instead. COPP will build a spline path and the same `copp_robot_sample_path_2nd` / `copp_robot_sample_path_3rd` calls used in these examples will sample the required derivatives from that spline.
+The examples use callback-backed paths so their output can match the native parametric-path examples exactly. If your path is available as a scalar formula, `copp_path_from_parametric` lets you write `q(s)` with `CoppJet3` helpers and have COPP propagate derivatives up to third order. If your path is available as waypoints, use `copp_path_from_waypoints`; COPP will build a spline path and the same `copp_robot_sample_path_2nd` / `copp_robot_sample_path_3rd` calls used in these examples will sample the required derivatives from that spline.
 
 Minimal waypoint construction:
 

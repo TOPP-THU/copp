@@ -1,0 +1,11 @@
+<productinfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:noNamespaceSchemaLocation="optional">
+    <!-- info.xml file for COPP MATLAB documentation. -->
+    <!-- MATLAB requires the following elements in this order. -->
+    <matlabrelease>R2024b</matlabrelease>
+    <name>COPP MATLAB</name>
+    <type>toolbox</type>
+    <icon></icon>
+    <help_location>docs/html</help_location>
+    <help_contents_icon></help_contents_icon>
+</productinfo>

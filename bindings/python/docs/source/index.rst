@@ -1,7 +1,8 @@
 copp-py Python Documentation
-=============================
+============================
 
 ``copp_py`` is the Python interface to the COPP path-parameterization core.
+Most examples import it as ``import copp_py as copp`` for a shorter local alias.
 It converts a geometric path
 
 .. math::

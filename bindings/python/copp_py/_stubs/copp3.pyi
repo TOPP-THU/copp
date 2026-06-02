@@ -112,7 +112,6 @@ class Copp3Problem:
         """Rebuild the Rust COPP3 problem and refresh jerk linearization."""
         ...
 
-
 def copp3_socp(
     problem: Copp3Problem,
     options: ClarabelOptions | None = None,
@@ -137,4 +136,3 @@ def copp3_socp_expert(
     ``profile``, ``objective_value``, and ``objective_terms`` are ``None``.
     """
     ...
-

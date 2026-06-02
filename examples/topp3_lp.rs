@@ -1,4 +1,4 @@
-//! This example uses [`topp3_lp`] to convert an analytic path into a third-order
+﻿//! This example uses [`topp3_lp`] to convert an analytic path into a third-order
 //! time-optimal trajectory whose axial velocity, acceleration, and jerk all stay
 //! within `[-1, 1]`.
 

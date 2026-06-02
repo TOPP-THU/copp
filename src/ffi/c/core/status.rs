@@ -352,6 +352,7 @@ impl From<&PathError> for CoppStatus {
             PathError::OutOfRangeS { .. } => Self::PathOutOfRangeS,
             PathError::UnsupportedBoundary { .. } => Self::PathUnsupportedBoundary,
             PathError::SingularSystem => Self::PathSingularSystem,
+            PathError::EvaluatorError { .. } => Self::SolverOther,
         };
         set_last_error_message(status, error.to_string());
         status

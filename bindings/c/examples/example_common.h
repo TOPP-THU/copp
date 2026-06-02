@@ -13,14 +13,16 @@
  *
  * The C API can model the same path without discretization error by creating
  * a callback-backed `CoppPath`. The callbacks below provide q, dq/ds,
- * d2q/ds2, and d3q/ds3 directly. Keeping this common setup in one header lets
- * each example focus on the solver-specific problem descriptor and options.
+ * d2q/ds2, and d3q/ds3 directly. `copp_path_from_parametric` is also available
+ * when users prefer writing q(s) with `CoppJet3` helpers and automatic
+ * derivative propagation. Keeping this common setup in one header lets each
+ * example focus on the solver-specific problem descriptor and options.
  *
  * For ordinary C users this callback path is only one construction option.
- * If you do not have analytic derivatives or automatic differentiation, pass
- * waypoint columns to `copp_path_from_waypoints` instead. COPP builds a spline
- * path, and the same `copp_robot_sample_path_2nd` / `copp_robot_sample_path_3rd`
- * calls used by these examples can sample derivatives from that spline.
+ * If your path is tabulated instead of analytic, pass waypoint columns to
+ * `copp_path_from_waypoints` instead. COPP builds a spline path, and the same
+ * `copp_robot_sample_path_2nd` / `copp_robot_sample_path_3rd` calls used by
+ * these examples can sample derivatives from that spline.
  */
 
 #include <float.h>

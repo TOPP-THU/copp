@@ -20,12 +20,12 @@ pub use formulation::{
     Topp3Problem,
 };
 pub use path::{
-    CoppPath, CoppPathEvaluate2ndFn, CoppPathEvaluate3rdFn, CoppPathOptions,
-    CoppPathOutOfRangeMode, CoppPathParametrization,
+    CoppJet3, CoppPath, CoppPathEvaluate2ndFn, CoppPathEvaluate3rdFn, CoppPathOptions,
+    CoppPathOutOfRangeMode, CoppPathParametricFn, CoppPathParametrization,
 };
 pub use robot::{CoppInverseDynamicsFn, CoppRobot};
 pub use solver::{
-    Copp2SocpResult, Copp3SocpResult, CoppClarabelDirectSolveMethod,
-    CoppClarabelLinearSolverInfo, CoppClarabelOptions, CoppClarabelSettings,
-    CoppClarabelSolverStatus, CoppReachSet2Result, Topp2RaOptions,
+    Copp2SocpResult, Copp3SocpResult, CoppClarabelDirectSolveMethod, CoppClarabelLinearSolverInfo,
+    CoppClarabelOptions, CoppClarabelSettings, CoppClarabelSolverStatus, CoppReachSet2Result,
+    Topp2RaOptions,
 };

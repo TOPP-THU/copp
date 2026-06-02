@@ -50,7 +50,7 @@ typedef struct Topp2RaOptions {
 /**
  * Write default TOPP2-RA options into `out_options`.
  *
- * \warning Safety
+ * \par Safety
  * `out_options` must be valid for one `Topp2RaOptions` write.
  */
 enum CoppStatus topp2_ra_default_options(struct Topp2RaOptions *out_options);
@@ -76,7 +76,7 @@ enum CoppStatus topp2_ra_default_options(struct Topp2RaOptions *out_options);
  * copp_vec_f64_free(a);
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `problem.robot` must be a non-null handle returned by `copp_robot_create`
  * and must remain valid for the duration of this call.  The robot must not be
  * freed or mutated concurrently during the solve.  `out_a` must be valid for
@@ -130,7 +130,7 @@ typedef struct CoppReachSet2Result {
  * copp_reach_set2_result_free(reach);
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `problem.robot` must be a non-null handle returned by `copp_robot_create`
  * and must remain valid for the duration of this call.  The robot must not be
  * freed or mutated concurrently.  `out_result` must be valid for one
@@ -163,7 +163,7 @@ enum CoppStatus copp_reach_set2_backward(struct Topp2Problem problem,
  * copp_reach_set2_result_free(reach);
  * ```
  *
- * \warning Safety
+ * \par Safety
  * `problem.robot` must be a non-null handle returned by `copp_robot_create`
  * and must remain valid for the duration of this call.  The robot must not be
  * freed or mutated concurrently.  `out_result` must be valid for one
@@ -176,7 +176,7 @@ enum CoppStatus copp_reach_set2_bidirectional(struct Topp2Problem problem,
 /**
  * Release a reachable-set result returned by COPP.
  *
- * \warning Safety
+ * \par Safety
  * `result` must either be empty/null or have been returned by a successful
  * `copp_reach_set2_backward` / `copp_reach_set2_bidirectional` call.  Passing
  * arbitrary pointers or modified capacity fields is invalid.

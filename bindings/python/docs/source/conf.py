@@ -2,20 +2,13 @@
 
 from __future__ import annotations
 
-import importlib.util
-import os
 import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[4]
 PYTHON_SOURCE = ROOT / "bindings" / "python"
-
-# Prefer an installed wheel/editable install so autodoc imports the compiled
-# extension that matches the package. Fall back to the source facade only when
-# no installed package is visible, or when explicitly requested.
-if os.environ.get("COPP_PY_DOCS_USE_SOURCE") == "1" or importlib.util.find_spec("copp_py") is None:
-    sys.path.insert(0, str(PYTHON_SOURCE))
+sys.path.insert(0, str(PYTHON_SOURCE))
 
 
 def _read_cargo_package_version() -> str:

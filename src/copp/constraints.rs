@@ -49,8 +49,6 @@
 //!   In practice this means every active scalar RHS must stay strictly positive:
 //!   `amax > 0`, `acc_max > 0`, and `jerk_max > 0` (after sign normalization).
 
-#[cfg(test)]
-use crate::copp::copp2::stable::basic::a_to_b_topp2;
 use crate::diag::{ConstraintError, CoppError};
 use crate::path::Path;
 use core::f64;
@@ -59,6 +57,9 @@ use nalgebra::{Const, DMatrix, DMatrixView, Dyn, Matrix, RowDVector, ViewStorage
 use std::cmp::{max, min};
 use std::collections::BTreeMap;
 use std::ops::Bound::{Excluded, Included, Unbounded};
+
+#[cfg(test)]
+use crate::copp::copp2::stable::basic::a_to_b_topp2;
 
 /// Small numerical threshold used by feasibility and bound computations.
 ///
@@ -1997,7 +1998,7 @@ impl Constraints {
         (amax_stationary, amin_stationary)
     }
 
-    /// Test-only projection of _ori toward feasible profile _fea for TOPP2.
+    /// Test-only projection of `a_ori` toward feasible profile `a_fea` for TOPP2.
     ///
     /// # Returns
     /// Interpolation factor applied to `a_ori` (in `[0, 1]` in typical cases).
@@ -2204,7 +2205,6 @@ impl Constraints {
             }
         }
     }
-
 }
 
 /// The mode for updating valid rows.

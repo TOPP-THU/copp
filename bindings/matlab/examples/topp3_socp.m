@@ -1,0 +1,39 @@
+%TOPP3_SOCP Third-order SOCP path parameterization example.
+%
+% This mirrors examples/topp3_socp.rs: N=1001 samples of the 3-axis path,
+% velocity/acceleration/jerk limits in [-1,1], a TOPP2-RA seed a(s), and two
+% linearized TOPP3-SOCP solves.
+
+ExampleCommon.setup_path();
+
+% 1) Build the analytic path, station grid, and third-order robot limits.
+ctx = ExampleCommon.third_order_context();
+
+% 2) Build a reference a(s) profile for third-order linearization.
+a_seed = ExampleCommon.solve_topp2_seed(ctx.robot, ctx.n);
+options = copp.solver.topp3_socp.Options();
+
+% 3) First TOPP3-SOCP solve around the TOPP2-RA seed.
+problem1 = copp.solver.topp3_socp.Problem( ...
+    ctx.robot, ...
+    a_seed, ...
+    idx_s_start=1, ...
+    a_boundary=ctx.a_boundary, ...
+    b_boundary=ctx.b_boundary, ...
+    num_stationary_max=ctx.num_stationary_max);
+profile1 = copp.solver.topp3_socp.solve(problem1, options);
+[t_final1, ~, s_t1] = ExampleCommon.postprocess_topp3(ctx, profile1);
+ExampleCommon.print_third_order("TOPP3-SOCP first iteration", ctx, t_final1, profile1, s_t1);
+
+% 4) Second TOPP3-SOCP solve around the first profile's a(s).
+problem2 = copp.solver.topp3_socp.Problem( ...
+    ctx.robot, ...
+    profile1.a, ...
+    idx_s_start=1, ...
+    a_boundary=ctx.a_boundary, ...
+    b_boundary=ctx.b_boundary, ...
+    num_stationary_max=ctx.num_stationary_max);
+profile2 = copp.solver.topp3_socp.solve(problem2, options);
+[t_final2, ~, s_t2] = ExampleCommon.postprocess_topp3(ctx, profile2);
+fprintf("---------\n");
+ExampleCommon.print_third_order("TOPP3-SOCP second iteration", ctx, t_final2, profile2, s_t2, t_final1);
