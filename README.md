@@ -1,6 +1,7 @@
 # COPP
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE) [![Website](https://img.shields.io/badge/website-copp.pro-2ff0d8)](https://copp.pro/) [![Docs](https://img.shields.io/badge/docs-docs.copp.pro-1f6feb)](https://docs.copp.pro/) [![Crates.io](https://img.shields.io/crates/v/copp.svg?color=b7410e)](https://crates.io/crates/copp)  [![PyPI](https://img.shields.io/pypi/v/copp-py.svg?color=3A6DA8)](https://pypi.org/project/copp-py/)
+
 [![Rust](https://img.shields.io/badge/Rust-native-b7410e)](https://docs.rs/copp/latest/copp/) [![C](https://img.shields.io/badge/C-ABI-a8b9cc)](bindings/c/README.md) [![Python](https://img.shields.io/badge/Python-bindings-ffd43b)](bindings/python/README.md) [![C++](https://img.shields.io/badge/C%2B%2B-bindings-00599c)](bindings/cpp/README.md) [![MATLAB](https://img.shields.io/badge/MATLAB-bindings-e16737)](bindings/matlab/README.md)
 
 ## <font color="#C00000">C</font>onvex-<font color="#C00000">O</font>bjective <font color="#C00000">P</font>ath <font color="#C00000">P</font>arameterization
