@@ -48,8 +48,24 @@ mex_args = [{'-R2018a'}, ...
 % On Linux, statically link libstdc++ to avoid GLIBCXX version conflicts
 % with MATLAB's bundled libstdc++.so
 if isunix && ~ismac
-    mex_args = [mex_args, {'CXXFLAGS="$CXXFLAGS -static-libstdc++\"'}];
+    % Append -static-libstdc++ to CXXFLAGS in the environment so mex
+    % receives separate tokens rather than a single quoted arg.
+    origCXX = getenv('CXXFLAGS');
+    if isempty(origCXX)
+        newCXX = '-static-libstdc++';
+    else
+        newCXX = [origCXX ' -static-libstdc++'];
+    end
+    setenv('CXXFLAGS', newCXX);
 end
+
+% Debug: print the mex arguments so CI logs show what will be passed.
+disp('mex will be called with arguments:');
+for k = 1:numel(mex_args)
+    disp(['  ', mex_args{k}]);
+end
+
+mex(mex_args{:});
 
 mex(mex_args{:});
 
