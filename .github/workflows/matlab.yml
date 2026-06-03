@@ -36,21 +36,21 @@ jobs:
             supported_win64: false
             supported_mac: false
             supported_glnxa64: true
-          # - os: windows-2022
-          #   platform: windows-x86_64
-          #   supported_win64: true
-          #   supported_mac: false
-          #   supported_glnxa64: false
-          # - os: macos-15
-          #   platform: macos-aarch64
-          #   supported_win64: false
-          #   supported_mac: true
-          #   supported_glnxa64: false
-          # - os: macos-15-intel
-          #   platform: macos-x86_64
-          #   supported_win64: false
-          #   supported_mac: true
-          #   supported_glnxa64: false
+          - os: windows-2022
+            platform: windows-x86_64
+            supported_win64: true
+            supported_mac: false
+            supported_glnxa64: false
+          - os: macos-15
+            platform: macos-aarch64
+            supported_win64: false
+            supported_mac: true
+            supported_glnxa64: false
+          - os: macos-15-intel
+            platform: macos-x86_64
+            supported_win64: false
+            supported_mac: true
+            supported_glnxa64: false
     env:
       COPP_MATLAB_PLATFORM: ${{ matrix.platform }}
       COPP_MATLAB_SUPPORT_WIN64: ${{ matrix.supported_win64 }}
@@ -106,6 +106,9 @@ jobs:
 
       - name: Build, package, and smoke test MATLAB toolbox
         uses: matlab-actions/run-command@v3
+        env:
+          LD_PRELOAD: /usr/lib/x86_64-linux-gnu/libstdc++.so.6
+          LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH}
         with:
           command: |
             repo = string(pwd);
