@@ -32,17 +32,17 @@ The algorithmic background, open-source algorithm availability, benchmark tables
 
 ## API Availability
 
-| Problem class | C++ API |
-|---|---|
+| Problem class  | C++ API                                                                                                                                            |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Core utilities | `copp::version`, `copp::Error`, `copp::Expected`, `copp::Span`, `copp::Matrix`, `copp::MatrixView`, `copp::MatrixRef`, boundary and interval types |
-| Path | waypoint splines, scalar-parametric `Jet3` paths, batch 2nd/3rd-order evaluator paths, derivative evaluation |
-| Robot | station grids, path sampling, velocity/acceleration/jerk/torque limits, raw constraints, inverse-dynamics callbacks |
-| TOPP2 | `copp::solver::topp2_ra`, `copp::solver::reach_set2`, TOPP2 interpolation helpers |
-| COPP2 | `copp::solver::copp2_socp`, objective descriptors, expert results |
-| TOPP3 | `copp::solver::topp3_lp`, `copp::solver::topp3_socp`, TOPP3 interpolation helpers |
-| COPP3 | `copp::solver::copp3_socp`, objective descriptors, expert results |
-| Clarabel | raw `copp::clarabel::Settings`, `copp::clarabel::Options`, solver status, residuals, linear-solver information |
-| Eigen | optional adapters in `copp/eigen.hpp` for borrowing Eigen vectors/matrices and mapping returned `copp::Matrix` values |
+| Path           | waypoint splines, scalar-parametric `Jet3` paths, batch 2nd/3rd-order evaluator paths, derivative evaluation                                       |
+| Robot          | station grids, path sampling, velocity/acceleration/jerk/torque limits, raw constraints, inverse-dynamics callbacks                                |
+| TOPP2          | `copp::solver::topp2_ra`, `copp::solver::reach_set2`, TOPP2 interpolation helpers                                                                  |
+| COPP2          | `copp::solver::copp2_socp`, objective descriptors, expert results                                                                                  |
+| TOPP3          | `copp::solver::topp3_lp`, `copp::solver::topp3_socp`, TOPP3 interpolation helpers                                                                  |
+| COPP3          | `copp::solver::copp3_socp`, objective descriptors, expert results                                                                                  |
+| Clarabel       | raw `copp::clarabel::Settings`, `copp::clarabel::Options`, solver status, residuals, linear-solver information                                     |
+| Eigen          | optional adapters in `copp/eigen.hpp` for borrowing Eigen vectors/matrices and mapping returned `copp::Matrix` values                              |
 
 Runnable examples are in [examples](examples/). They are built as CMake targets named `example_*`.
 
@@ -284,6 +284,7 @@ double q0_mid = out.q(0, 1);
 
 Use `copp::SplineConfig` when you need a non-default spline range, clamping policy, order, or endpoint derivative states. Boundary derivative matrices use shape `(dim, m)` where `m = (order - 1) / 2`; column `r` stores the `(r + 1)`-th derivative at that endpoint. Leaving `start_state` or `end_state` empty means zero boundary derivatives.
 
+{% raw %}
 ```cpp
 copp::SplineConfig config;
 config.order = 3;
@@ -292,6 +293,7 @@ config.end_state = copp::Matrix::from_columns({{2.0}});
 
 auto path = copp::Path::from_waypoints({{0.0}, {1.0}}, config);
 ```
+{% endraw %}
 
 Scalar-parametric paths use `copp::Jet3` to propagate derivatives up to third order through ordinary arithmetic.
 
@@ -382,14 +384,14 @@ Raw constraints follow the Rust/Python mathematical convention:
 
 ## Solver Namespaces
 
-| Namespace | Order | Objective | Backend | Typical use |
-|---|---:|---|---|---|
-| `copp::solver::topp2_ra` | 2 | time | reachability analysis | fast second-order time-optimal planning |
-| `copp::solver::reach_set2` | 2 | none | reachable set | second-order feasibility diagnostics |
-| `copp::solver::copp2_socp` | 2 | convex | Clarabel SOCP | conic optimization and expert diagnostics |
-| `copp::solver::topp3_lp` | 3 | time | Clarabel LP | linearized third-order baseline |
-| `copp::solver::topp3_socp` | 3 | time | Clarabel SOCP | iterative third-order convex refinement |
-| `copp::solver::copp3_socp` | 3 | convex | Clarabel SOCP | third-order convex-objective conic optimization |
+| Namespace                  | Order | Objective | Backend               | Typical use                                     |
+| -------------------------- | ----: | --------- | --------------------- | ----------------------------------------------- |
+| `copp::solver::topp2_ra`   |     2 | time      | reachability analysis | fast second-order time-optimal planning         |
+| `copp::solver::reach_set2` |     2 | none      | reachable set         | second-order feasibility diagnostics            |
+| `copp::solver::copp2_socp` |     2 | convex    | Clarabel SOCP         | conic optimization and expert diagnostics       |
+| `copp::solver::topp3_lp`   |     3 | time      | Clarabel LP           | linearized third-order baseline                 |
+| `copp::solver::topp3_socp` |     3 | time      | Clarabel SOCP         | iterative third-order convex refinement         |
+| `copp::solver::copp3_socp` |     3 | convex    | Clarabel SOCP         | third-order convex-objective conic optimization |
 
 `topp2_ra` solves second-order time-optimal problems and returns an accepted `std::vector<double>` profile `a`. Use `reach_set2` when reachable intervals themselves are the main output rather than the recovered profile.
 
@@ -490,7 +492,9 @@ auto waypoints = copp::Matrix::from_columns({
 });
 ```
 
+{% raw %}
 `Path::from_waypoints({{...}, {...}})` uses waypoint-list notation: each inner list is one waypoint vector. If you pass a `MatrixView` instead, the matrix shape is `(dim x n_points)`, where each column is one waypoint.
+{% endraw %}
 
 `copp::MatrixView` is a borrowed input view. It accepts column-major, row-major, and strided column-major layouts. Column-major input is the zero-copy fast path. Row-major input may be copied once before entering the Rust core, depending on the operation.
 
@@ -518,6 +522,7 @@ auto q_eigen = copp::eigen::map(out.q);
 
 The default C++ API throws `copp::Error`. It carries a machine-readable `copp::Status` and an owned diagnostic message.
 
+{% raw %}
 ```cpp
 try
 {
@@ -528,9 +533,11 @@ catch (const copp::Error &error)
     std::cerr << error.what() << "\n";
 }
 ```
+{% endraw %}
 
 Selected APIs provide no-throw overloads with `copp::no_throw` as the final argument. The function name remains the same, but the return type becomes `copp::Expected<T>`. This is a status-return convenience API implemented by catching exceptions from the normal throwing API; it is not a promise that the C++ binding can be compiled with C++ exceptions disabled.
 
+{% raw %}
 ```cpp
 auto result = copp::Path::from_waypoints({{0.0}, {1.0}}, copp::no_throw);
 if (!result)
@@ -541,6 +548,7 @@ if (!result)
 
 auto path = std::move(result).value();
 ```
+{% endraw %}
 
 Callbacks may throw `copp::Error` or another `std::exception`. The facade converts callback failures into COPP diagnostics when they cross back into Rust. For predictable diagnostics, prefer throwing `copp::Error` with a specific status when the callback detects invalid user data.
 
@@ -554,17 +562,17 @@ Use the umbrella header for application code:
 
 Public headers are hand-written and live under `bindings/cpp/include/copp/`. Generated Rust-C++ bridge headers are private implementation details and are not part of the installed user-facing API.
 
-| Header | Purpose |
-|---|---|
-| `copp/copp.hpp` | umbrella header |
-| `copp/core.hpp` | `Span`, `Matrix`, `MatrixView`, `MatrixRef`, `Expected`, `Error`, boundaries, intervals |
-| `copp/path.hpp` | waypoint paths, Jet3 parametric paths, batch evaluator paths |
-| `copp/robot.hpp` | `Robot`, `Constraints`, `ConstraintsRef`, inverse dynamics callbacks |
-| `copp/interpolation.hpp` | TOPP2/TOPP3 `s_to_t`, `t_to_s`, `Profile3rd`, `Profile3rdRef` |
-| `copp/objective.hpp` | `Objective` and `copp::objective::*` factories |
-| `copp/clarabel.hpp` | raw Clarabel settings, options, statuses, solver diagnostics |
-| `copp/eigen.hpp` | optional Eigen adapters |
-| `copp/solver/*.hpp` | TOPP/COPP solver namespaces |
+| Header                   | Purpose                                                                                 |
+| ------------------------ | --------------------------------------------------------------------------------------- |
+| `copp/copp.hpp`          | umbrella header                                                                         |
+| `copp/core.hpp`          | `Span`, `Matrix`, `MatrixView`, `MatrixRef`, `Expected`, `Error`, boundaries, intervals |
+| `copp/path.hpp`          | waypoint paths, Jet3 parametric paths, batch evaluator paths                            |
+| `copp/robot.hpp`         | `Robot`, `Constraints`, `ConstraintsRef`, inverse dynamics callbacks                    |
+| `copp/interpolation.hpp` | TOPP2/TOPP3 `s_to_t`, `t_to_s`, `Profile3rd`, `Profile3rdRef`                           |
+| `copp/objective.hpp`     | `Objective` and `copp::objective::*` factories                                          |
+| `copp/clarabel.hpp`      | raw Clarabel settings, options, statuses, solver diagnostics                            |
+| `copp/eigen.hpp`         | optional Eigen adapters                                                                 |
+| `copp/solver/*.hpp`      | TOPP/COPP solver namespaces                                                             |
 
 ## Package Layout
 

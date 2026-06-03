@@ -6,21 +6,9 @@ on:
       - "**"
     tags:
       - "v*"
-    paths:
-      - "bindings/matlab/**"
-      - "bindings/c/**"
-      - "src/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - ".github/workflows/matlab.yml"
+    # Run on every push to any branch (no path filtering)
   pull_request:
-    paths:
-      - "bindings/matlab/**"
-      - "bindings/c/**"
-      - "src/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - ".github/workflows/matlab.yml"
+    # Run on every pull request (no path filtering)
   workflow_dispatch:
 
 permissions:
@@ -227,3 +215,56 @@ jobs:
             release-artifacts/*.mltbx
             release-artifacts/*.mltbx.sha256
           if-no-files-found: error
+
+  publish-draft:
+    name: Create Draft GitHub Release
+    needs: package
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download MATLAB package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Create or update draft GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $assetPaths = @(
+            Get-ChildItem release-assets -Recurse -File |
+              Where-Object { $_.Name -like "*.mltbx" -or $_.Name -like "*.mltbx.sha256" } |
+              Sort-Object Name |
+              ForEach-Object { $_.FullName }
+          )
+          if ($assetPaths.Count -eq 0) {
+            throw "No release assets were downloaded."
+          }
+
+          $notesFile = "release-notes.md"
+          @'
+          Prebuilt MATLAB toolbox packages are attached below.
+
+          See CHANGELOG.md in this tag for API changes and breaking changes.
+          '@ | Set-Content -Path $notesFile -NoNewline
+
+          gh release view $env:RELEASE_TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            & gh release upload $env:RELEASE_TAG $assetPaths --clobber
+            & gh release edit $env:RELEASE_TAG `
+              --draft `
+              --title $env:RELEASE_TAG `
+              --notes-file $notesFile
+          } else {
+            & gh release create $env:RELEASE_TAG $assetPaths `
+              --draft `
+              --verify-tag `
+              --title $env:RELEASE_TAG `
+              --notes-file $notesFile
+          }

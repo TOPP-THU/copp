@@ -123,6 +123,7 @@ This keeps the public ABI stable whether Eigen is present or disabled.
 
 The primary C++ API throws `copp::Error`:
 
+{% raw %}
 ```cpp
 try {
     auto path = copp::Path::from_waypoints({{0.0}, {1.0}});
@@ -130,10 +131,12 @@ try {
     std::cerr << error.what() << "\n";
 }
 ```
+{% endraw %}
 
 Selected APIs also provide a no-throw overload with `copp::no_throw` as the
 final argument:
 
+{% raw %}
 ```cpp
 auto result = copp::Path::from_waypoints({{0.0}, {1.0}}, copp::no_throw);
 if (!result) {
@@ -143,6 +146,7 @@ if (!result) {
 
 auto path = std::move(result).value();
 ```
+{% endraw %}
 
 The no-throw form uses `copp::Expected<T>`, a small C++17 expected-like type.
 

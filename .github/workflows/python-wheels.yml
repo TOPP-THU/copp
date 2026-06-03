@@ -66,6 +66,27 @@ jobs:
         with:
           python-version: "3.10"
           allow-prereleases: true
+      - name: Pre-pull manylinux image with retries
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          MAX_RETRIES=3
+          IMAGE=quay.io/pypa/manylinux2014_x86_64:latest
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "Attempt $i to pull $IMAGE"
+            if docker pull "$IMAGE"; then
+              echo "Pulled $IMAGE"
+              break
+            else
+              echo "Pull failed"
+              if [ "$i" -lt "$MAX_RETRIES" ]; then
+                sleep $((i * 5))
+              else
+                echo "Failed to pull $IMAGE after $MAX_RETRIES attempts"
+                exit 1
+              fi
+            fi
+          done
       - uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
