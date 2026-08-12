@@ -210,6 +210,27 @@ jobs:
           "$($hash.Hash.ToLower())  $($toolbox.Name)" |
             Set-Content -Path "$($toolbox.FullName).sha256" -NoNewline
 
+      # Must run after "Generate SHA256", which selects the single .mltbx by wildcard.
+      # The stable name lets install_copp() resolve the newest release from
+      # /releases/latest/download/ without calling api.github.com. The tagged asset
+      # remains the immutable copy; this one is overwritten by every release.
+      - name: Add stable-name toolbox copy
+        shell: pwsh
+        run: |
+          $taggedName = "$env:COPP_MATLAB_PACKAGE_NAME.mltbx"
+          $taggedPath = Join-Path "release-artifacts" $taggedName
+          if (-not (Test-Path -LiteralPath $taggedPath)) {
+            throw "Expected MATLAB toolbox was not found: $taggedPath"
+          }
+
+          $stableName = "copp-matlab-$env:COPP_MATLAB_PLATFORM.mltbx"
+          $stablePath = Join-Path "release-artifacts" $stableName
+          Copy-Item -LiteralPath $taggedPath -Destination $stablePath -Force
+
+          $hash = Get-FileHash -LiteralPath $stablePath -Algorithm SHA256
+          "$($hash.Hash.ToLower())  $stableName" |
+            Set-Content -Path "$stablePath.sha256" -NoNewline
+
       - name: Upload MATLAB toolbox artifact
         uses: actions/upload-artifact@v4
         with:

@@ -146,8 +146,14 @@ try
     if isstruct(data) && isfield(data, "tag_name")
         tag = string(data.tag_name);
     end
-catch
-    % The stable latest/download URL can still work without GitHub API access.
+catch err
+    % The stable latest/download URL can still work without GitHub API access,
+    % so this is not fatal. Warn anyway: without the tag the tagged asset names
+    % cannot be built, and a later failure would otherwise look like a missing
+    % release rather than an unreachable API.
+    warning("copp:InstallWarning", ...
+        "Could not query the latest release tag from the GitHub API. Falling back to stable release asset names. Reason: %s", ...
+        err.message);
 end
 end
 
