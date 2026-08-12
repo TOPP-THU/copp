@@ -30,7 +30,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Build source distribution
         uses: PyO3/maturin-action@v1
@@ -40,19 +40,80 @@ jobs:
           args: --out dist
 
       - name: Upload sdist artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: python-sdist
           path: dist/*.tar.gz
           if-no-files-found: error
 
-  build-wheels:
+  build-wheels-linux:
+    name: linux-${{ matrix.arch }}
+    runs-on: ubuntu-24.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-unknown-linux-gnu
+          - arch: aarch64
+            target: aarch64-unknown-linux-gnu
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # The manylinux container ships every supported interpreter, so a single
+      # maturin invocation covers 3.9-3.14 instead of one job per version.
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: ${{ env.MATURIN_VERSION }}
+          command: build
+          target: ${{ matrix.target }}
+          manylinux: "2014"
+          args: >-
+            --release
+            --locked
+            --features python
+            --out dist
+            --compatibility pypi
+            --auditwheel repair
+            --strip
+            -i python3.9
+            -i python3.10
+            -i python3.11
+            -i python3.12
+            -i python3.13
+            -i python3.14
+
+      - name: Upload wheel artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheels-linux-${{ matrix.arch }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  build-wheels-native:
     name: ${{ matrix.platform.name }} / Python ${{ matrix.python-version }}
     runs-on: ${{ matrix.platform.os }}
 
     strategy:
       fail-fast: false
       matrix:
+        platform:
+          - name: macos-x86_64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            extra-args: ""
+          - name: macos-aarch64
+            os: macos-14
+            target: aarch64-apple-darwin
+            extra-args: ""
+          - name: windows-x86_64
+            os: windows-2022
+            target: x86_64-pc-windows-msvc
+            extra-args: "--compatibility pypi --auditwheel repair"
         python-version:
           - "3.9"
           - "3.10"
@@ -60,29 +121,13 @@ jobs:
           - "3.12"
           - "3.13"
           - "3.14"
-        platform:
-          - name: linux-x86_64
-            os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            manylinux: "2014"
-            test-wheel: true
-          - name: linux-aarch64
-            os: ubuntu-24.04
-            target: aarch64-unknown-linux-gnu
-            manylinux: "2014"
-            test-wheel: false
-          - name: windows-x86_64
-            os: windows-2022
-            target: x86_64-pc-windows-msvc
-            manylinux: auto
-            test-wheel: true
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -92,49 +137,180 @@ jobs:
           maturin-version: ${{ env.MATURIN_VERSION }}
           command: build
           target: ${{ matrix.platform.target }}
-          manylinux: ${{ matrix.platform.manylinux }}
           args: >-
             --release
             --locked
             --features python
             --out dist
-            --interpreter ${{ runner.os == 'Linux' && format('python{0}', matrix.python-version) || 'python' }}
-            --compatibility pypi
-            --auditwheel repair
             --strip
+            -i python
+            ${{ matrix.platform.extra-args }}
 
+      # Native runners can exercise the wheel they just produced, so these
+      # platforms need no separate download-and-test job.
       - name: Install wheel
-        if: matrix.platform.test-wheel
         run: |
           python -m pip install --upgrade pip
           python -m pip install numpy pytest
           python -m pip install --no-index --find-links dist --no-deps --force-reinstall copp-py
 
       - name: Run Python tests
-        if: matrix.platform.test-wheel
         run: python -m pytest bindings/python/tests
 
       - name: Upload wheel artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.platform.name }}-py${{ matrix.python-version }}
           path: dist/*.whl
           if-no-files-found: error
 
+  test-linux:
+    name: test linux-${{ matrix.arch }} / Python ${{ matrix.python-version }}
+    needs: build-wheels-linux
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - x86_64
+          - aarch64
+        python-version:
+          - "3.9"
+          - "3.10"
+          - "3.11"
+          - "3.12"
+          - "3.13"
+          - "3.14"
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Download wheels
+        uses: actions/download-artifact@v8
+        with:
+          name: wheels-linux-${{ matrix.arch }}
+          path: dist
+
+      - name: Install wheel
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pytest
+          python -m pip install --no-index --find-links dist --no-deps --force-reinstall copp-py
+
+      - name: Run Python tests
+        run: python -m pytest bindings/python/tests
+
+  check-version:
+    name: Check version matches tag
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Compare tag against pyproject.toml
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}
+        run: |
+          $tagVersion = $env:RELEASE_TAG -replace '^v', ''
+          $match = Select-String -Path pyproject.toml -Pattern '^version\s*=\s*"([^"]+)"' |
+            Select-Object -First 1
+          if (-not $match) {
+            throw "Could not read version from pyproject.toml."
+          }
+          $projectVersion = $match.Matches[0].Groups[1].Value
+          if ($tagVersion -ne $projectVersion) {
+            throw "Tag $env:RELEASE_TAG does not match pyproject.toml version $projectVersion."
+          }
+          Write-Host "Tag $env:RELEASE_TAG matches pyproject.toml version $projectVersion."
+
+  publish-draft:
+    name: Attach Python Distributions to Draft Release
+    needs:
+      - check-version
+      - build-sdist
+      - build-wheels-linux
+      - build-wheels-native
+      - test-linux
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+
+      - name: Attach distributions to draft GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $assetPaths = @(
+            Get-ChildItem release-assets -Recurse -File |
+              Where-Object { $_.Name -like "*.whl" -or $_.Name -like "*.tar.gz" } |
+              Sort-Object Name |
+              ForEach-Object { $_.FullName }
+          )
+          if ($assetPaths.Count -eq 0) {
+            throw "No Python distributions were downloaded."
+          }
+
+          # The C ABI, C++, and MATLAB workflows own the release notes for this
+          # tag, so only upload assets here and never edit the release body.
+          gh release view $env:RELEASE_TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            & gh release upload $env:RELEASE_TAG @assetPaths --clobber
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to upload Python distributions to $env:RELEASE_TAG."
+            }
+          } else {
+            & gh release create $env:RELEASE_TAG @assetPaths `
+              --draft `
+              --verify-tag `
+              --title $env:RELEASE_TAG `
+              --notes "Draft release for $env:RELEASE_TAG."
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to create draft release $env:RELEASE_TAG."
+            }
+          }
+
   publish-pypi:
     name: Publish to PyPI
     needs:
+      - check-version
       - build-sdist
-      - build-wheels
+      - build-wheels-linux
+      - build-wheels-native
+      - test-linux
     if: github.event_name == 'release' && github.event.action == 'published'
     runs-on: ubuntu-24.04
+    environment: pypi
     permissions:
       contents: read
       id-token: write
 
     steps:
       - name: Download distribution artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -143,5 +319,4 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
-          user: __token__
-          password: ${{ secrets.PYPI_API_TOKEN }}
+          skip-existing: true
