@@ -52,3 +52,9 @@ features = ["python"]
 python-source = "bindings/python"
 module-name = "copp_py._native"
 exclude = ["bindings/python/**/*.pdb"]
+
+[tool.maturin.target."x86_64-apple-darwin"]
+macos-deployment-target = "10.13"
+
+[tool.maturin.target."aarch64-apple-darwin"]
+macos-deployment-target = "11.0"

@@ -37,11 +37,13 @@ end
 
 lib_file = nativeLibraryFile(lib_dir, linkage);
 link_inputs = nativeLinkInputs(lib_dir, lib_file, linkage);
+mex_overrides = nativeMexOverrides(linkage);
 
 mex_args = [{'-R2018a'}, ...
     {['-I', include_dir]}, ...
     {src}, ...
     link_inputs(:)', ...
+    mex_overrides(:)', ...
     {'-outdir'}, {out_dir}, ...
     {'-output'}, {'copp_mex'}];
 
@@ -83,11 +85,48 @@ end
 
 function inputs = nativeLinkInputs(lib_dir, lib_file, linkage)
 if strcmp(linkage, 'dynamic') && ~ispc
-    inputs = {['-L', lib_dir], '-lcopp', dynamicRuntimePathFlag()};
+    inputs = {['-L', lib_dir], '-lcopp'};
 else
     inputs = {lib_file};
 end
 inputs = [inputs, nativeSystemLibraries(linkage)];
+end
+
+function overrides = nativeMexOverrides(linkage)
+cxx_flags = {};
+ld_flags = {};
+
+% Keep the MEX compiler and linker aligned with the Rust deployment target.
+% CI sets this to the minimum macOS version supported by the selected MATLAB
+% release; local builds retain the compiler default when it is unset.
+if ismac
+    deployment_target = strtrim(getenv('MACOSX_DEPLOYMENT_TARGET'));
+    if ~isempty(deployment_target)
+        if isempty(regexp(deployment_target, '^\d+(\.\d+){1,2}$', 'once'))
+            error("copp:BuildError", ...
+                "Invalid MACOSX_DEPLOYMENT_TARGET: %s", deployment_target);
+        end
+        deployment_flag = ['-mmacosx-version-min=', deployment_target];
+        cxx_flags{end + 1} = deployment_flag;
+        ld_flags{end + 1} = deployment_flag;
+    end
+end
+
+if strcmp(linkage, 'dynamic') && ~ispc
+    if ismac
+        ld_flags{end + 1} = '-Wl,-rpath,@loader_path';
+    elseif isunix
+        ld_flags{end + 1} = '-Wl,-rpath,\$ORIGIN';
+    end
+end
+
+overrides = {};
+if ~isempty(cxx_flags)
+    overrides{end + 1} = ['CXXFLAGS="$CXXFLAGS ', strjoin(cxx_flags, ' '), '"'];
+end
+if ~isempty(ld_flags)
+    overrides{end + 1} = ['LDFLAGS="$LDFLAGS ', strjoin(ld_flags, ' '), '"'];
+end
 end
 
 function lib_file = nativeLibraryFile(lib_dir, linkage)
@@ -135,16 +174,6 @@ elseif ismac
     name = 'libcopp.dylib';
 else
     name = 'libcopp.so';
-end
-end
-
-function flag = dynamicRuntimePathFlag()
-if ismac
-    flag = 'LDFLAGS="$LDFLAGS -Wl,-rpath,@loader_path"';
-elseif isunix
-    flag = 'LDFLAGS="$LDFLAGS -Wl,-rpath,\$ORIGIN"';
-else
-    flag = '';
 end
 end
 

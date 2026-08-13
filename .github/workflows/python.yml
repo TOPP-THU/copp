@@ -21,7 +21,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-C target-cpu=generic"
-  MATURIN_VERSION: v1.13.3
+  MATURIN_VERSION: v1.14.1
+  RUST_VERSION: 1.97.1
 
 jobs:
   build-sdist:
@@ -30,17 +31,18 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build source distribution
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           maturin-version: ${{ env.MATURIN_VERSION }}
+          rust-toolchain: ${{ env.RUST_VERSION }}
           command: sdist
-          args: --out dist
+          args: --locked --out dist
 
       - name: Upload sdist artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: python-sdist
           path: dist/*.tar.gz
@@ -61,14 +63,15 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # The manylinux container ships every supported interpreter, so a single
       # maturin invocation covers 3.9-3.14 instead of one job per version.
       - name: Build wheels
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           maturin-version: ${{ env.MATURIN_VERSION }}
+          rust-toolchain: ${{ env.RUST_VERSION }}
           command: build
           target: ${{ matrix.target }}
           manylinux: "2014"
@@ -88,7 +91,7 @@ jobs:
             -i python3.14
 
       - name: Upload wheel artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheels-linux-${{ matrix.arch }}
           path: dist/*.whl
@@ -104,14 +107,17 @@ jobs:
         platform:
           - name: macos-x86_64
             os: macos-15-intel
+            arch: X64
             target: x86_64-apple-darwin
             extra-args: ""
           - name: macos-aarch64
-            os: macos-14
+            os: macos-15
+            arch: ARM64
             target: aarch64-apple-darwin
             extra-args: ""
           - name: windows-x86_64
             os: windows-2022
+            arch: X64
             target: x86_64-pc-windows-msvc
             extra-args: "--compatibility pypi --auditwheel repair"
         python-version:
@@ -124,17 +130,25 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Verify runner architecture
+        shell: pwsh
+        run: |
+          if ("${{ runner.arch }}" -ne "${{ matrix.platform.arch }}") {
+            throw "Expected runner architecture ${{ matrix.platform.arch }}, got ${{ runner.arch }}."
+          }
+
       - name: Build wheel
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           maturin-version: ${{ env.MATURIN_VERSION }}
+          rust-toolchain: ${{ env.RUST_VERSION }}
           command: build
           target: ${{ matrix.platform.target }}
           args: >-
@@ -158,7 +172,7 @@ jobs:
         run: python -m pytest bindings/python/tests
 
       - name: Upload wheel artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheels-${{ matrix.platform.name }}-py${{ matrix.python-version }}
           path: dist/*.whl
@@ -190,15 +204,15 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Download wheels
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: wheels-linux-${{ matrix.arch }}
           path: dist
@@ -219,7 +233,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Compare tag against pyproject.toml
         shell: pwsh
@@ -248,16 +262,17 @@ jobs:
       - test-linux
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
+    timeout-minutes: 40
     permissions:
       contents: write
 
     steps:
       - name: Download distribution artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: release-assets
 
-      - name: Attach distributions to draft GitHub Release
+      - name: Wait for draft release and upload Python distributions
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -274,23 +289,25 @@ jobs:
             throw "No Python distributions were downloaded."
           }
 
-          # The C ABI, C++, and MATLAB workflows own the release notes for this
-          # tag, so only upload assets here and never edit the release body.
-          gh release view $env:RELEASE_TAG *> $null
-          if ($LASTEXITCODE -eq 0) {
-            & gh release upload $env:RELEASE_TAG @assetPaths --clobber
-            if ($LASTEXITCODE -ne 0) {
-              throw "Failed to upload Python distributions to $env:RELEASE_TAG."
+          $deadline = (Get-Date).AddMinutes(30)
+          while ($true) {
+            $isDraft = & gh release view $env:RELEASE_TAG --json isDraft --jq ".isDraft" 2>$null
+            if ($LASTEXITCODE -eq 0) {
+              break
             }
-          } else {
-            & gh release create $env:RELEASE_TAG @assetPaths `
-              --draft `
-              --verify-tag `
-              --title $env:RELEASE_TAG `
-              --notes "Draft release for $env:RELEASE_TAG."
-            if ($LASTEXITCODE -ne 0) {
-              throw "Failed to create draft release $env:RELEASE_TAG."
+            if ((Get-Date) -ge $deadline) {
+              throw "Timed out waiting for the C ABI workflow to create draft release $env:RELEASE_TAG."
             }
+            Start-Sleep -Seconds 10
+          }
+
+          if (("$isDraft").Trim() -ne "true") {
+            throw "Release $env:RELEASE_TAG is already published; refusing to overwrite its assets."
+          }
+
+          & gh release upload $env:RELEASE_TAG @assetPaths --clobber
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to upload Python distributions to $env:RELEASE_TAG."
           }
 
   publish-pypi:
@@ -310,13 +327,13 @@ jobs:
 
     steps:
       - name: Download distribution artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
           merge-multiple: true
 
       - name: Publish distributions to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist
           skip-existing: true
