@@ -122,7 +122,7 @@ jobs:
           release: ${{ env.COPP_MATLAB_RELEASE }}
 
       - name: Build, package, and smoke test MATLAB toolbox
-        uses: matlab-actions/run-command@75644028e1e2aa374bbfdc968a65718a178cc264 # v3.2.1
+        uses: matlab-actions/run-command@bfa857648f4895aa98a446fe41c85e0788421ed5 # v3.3.0
         env:
           LD_PRELOAD: /usr/lib/x86_64-linux-gnu/libstdc++.so.6
           LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH}
