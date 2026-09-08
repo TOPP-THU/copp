@@ -294,12 +294,19 @@ fn t_to_s_topp2_core(
 /// $dt = \int_{x_{left}}^{x_{right}} \frac{dx}{\sqrt{c_0 + c_1 x}}$.
 #[inline]
 fn inverse_2order(c0: f64, c1: f64, x_left: f64, dt: f64) -> f64 {
+    // Closed form: x_right = ((sqrt(c0 + c1 x_left) + c1 dt / 2)^2 - c0) / c1.
+    // Expanding the square cancels `c0` analytically, giving
+    //     x_right = x_left + sqrt(c0 + c1 x_left) dt + c1 dt^2 / 4,
+    // which is algebraically identical but free of the catastrophic cancellation
+    // that the un-expanded form suffers when `c1` is tiny compared with `c0`
+    // (e.g. a numerically constant profile whose nodes differ by rounding noise).
+    // The expanded form also degrades gracefully to `x_left + sqrt(c0) dt` as
+    // `c1 -> 0`, so no special-casing of small `c1` is needed.
+    let v_left_sq = c0 + c1 * x_left;
     if dt == 0.0 {
         x_left
-    } else if c1.abs() > f64::EPSILON {
-        (((c0 + c1 * x_left).sqrt() + 0.5 * c1 * dt).powi(2) - c0) / c1
-    } else if c0.abs() > f64::EPSILON {
-        x_left + c0.sqrt() * dt
+    } else if v_left_sq > 0.0 || c1 != 0.0 {
+        x_left + v_left_sq.max(0.0).sqrt() * dt + 0.25 * c1 * dt * dt
     } else {
         f64::INFINITY
     }

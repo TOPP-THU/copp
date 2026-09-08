@@ -381,10 +381,10 @@ fn inverse_rsrqp(c0: f64, c1: f64, c2: f64, x_left: f64, dt: f64) -> f64 {
         (c1 + delta.sqrt()
             * ((-c2).sqrt() * dt + ((-2.0 * c2 * x_left - c1) / delta.sqrt()).asin()).sin())
             / (-2.0 * c2)
-    } else if c1.abs() > f64::EPSILON {
-        ((0.5 * c1 * dt + (c1 * x_left + c0).sqrt()).powi(2) - c0) / c1
-    } else if c0.abs() > f64::EPSILON {
-        c0.sqrt() * dt + x_left
+    } else if c1 != 0.0 || c0 > 0.0 {
+        // Expanded, cancellation-free form of ((c1 dt / 2 + sqrt(c1 x_left + c0))^2 - c0) / c1;
+        // see `inverse_2order` in the second-order interpolation module.
+        x_left + (c1 * x_left + c0).max(0.0).sqrt() * dt + 0.25 * c1 * dt * dt
     } else {
         f64::INFINITY
     }
