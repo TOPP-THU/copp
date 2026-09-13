@@ -12,6 +12,10 @@ This changelog follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - [C++] Added the initial C++ wrapper, including public headers, CMake integration, examples, tests, and Doxygen documentation for the supported COPP API surface.
 - [MATLAB] Added the initial MATLAB wrapper, including the `+copp` package, MEX build flow, examples, tests, and generated documentation sources.
 
+### Fixed
+
+- [Rust] Fixed catastrophic cancellation in the second-order inverse time interpolation kernel used by `t_to_s_topp2` (and the matching `c2 = 0` branch of the third-order kernel used by `t_to_s_topp3`). When the per-interval slope of `a(s)` is tiny but nonzero (for example a numerically constant profile whose adjacent nodes differ by one ulp), the closed form `((sqrt(a0) + c1*dt/2)^2 - a0) / c1` lost all significant digits and produced sampled `s(t)` errors of about 0.01 mm that appeared as spurious acceleration spikes on uniformly resampled trajectories. The kernel now evaluates the algebraically equivalent, cancellation-free form `sqrt(a0)*dt + c1*dt^2/4`.
+
 ## [0.2.1]
 
 ### Added
