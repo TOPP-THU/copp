@@ -15,6 +15,7 @@ This changelog follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 ### Fixed
 
 - [Rust] Fixed catastrophic cancellation in the second-order inverse time interpolation kernel used by `t_to_s_topp2` (and the matching `c2 = 0` branch of the third-order kernel used by `t_to_s_topp3`). When the per-interval slope of `a(s)` is tiny but nonzero (for example a numerically constant profile whose adjacent nodes differ by one ulp), the closed form `((sqrt(a0) + c1*dt/2)^2 - a0) / c1` lost all significant digits and produced sampled `s(t)` errors of about 0.01 mm that appeared as spurious acceleration spikes on uniformly resampled trajectories. The kernel now evaluates the algebraically equivalent, cancellation-free form `sqrt(a0)*dt + c1*dt^2/4`.
+- [Rust] Fixed TOPP2-RA reachable-set construction clamping the squared path speed `a = sdot^2` at `1e6`. The incremental 2-D LP that propagates `a` between stations started from the fixed box bound `LP_BOUND = 1e6` as a stand-in for "+infinity"; whenever the true bound exceeded `1e6` (for example CNC feeds above 1000 mm/s with the path parameter in millimetres) the LP could only move downwards, so the speed profile was capped at `a = 1e6`, lost its cruise segment, and oscillated. The LP now starts from a per-station upper bound derived from the first-order and acceleration rows themselves, so the result is independent of the units and scale of `a`.
 
 ## [0.2.1]
 

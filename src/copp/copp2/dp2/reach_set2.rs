@@ -24,7 +24,7 @@ use crate::diag::{
     check_abs_rel_tol, check_strictly_positive, format_duration_human,
 };
 use crate::math::numerical::{
-    LP_BOUND, Lp2dWarmStart, LpToleranceOptions, lp_1d, lp_2d_incre_max_y, normalize_lp2d,
+    EPS_ZERO, LP_BOUND, Lp2dWarmStart, LpToleranceOptions, lp_1d, lp_2d_incre_max_y, normalize_lp2d,
 };
 use core::f64;
 
@@ -211,6 +211,7 @@ fn reach_set2_core<const BIDIRECTION: bool>(
         a_b.clear();
         a_b.push((1.0, 0.0, a_max_next));
         a_b.push((-1.0, 0.0, -a_min_next));
+        a_b.push((0.0, 1.0, problem.constraints.amax_unchecked(idx_s)));
         problem.constraints.fill_acc_topp2::<true>(&mut a_b, idx_s);
         // a_b.0 * a[k+1] + a_b.1 * a[k] <= a_b.2
 
@@ -403,6 +404,7 @@ fn reach_set2_core<const BIDIRECTION: bool>(
             a_b.clear();
             a_b.push((1.0, 0.0, a_max_prev));
             a_b.push((-1.0, 0.0, -a_min_prev));
+            a_b.push((0.0, 1.0, problem.constraints.amax_unchecked(idx_s)));
             problem
                 .constraints
                 .fill_acc_topp2::<false>(&mut a_b, idx_s_start + k - 1);
@@ -600,18 +602,37 @@ fn reach_set2_core<const BIDIRECTION: bool>(
 
 /// Backward propagation to compute feasible `a[k]` bounds at the current step given the next step's `a[k+1]=a_next` bounds.
 /// a_b.0 * a[k+1] + a_b.1 * a[k] <= a_b.2
+/// The first three rows are `a_next <= a_max_next`, `-a_next <= -a_min_next` and `a[k] <= amax[k]`.
 /// Returns (a_max_curr, a_min_curr)
 fn backward_bound_a_next<const MAX: bool, const MIN: bool>(
     a_b: &mut [(f64, f64, f64)],
     a_next_mid: f64,
     lp_fea_tol: f64,
 ) -> (f64, f64) {
+    normalize_lp2d(a_b);
+    // The incremental LP only moves the initial point down along `a[k]`, so it must start
+    // from a value no smaller than the true maximum. Bound `a[k]` from above using every
+    // row with a positive `a[k]` coefficient over the `a_next` box; `LP_BOUND` is only a
+    // fallback for the degenerate case where nothing bounds `a[k]`.
+    let a_next_abs = a_b[0].2.abs().max(a_b[1].2.abs());
+    let a_curr_upper = a_b
+        .iter()
+        .skip(2)
+        .filter(|&&(_, b, _)| b > EPS_ZERO)
+        .map(|&(a, b, c)| (c + a.abs() * a_next_abs) / b)
+        .fold(f64::INFINITY, f64::min);
     let warm_start = Lp2dWarmStart {
-        x0: (a_next_mid, LP_BOUND),
-        skip: 2,
+        x0: (
+            a_next_mid,
+            if a_curr_upper.is_finite() {
+                a_curr_upper
+            } else {
+                LP_BOUND
+            },
+        ),
+        skip: 3,
     };
 
-    normalize_lp2d(a_b);
     let a_curr_max = if MAX {
         let (_, a_curr_max) = lp_2d_incre_max_y::<_, false>(
             a_b,
