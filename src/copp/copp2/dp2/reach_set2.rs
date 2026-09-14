@@ -214,6 +214,7 @@ fn reach_set2_core<const BIDIRECTION: bool>(
         a_b.push((0.0, 1.0, problem.constraints.amax_unchecked(idx_s)));
         problem.constraints.fill_acc_topp2::<true>(&mut a_b, idx_s);
         // a_b.0 * a[k+1] + a_b.1 * a[k] <= a_b.2
+        normalize_lp2d(&mut a_b);
 
         let a_next_mid = 0.5 * (a_max_next + a_min_next);
         let (a_max_curr, a_min_curr) = match approx_order(
@@ -333,10 +334,14 @@ fn reach_set2_core<const BIDIRECTION: bool>(
             );
         }
 
+        // The interval endpoints are computed from the next interval by subtraction, so
+        // rounding is at the scale of `a_max_next`, not of the endpoints themselves.
         match approx_order(
             *a_max_k,
             *a_min_k,
-            options.a_cmp_abs_tol,
+            options
+                .a_cmp_abs_tol
+                .max(options.a_cmp_rel_tol * a_max_next.abs()),
             options.a_cmp_rel_tol,
         ) {
             ApproxOrdering::Less => {
@@ -409,6 +414,7 @@ fn reach_set2_core<const BIDIRECTION: bool>(
                 .constraints
                 .fill_acc_topp2::<false>(&mut a_b, idx_s_start + k - 1);
             // a_b.0 * a[k-1] + a_b.1 * a[k] <= a_b.2
+            normalize_lp2d(&mut a_b);
 
             let a_prev_mid = 0.5 * (a_max_prev + a_min_prev);
             let (a_max_curr, a_min_curr) = match approx_order(
@@ -534,6 +540,7 @@ fn reach_set2_core<const BIDIRECTION: bool>(
                 return Err(err);
             }
 
+            let a_prev_scale = a_max_prev.abs();
             a_max_prev = a_max_curr.min(*a_max_k);
             a_min_prev = a_min_curr.max(*a_min_k);
             if verboser.is_enabled(Verbosity::Trace) {
@@ -545,7 +552,9 @@ fn reach_set2_core<const BIDIRECTION: bool>(
             match approx_order(
                 a_max_prev,
                 a_min_prev,
-                options.a_cmp_abs_tol,
+                options
+                    .a_cmp_abs_tol
+                    .max(options.a_cmp_rel_tol * a_prev_scale),
                 options.a_cmp_rel_tol,
             ) {
                 ApproxOrdering::Less => {
@@ -602,14 +611,14 @@ fn reach_set2_core<const BIDIRECTION: bool>(
 
 /// Backward propagation to compute feasible `a[k]` bounds at the current step given the next step's `a[k+1]=a_next` bounds.
 /// a_b.0 * a[k+1] + a_b.1 * a[k] <= a_b.2
-/// The first three rows are `a_next <= a_max_next`, `-a_next <= -a_min_next` and `a[k] <= amax[k]`.
+/// The rows must be unit-normalized; the first three are `a_next <= a_max_next`,
+/// `-a_next <= -a_min_next` and `a[k] <= amax[k]`.
 /// Returns (a_max_curr, a_min_curr)
 fn backward_bound_a_next<const MAX: bool, const MIN: bool>(
     a_b: &mut [(f64, f64, f64)],
     a_next_mid: f64,
     lp_fea_tol: f64,
 ) -> (f64, f64) {
-    normalize_lp2d(a_b);
     // The incremental LP only moves the initial point down along `a[k]`, so it must start
     // from a value no smaller than the true maximum. Bound `a[k]` from above using every
     // row with a positive `a[k]` coefficient over the `a_next` box; `LP_BOUND` is only a
@@ -700,7 +709,8 @@ impl ReachSet2OptionsBuilder {
     }
 
     /// Set the absolute tolerance for comparing `a_max` and `a_min` to determine whether the reachable set is empty (`a_max < a_min`) or degenerated (`a_max == a_min`).
-    /// Let `tol = max(a_cmp_abs_tol, a_cmp_rel_tol * max(|a_max|, |a_min|))`.
+    /// Let `tol = max(a_cmp_abs_tol, a_cmp_rel_tol * max(|a_max|, |a_min|, |a_nbr|))`, where `a_nbr` is the
+    /// neighbouring state the interval was propagated from (its rounding is inherited by the endpoints).
     /// + If `a_max < a_min - tol`, then the reachable set is empty.
     /// + If `a_max > a_min + tol`, then the reachable set is non-degenerated.
     /// + Otherwise, the reachable set is degenerated into a single point.

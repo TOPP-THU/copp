@@ -19,8 +19,11 @@ use clarabel::solver::*;
 const EPS_SCALE: f64 = 10.0;
 /// Near-zero threshold for feasibility/normalization branch decisions.
 pub(crate) const EPS_ZERO: f64 = 1e-9;
-/// Lower bound for coefficient normalization denominators.
-const EPS_NORMALIZE: f64 = 1e-3;
+/// Relative floating-point tolerance (about 450 ulps) for cancellation-sensitive
+/// comparisons: a quantity computed as a difference of terms is treated as zero when
+/// it is below `EPS_ROUNDING` times the magnitude of those terms. Applied to the
+/// coefficients of unit-normalized rows it is an absolute threshold.
+pub(crate) const EPS_ROUNDING: f64 = 1e-13;
 /// Default box bound used to stabilize unbounded LP directions.
 pub(crate) const LP_BOUND: f64 = 1e6;
 
@@ -180,18 +183,42 @@ pub(crate) fn lp_2d_incre<W: WarmStartLp2d, const NORMALIZE: bool>(
 }
 
 #[inline(always)]
-/// Normalize 2D half-space rows by normal-vector magnitude.
+/// Normalize 2D half-space rows to unit normal vectors so that `a*x + b*y - c` is the
+/// signed distance from `(x, y)` to the row, whatever the scale of the input.
 ///
-/// Degenerate rows are mapped to zeros.
+/// Rows whose normal vanishes keep their right-hand side (`0 <= c`).
 pub(crate) fn normalize_lp2d(a_b: &mut [(f64, f64, f64)]) {
     for w in a_b.iter_mut() {
         let norm = (w.0 * w.0 + w.1 * w.1).sqrt();
-        *w = if norm < EPS_ZERO {
-            (0.0, 0.0, 0.0)
+        if norm >= f64::MIN_POSITIVE {
+            let norm_inv = 1.0 / norm;
+            *w = (w.0 * norm_inv, w.1 * norm_inv, w.2 * norm_inv);
         } else {
-            let norm_inv = 1.0 / norm.max(EPS_NORMALIZE);
-            (w.0 * norm_inv, w.1 * norm_inv, w.2 * norm_inv)
+            *w = (0.0, 0.0, w.2);
+        }
+    }
+}
+
+/// Eliminate one variable from the row `a_*u + b_*v <= c_` along the line `u = p*v - q`
+/// (or symmetrically), returning the 1-D row `coef * v <= rhs`.
+///
+/// Both outputs are differences of terms and are flushed to exactly zero when they are
+/// below the rounding level of those terms, so that a row (nearly) parallel to the
+/// active line is treated as parallel instead of producing an intersection made of
+/// rounding noise.
+#[inline(always)]
+fn reduce_row(a_: f64, b_: f64, c_: f64, p: f64, q: f64) -> (f64, f64) {
+    let coef = a_ * p + b_;
+    if coef.abs() > EPS_ROUNDING * (a_.abs() * p.abs() + b_.abs()) {
+        (coef, c_ + a_ * q)
+    } else {
+        let rhs = c_ + a_ * q;
+        let rhs = if rhs.abs() > EPS_ROUNDING * (c_.abs() + a_.abs() * q.abs()) {
+            rhs
+        } else {
+            0.0
         };
+        (0.0, rhs)
     }
 }
 
@@ -225,8 +252,12 @@ fn lp_2d_incre_max_y_core<C: Lp2dIncCollector, W: WarmStartLp2d, const NORMALIZE
     let (mut x, mut y) = warm_start.get_initial_point();
     let tol_1d = LpToleranceOptions::with_feas_tol(epsilon * tol.reduce_dim_scale);
     for (i, &(a, b, c)) in warm_start.iter_skip(a_b.iter().enumerate()) {
-        // a*x + b*y <= c
-        if a * x + b * y > c {
+        // a*x + b*y <= c, up to the rounding level of the terms. The feasibility
+        // tolerance is deliberately not used here: the returned point must satisfy
+        // every row to rounding, since callers re-derive bounds from it without slack.
+        let ax = a * x;
+        let by = b * y;
+        if ax + by > c + EPS_ROUNDING * (ax.abs() + by.abs() + c.abs()) {
             // Infeasible for this constraint
             // Let a*x + b*y == c
             // Apply 1-dim LP
@@ -248,7 +279,7 @@ fn lp_2d_incre_max_y_core<C: Lp2dIncCollector, W: WarmStartLp2d, const NORMALIZE
                 let (ymax, _) = lp_1d_core::<_, true>(
                     a_b.iter()
                         .take(i)
-                        .map(|&(a_, b_, c_)| (a_ * p + b_, c_ + a_ * q)),
+                        .map(|&(a_, b_, c_)| reduce_row(a_, b_, c_, p, q)),
                     &tol_1d,
                     &mut collector,
                 );
@@ -271,12 +302,14 @@ fn lp_2d_incre_max_y_core<C: Lp2dIncCollector, W: WarmStartLp2d, const NORMALIZE
                 let (mut xmax, mut xmin) = lp_1d_core::<_, false>(
                     a_b.iter()
                         .take(i)
-                        .map(|(a_, b_, c_)| (a_ + b_ * p, c_ + b_ * q)),
+                        .map(|&(a_, b_, c_)| reduce_row(b_, a_, c_, p, q)),
                     &tol_1d,
                     &mut collector,
                 );
                 if xmax < xmin {
-                    if p.abs() * (xmin - xmax) > epsilon {
+                    if p.abs() * (xmin - xmax)
+                        > epsilon.max(EPS_ROUNDING * (xmin.abs() + xmax.abs()))
+                    {
                         collector.clear();
                         collector.collect_2d_id0(i);
                         return (f64::NAN, f64::NAN); // Infeasible
@@ -373,7 +406,7 @@ fn lp_1d_core<C: Lp1dIncCollector, const AUTONAN: bool>(
 
     for (k, (a, b)) in C::enumerate(a_b) {
         // println!("\t\t(LP-1D) a={}, b={}", a, b);
-        if a.abs() < b.abs().clamp(EPS_NORMALIZE, 1.0) * EPS_ZERO {
+        if a.abs() <= EPS_ROUNDING {
             // 0 <= b
             if b < -epsilon {
                 return (f64::NAN, f64::NAN); // Infeasible
@@ -396,7 +429,7 @@ fn lp_1d_core<C: Lp1dIncCollector, const AUTONAN: bool>(
     }
     // println!("\t\t(LP-1D) xmax={}, xmin={}", xmax, xmin);
     if AUTONAN {
-        if xmin <= xmax + epsilon {
+        if xmin <= xmax + epsilon.max(EPS_ROUNDING * (xmin.abs() + xmax.abs())) {
             if xmin <= xmax {
                 (xmax, xmin)
             } else {
