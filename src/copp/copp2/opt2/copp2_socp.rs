@@ -35,7 +35,7 @@ use crate::diag::{
 };
 use crate::robot::robot_core::{Robot, RobotBasic, RobotTorque};
 use clarabel::algebra::CscMatrix;
-use clarabel::solver::SupportedConeT::{NonnegativeConeT, SecondOrderConeT};
+use clarabel::solver::SupportedConeT::{NonnegativeConeT, SecondOrderConeT, ZeroConeT};
 use clarabel::solver::{DefaultSolution, DefaultSolver, IPSolver, SupportedConeT};
 use core::f64;
 use itertools::{Itertools, izip};
@@ -240,6 +240,7 @@ fn copp2_socp_core<'a, M: RobotTorque>(
     let n_var_old = clarabel_sqrt_a_copp2(
         n,
         problem.objectives,
+        problem.a_boundary,
         (&mut row, &mut col, &mut val, &mut b, &mut cones),
     );
     if verboser.is_enabled(Verbosity::Trace) {
@@ -431,33 +432,50 @@ fn clarabel_objective_capacity_copp2<M: RobotBasic>(
 
 /// Add the constraints for sqrt(a) >= eta in COPP2 optimization.
 /// x = [a[0], a[1], ..., a[n], eta[0], eta[1], ..., eta[n], ...] \in R^{2*(n+1)+...}.
-/// sqrt(a[k]) >= eta[k] >= 0
+/// - interior nodes `k = 1..n-1`: sqrt(a[k]) >= eta[k] >= 0;
+/// - boundary nodes `k = 0, n`: eta[k] = sqrt(a_boundary), since `a[k]` is already fixed.
+///
+/// The boundary nodes must not use the cone `eta^2 <= a` on a fixed `a`. With `a = 0` that cone
+/// has no strictly feasible point: its slack `[0.25, -0.25, eta]` can only sit on the cone
+/// boundary, the matching dual grows without bound as the barrier parameter shrinks, and the
+/// interior-point iterations stall on the primal residual. Fixing `eta[k]` is exact for every
+/// `a_boundary >= 0`, because every objective using `eta` is nonincreasing in it, so
+/// `eta[k] = sqrt(a[k])` at an optimum anyway.
+///
 /// num_val <= 4*(n+1), num_b <= 4*(n+1), num_cones <= n+2
 /// Return the len of the new x: n+1 or 2*(n+1)
 fn clarabel_sqrt_a_copp2(
     n: usize,
     objective: &[CoppObjective],
+    a_boundary: (f64, f64),
     constraints: ConstraintsClarabel,
 ) -> usize {
     let (row, col, val, b, cones) = constraints;
     for obj in objective {
         match obj {
             CoppObjective::Time(_) | CoppObjective::ThermalEnergy(_, _) => {
-                // eta >= 0
+                // eta[0] = sqrt(a_start), eta[n] = sqrt(a_final)
+                // A*x-b = -s = 1*eta[k] - sqrt(a_boundary) = 0
+                row.extend(b.len()..b.len() + 2);
+                col.extend([n + 1, 2 * n + 1]);
+                val.extend([1.0, 1.0]);
+                b.extend([a_boundary.0.sqrt(), a_boundary.1.sqrt()]);
+                cones.push(ZeroConeT(2));
+                // eta >= 0 on interior nodes
                 // A*x-b = -s = -1*eta[k] <= 0
-                row.extend(b.len()..b.len() + n + 1);
-                col.extend((n + 1)..(2 * (n + 1)));
-                val.resize(val.len() + n + 1, -1.0);
-                b.resize(b.len() + n + 1, 0.0);
-                cones.push(NonnegativeConeT(n + 1));
-                // sqrt(a) >= eta
+                row.extend(b.len()..b.len() + n - 1);
+                col.extend((n + 2)..(2 * n + 1));
+                val.resize(val.len() + n - 1, -1.0);
+                b.resize(b.len() + n - 1, 0.0);
+                cones.push(NonnegativeConeT(n - 1));
+                // sqrt(a) >= eta on interior nodes
                 // eta^2 <= a
                 // eta^2 + (a - 0.25)^2 <= (a + 0.25)^2
                 // -A*x+b = s = [a+0.25, a-0.25, eta] \in SOC
-                row.extend(b.len()..b.len() + 3 * (n + 1));
-                val.resize(val.len() + 3 * (n + 1), -1.0);
-                cones.resize(cones.len() + n + 1, SecondOrderConeT(3));
-                for k in 0..=n {
+                row.extend(b.len()..b.len() + 3 * (n - 1));
+                val.resize(val.len() + 3 * (n - 1), -1.0);
+                cones.resize(cones.len() + n - 1, SecondOrderConeT(3));
+                for k in 1..n {
                     col.extend([k, k, k + n + 1]);
                     b.extend([0.25, -0.25, 0.0]);
                 }
@@ -1003,6 +1021,60 @@ mod tests {
             assert!(
                 a_k <= amax_k + 1e-6,
                 "a[{k}] = {a_k} exceeds amax[{k}] = {amax_k}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Regression: with `a[0] = a[n] = 0`, the boundary cones `eta^2 <= a` admitted no strictly
+    /// feasible point. Clarabel then stalled on the primal residual, and bit-level changes of the
+    /// path decided between `AlmostSolved`, `InsufficientProgress` and `NumericalError`.
+    #[test]
+    fn test_copp2_socp_zero_boundary_converges() -> Result<(), CoppError> {
+        use crate::path::{Jet3, sin};
+        use std::f64::consts::PI;
+
+        const DIM: usize = 3;
+        let n: usize = 1001;
+        let s: Vec<f64> = (0..n).map(|j| j as f64 / (n - 1) as f64).collect();
+        let limit_max = [1.0; DIM];
+        let limit_min = [-1.0; DIM];
+        let normalize = [1.0; DIM];
+        let objectives = [
+            CoppObjective::Time(1.0),
+            CoppObjective::ThermalEnergy(0.1, &normalize),
+        ];
+        let options = ClarabelOptionsBuilder::new()
+            .allow_almost_solved(true)
+            .build()?;
+        for k in 0..4 {
+            let dphi = k as f64 * 1e-15;
+            let path = Path::from_parametric(
+                move |s: Jet3| {
+                    vec![
+                        sin(2.0 * PI * s + dphi),
+                        sin(3.0 * PI * s + (0.3 + dphi)),
+                        sin(5.0 * PI * s + (0.7 + dphi)),
+                    ]
+                },
+                0.0,
+                1.0,
+            )?;
+            let mut robot = Robot::with_capacity(DIM, n);
+            robot
+                .with_s(s.as_slice())?
+                .with_q_from_path_2nd(&path, 0, n)?
+                .with_axial_velocity((limit_max.as_slice(), n), (limit_min.as_slice(), n), 0)?
+                .with_axial_acceleration((limit_max.as_slice(), n), (limit_min.as_slice(), n), 0)?;
+            let problem =
+                Copp2ProblemBuilder::new(&robot, (0, n - 1), (0.0, 0.0), &objectives).build()?;
+            let (a, solution) = copp2_socp_expert(&problem, &options)?;
+            assert!(
+                a.is_some() && solution.r_prim <= 1e-6,
+                "dphi = {dphi:e}: status = {:?}, iterations = {}, r_prim = {:e}",
+                solution.status,
+                solution.iterations,
+                solution.r_prim
             );
         }
         Ok(())
