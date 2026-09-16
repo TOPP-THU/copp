@@ -17,12 +17,16 @@ keywords = [
     "convex-optimization",
     "time-optimal",
 ]
-exclude = [
-    "data/**",
-    "target/**",
-    ".cargo/**",
-    ".github/**",
-    "bindings/python/**/*.pdb",
+include = [
+    "/src/**",
+    "/build.rs",
+    "/examples/**",
+    "/bindings/cpp/src/**",
+    "/bindings/cpp/include/**",
+    "/mathjax-config.html",
+    "/README.md",
+    "/LICENSE",
+    "/CHANGELOG.md",
 ]
 
 [lib]
