@@ -15,6 +15,11 @@
 //! - Path grid uses station samples `s[0..=n]`.
 //! - Both `a` and `b` are node-based in TOPP3/COPP3 (`a.len() == b.len() == s.len()`).
 //! - `num_stationary = (head, tail)` indicates stationary boundary counts at start/end.
+//! - Ordinary intervals normally use the left polynomial anchor. The last
+//!   ordinary interval uses the right boundary anchor; an exact zero endpoint
+//!   takes priority (left if both endpoints are zero). Forward/inverse time
+//!   and profile SOC checks share this convention. Node pairs must already
+//!   satisfy the discrete dynamics up to their constructor's own rounding.
 //!
 //! # Example
 //! The example below converts a third-order profile from station samples to
@@ -47,6 +52,12 @@
 //! ```
 
 use crate::copp::InterpolationMode;
+use crate::copp::copp3::exact_interval::{
+    IntervalANonnegativeClassification, certify_interval_endpoint_ln,
+    classify_interval_a_nonnegative, exact_interval_negative_m_abs_ln,
+    exact_interval_nonnegative_m_ln, exact_interval_positive_d_ln,
+    profile_interval_uses_right_anchor,
+};
 use crate::copp::copp3::{Topp3ProfileMut, Topp3ProfileRef};
 use crate::diag::{
     CoppError, check_input_len_at_least, check_input_len_equal, check_input_non_negative,
@@ -55,6 +66,15 @@ use crate::diag::{
 };
 use crate::math::numerical::{EPS_ZERO, solve_2x2};
 use itertools::izip;
+use nalgebra::ComplexField;
+
+/// Taylor threshold for the natural constant-jerk inverse map.
+const TAYLOR_INVERSE_CONSTANT_JERK: f64 = 1E-3;
+/// Taylor threshold for the natural constant-jerk interval-time map.
+const TAYLOR_INTERVAL_TIME_Z: f64 = 1E-4;
+/// The direct `z` expression is not a reliable distance to one inside this
+/// envelope. This only selects the exact-sign cold path.
+const INTERVAL_TIME_NEAR_ONE_DELTA: f64 = 64.0 * f64::EPSILON;
 
 /// Compute cumulative time profile `t(s)` from a TOPP3/COPP3 profile.
 ///
@@ -99,16 +119,16 @@ pub fn s_to_t_topp3(
         }
         t_prev = *t_s.last().unwrap();
     }
-    for (s_pair, b_pair, a_curr) in izip!(s.windows(2), b.windows(2), a.iter())
+    for (id, (s_pair, b_pair, a_pair)) in izip!(s.windows(2), b.windows(2), a.windows(2))
+        .enumerate()
         .skip(num_stationary.0)
         .take(n - num_stationary.0 - num_stationary.1)
     {
-        t_prev += integral_rsrqp(
-            *a_curr,
-            2.0 * b_pair[0],
-            (b_pair[1] - b_pair[0]) / (s_pair[1] - s_pair[0]),
-            0.0,
+        t_prev += integral_profile_interval(
             s_pair[1] - s_pair[0],
+            a_pair,
+            b_pair,
+            id + 1 == n - num_stationary.1,
         );
         t_s.push(t_prev);
     }
@@ -129,39 +149,46 @@ pub fn s_to_t_topp3(
     }
 
     let t_final = *t_s.last().unwrap();
-    if !t_final.is_finite() || t_s.iter().any(|value| !value.is_finite()) {
+    // Hot path: branchless reduction over the whole profile. `&` does not
+    // short-circuit, so this stays a straight-line loop that can vectorize;
+    // `t_final` is `t_s.last()` and is therefore already covered.
+    let all_finite = t_s.iter().fold(true, |acc, value| acc & value.is_finite());
+    if !all_finite {
+        // Cold path: an error is being returned anyway, so a second, scalar
+        // pass to locate the offending station costs nothing that matters.
+        // The natural interval kernel diverges when a station has
+        // `a == b == 0`, and
+        // returns NaN when `a(s)` goes negative between two stations, so the
+        // neighbouring `(a, b)` pair is what identifies the cause.
+        let index = t_s
+            .iter()
+            .position(|value| !value.is_finite())
+            .unwrap_or(t_s.len() - 1);
+        // `t_s[k+1] = t_s[k] + integral(a[k], b[k], b[k+1])`, so the interval
+        // that diverged is `[index-1, index]`; the stationary head instead uses
+        // `a[index]` directly. Report a window that covers both.
+        let lo = index.saturating_sub(1);
+        let hi = (index + 1).min(a.len() - 1);
+        let window = (lo..=hi)
+            .map(|j| {
+                format!(
+                    "  [{j}] a = {:.6e}, b = {:.6e}, s = {:.6e}",
+                    a[j], b[j], s[j]
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         return Err(CoppError::InvalidInput(
             "s_to_t_topp3".into(),
-            "computed time profile contains NaN or infinity".into(),
+            format!(
+                "computed time profile contains NaN or infinity: first at index {index} \
+                 (t = {}), num_stationary = {num_stationary:?}\n{window}",
+                t_s[index]
+            ),
         ));
     }
     check_input_strictly_increasing("s_to_t_topp3", "t_s", &t_s)?;
     Ok((t_final, t_s))
-}
-
-/// Compute definite integral of reciprocal-square-root quadratic polynomial:
-/// $$dt = \int_{x_{left}}^{x_{right}} \frac{dx}{\sqrt{c_0 + c_1 x + c_2 x^2}}.$$
-fn integral_rsrqp(c0: f64, c1: f64, c2: f64, x_left: f64, x_right: f64) -> f64 {
-    if c2 > f64::EPSILON {
-        let func = |x: f64| x + 0.5 * c1 / c2 + (x * x + (c1 * x + c0) / c2).sqrt();
-        (func(x_right).abs().ln() - func(x_left).abs().ln()) / c2.sqrt()
-    } else if c2 < -f64::EPSILON {
-        let delta = c1 * c1 - 4.0 * c2 * c0;
-        if delta > 0.0 {
-            let func = |x: f64| (-2.0 * c2 * x - c1) / delta.sqrt();
-            (func(x_right).asin() - func(x_left).asin()) / (-c2).sqrt()
-        } else {
-            f64::INFINITY
-        }
-    } else if c1.abs() > f64::EPSILON {
-        // Dt = \int_{xl}^{xr} dx/sqrt(C1*x+C0)
-        2.0 / c1 * ((c1 * x_right + c0).sqrt() - (c1 * x_left + c0).sqrt())
-    } else if c0.abs() > f64::EPSILON {
-        // Dt = \int_{xl}^{xr} dx/sqrt(C0)
-        (x_right - x_left) / c0.sqrt()
-    } else {
-        f64::INFINITY
-    }
 }
 
 /// Interpolate inverse mapping `s(t)` from a TOPP3/COPP3 profile and sampled `t(s)`.
@@ -294,22 +321,45 @@ fn t_to_s_topp3_core(
         }
     }
 
-    for (s_pair, &a_curr, b_pair, t_pair) in
-        izip!(s.windows(2), a.iter(), b.windows(2), t_s.windows(2))
+    for (id, (s_pair, a_pair, b_pair, t_pair)) in
+        izip!(s.windows(2), a.windows(2), b.windows(2), t_s.windows(2))
+            .enumerate()
             .skip(num_stationary.0)
             .take(s.len() - num_stationary.0 - num_stationary.1 - 1)
     {
+        let h = s_pair[1] - s_pair[0];
+        let reverse = profile_interval_uses_right_anchor(
+            a_pair[0],
+            a_pair[1],
+            id + 1 == s.len() - num_stationary.1 - 1,
+        );
         while t_curr <= t_pair[1] {
-            s_t.push(
+            // Keep the sampled station exact when the query is an existing
+            // time knot; the analytic inverse is needed only in the interior.
+            let position = if t_curr == t_pair[1] {
+                s_pair[1]
+            } else if t_curr == t_pair[0] {
                 s_pair[0]
-                    + inverse_rsrqp(
-                        a_curr,
-                        2.0 * b_pair[0],
-                        (b_pair[1] - b_pair[0]) / (s_pair[1] - s_pair[0]),
-                        0.0,
+            } else if reverse {
+                s_pair[1]
+                    - inverse_constant_jerk_interval(
+                        h,
+                        a_pair[1],
+                        -b_pair[1],
+                        -b_pair[0],
+                        t_pair[1] - t_curr,
+                    )
+            } else {
+                s_pair[0]
+                    + inverse_constant_jerk_interval(
+                        h,
+                        a_pair[0],
+                        b_pair[0],
+                        b_pair[1],
                         t_curr - t_pair[0],
-                    ),
-            );
+                    )
+            };
+            s_t.push(position);
             let Some(t) = t_sample.next() else {
                 return s_t;
             };
@@ -338,55 +388,247 @@ fn t_to_s_topp3_core(
     s_t
 }
 
-/// Solve `x_right` from
-/// $$dt = \int_{x_{left}}^{x_{right}} \frac{dx}{\sqrt{c_0 + c_1 x + c_2 x^2}}.$$
-fn inverse_rsrqp(c0: f64, c1: f64, c2: f64, x_left: f64, dt: f64) -> f64 {
-    if dt == 0.0 {
-        return x_left;
+/// Profile-level anchor convention matches the final SOC scan. An exact
+/// stationary endpoint without its own stationary block always diverges;
+/// changing the polynomial's anchor must not erase that double zero.
+#[inline]
+fn integral_profile_interval(h: f64, a: &[f64], b: &[f64], last_ordinary: bool) -> f64 {
+    profile_interval_time(h, a[0], b[0], a[1], b[1], last_ordinary)
+}
+
+/// Evaluate one delivered-profile interval with its original endpoint-anchor
+/// classification. Callers that validate a subdomain must preserve the
+/// full-profile `last_ordinary` flag instead of slicing and reclassifying it.
+#[inline]
+pub(crate) fn profile_interval_time(
+    h: f64,
+    a_left: f64,
+    b_left: f64,
+    a_right: f64,
+    b_right: f64,
+    last_ordinary: bool,
+) -> f64 {
+    if (a_left == 0.0 && b_left == 0.0) || (a_right == 0.0 && b_right == 0.0) {
+        return f64::INFINITY;
     }
-    let delta = c1 * c1 - 4.0 * c2 * c0;
-    if c2 > f64::EPSILON {
-        let mu = (c2.sqrt() * dt
-            + (x_left + 0.5 * c1 / c2 + (x_left * x_left + (c1 * x_left + c0) / c2).sqrt())
-                .abs()
-                .ln())
-        .exp();
-        let xr1 = -0.5 * c1 / c2 + 0.5 * (mu + delta / (4.0 * c2 * c2 * mu));
-        let xr2 = -0.5 * c1 / c2 - 0.5 * (mu + delta / (4.0 * c2 * c2 * mu));
-        let mut flag1 = true;
-        let mut flag2 = true;
-        if dt > 0.0 {
-            flag1 &= xr1 > x_left;
-            flag2 &= xr2 > x_left;
-        } else {
-            flag1 &= xr1 < x_left;
-            flag2 &= xr2 < x_left;
-        }
-        if flag1 && flag2 {
-            let dt1 = integral_rsrqp(c0, c1, c2, x_left, xr1);
-            let dt2 = integral_rsrqp(c0, c1, c2, x_left, xr2);
-            if (dt1 - dt).abs() < (dt2 - dt).abs() {
-                xr1
-            } else {
-                xr2
-            }
-        } else if flag1 {
-            xr1
-        } else if flag2 {
-            xr2
-        } else {
-            f64::INFINITY
-        }
-    } else if c2 < -f64::EPSILON {
-        (c1 + delta.sqrt()
-            * ((-c2).sqrt() * dt + ((-2.0 * c2 * x_left - c1) / delta.sqrt()).asin()).sin())
-            / (-2.0 * c2)
-    } else if c1 != 0.0 || c0 > 0.0 {
-        // Expanded, cancellation-free form of ((c1 dt / 2 + sqrt(c1 x_left + c0))^2 - c0) / c1;
-        // see `inverse_2order` in the second-order interpolation module.
-        x_left + (c1 * x_left + c0).max(0.0).sqrt() * dt + 0.25 * c1 * dt * dt
+    if profile_interval_uses_right_anchor(a_left, a_right, last_ordinary) {
+        integral_constant_jerk_interval(h, a_right, -b_right, -b_left)
     } else {
-        f64::INFINITY
+        integral_constant_jerk_interval(h, a_left, b_left, b_right)
+    }
+}
+
+/// Stable `psi(z)` in the endpoint form of the natural constant-jerk time
+/// integral.  Only the value is needed here; no derivatives are carried.
+#[inline(always)]
+fn interval_time_psi(z: f64) -> f64 {
+    if z.abs() < TAYLOR_INTERVAL_TIME_Z {
+        z.mul_add(z.mul_add(z.mul_add(1.0 / 7.0, 1.0 / 5.0), 1.0 / 3.0), 1.0)
+    } else {
+        let root = z.abs().sqrt();
+        if z > 0.0 {
+            root.atanh() / root
+        } else {
+            root.atan() / root
+        }
+    }
+}
+
+#[inline(always)]
+fn logaddexp(lhs: f64, rhs: f64) -> f64 {
+    if lhs == f64::INFINITY || rhs == f64::INFINITY {
+        return f64::INFINITY;
+    }
+    if lhs == f64::NEG_INFINITY {
+        return rhs;
+    }
+    if rhs == f64::NEG_INFINITY {
+        return lhs;
+    }
+    let high = lhs.max(rhs);
+    let low = lhs.min(rhs);
+    high + (low - high).exp().ln_1p()
+}
+
+#[inline(always)]
+fn interval_time_scaled_z(h: f64, b: f64, u: f64, sqrt_sum: f64) -> (f64, f64) {
+    if u == b {
+        return (0.0, f64::NEG_INFINITY);
+    }
+    let difference = u - b;
+    let ln_abs_difference = if difference.is_finite() {
+        difference.abs().ln()
+    } else {
+        logaddexp(u.abs().ln(), b.abs().ln())
+    };
+    let ln_magnitude = h.ln() + ln_abs_difference - 2.0 * sqrt_sum.ln();
+    let magnitude = ln_magnitude.exp();
+    (if u > b { magnitude } else { -magnitude }, ln_magnitude)
+}
+
+#[inline(always)]
+fn interval_time_scaled_value(h: f64, sqrt_sum: f64, d: f64, psi: f64) -> f64 {
+    if d.is_finite() && d > 0.0 {
+        let direct = d * (2.0 * psi);
+        if direct.is_finite() && direct > 0.0 {
+            return direct;
+        }
+    }
+    (std::f64::consts::LN_2 + h.ln() - sqrt_sum.ln() + psi.ln()).exp()
+}
+
+#[inline(always)]
+fn interval_time_psi_near_one(ln_delta: f64) -> f64 {
+    debug_assert!(ln_delta < 0.0);
+    let z = (-ln_delta.exp_m1()).clamp(0.0, 1.0);
+    let root = z.sqrt();
+    (root.ln_1p() - 0.5 * ln_delta) / root
+}
+
+/// Traverse one ordinary interval under the natural, unmaterialized model
+///
+/// `a(x) = a + 2*b*x + (u-b)*x^2/h`, `0 <= x <= h`.
+///
+/// The exact-sign classifier comes from the shared exact-interval kernel.
+/// In particular, finiteness is never decided from the
+/// different polynomial obtained by first rounding `(u-b)/h` and then using
+/// that rounded coefficient in a quadratic evaluation.
+#[inline]
+fn integral_constant_jerk_interval(h: f64, a: f64, b: f64, u: f64) -> f64 {
+    let Some(classified) = classify_interval_a_nonnegative(h, a, b, u) else {
+        return f64::NAN;
+    };
+    let m = h.mul_add(b, a);
+    let a_next = h.mul_add(u, m);
+    let exact_endpoint_ln = match certify_interval_endpoint_ln(h, a, b, u, m, a_next) {
+        Ok(value) => value,
+        Err(()) => return f64::NAN,
+    };
+    let sqrt_a = a.sqrt();
+    let sqrt_next = match exact_endpoint_ln {
+        Some(ln_endpoint) if ln_endpoint.is_finite() => (0.5 * ln_endpoint).exp(),
+        Some(_) => 0.0,
+        None => a_next.sqrt(),
+    };
+    let curvature = (u - b) / h;
+
+    // Two simple zero endpoints are integrable; a double zero is not.
+    if (a == 0.0 && b > 0.0 && u == -b) || (a == 0.0 && sqrt_next == 0.0 && curvature < 0.0) {
+        return std::f64::consts::PI / (-curvature).sqrt();
+    }
+    if (a == 0.0 && b == 0.0 && u >= 0.0) || (sqrt_next == 0.0 && u == 0.0 && b <= 0.0) {
+        return f64::INFINITY;
+    }
+    if matches!(classified, IntervalANonnegativeClassification::InteriorZero) {
+        return f64::INFINITY;
+    }
+
+    let sqrt_sum = sqrt_a + sqrt_next;
+    let d = h / sqrt_sum;
+    let d2 = d * d;
+    let raw_z = curvature * d2;
+    let unsafe_scale =
+        d == 0.0 || !d.is_finite() || d2 == 0.0 || !d2.is_finite() || !raw_z.is_finite();
+    let (z, ln_abs_z) = if unsafe_scale {
+        interval_time_scaled_z(h, b, u, sqrt_sum)
+    } else {
+        (raw_z, raw_z.abs().ln())
+    };
+    let near_singularity = if unsafe_scale {
+        z > 0.5
+    } else {
+        z >= 1.0 - INTERVAL_TIME_NEAR_ONE_DELTA
+    };
+
+    if near_singularity {
+        if !d.is_finite() {
+            return f64::INFINITY;
+        }
+        let ln_delta = match classified {
+            IntervalANonnegativeClassification::InteriorPositive => {
+                let Some(ln_d) = exact_interval_positive_d_ln(h, a, b, u) else {
+                    return f64::NAN;
+                };
+                let Some(ln_abs_m) = exact_interval_negative_m_abs_ln(h, a, b) else {
+                    return f64::NAN;
+                };
+                let ln_pq = sqrt_a.ln() + sqrt_next.ln();
+                std::f64::consts::LN_2 + h.ln() + ln_d
+                    - logaddexp(ln_pq, ln_abs_m)
+                    - 2.0 * sqrt_sum.ln()
+            }
+            IntervalANonnegativeClassification::Endpoint => {
+                let Some(ln_m) = exact_interval_nonnegative_m_ln(h, a, b) else {
+                    return f64::NAN;
+                };
+                let ln_pq = if sqrt_a == 0.0 || sqrt_next == 0.0 {
+                    f64::NEG_INFINITY
+                } else {
+                    sqrt_a.ln() + sqrt_next.ln()
+                };
+                std::f64::consts::LN_2 + logaddexp(ln_m, ln_pq) - 2.0 * sqrt_sum.ln()
+            }
+            IntervalANonnegativeClassification::InteriorZero => return f64::INFINITY,
+        };
+        if ln_delta.is_finite() && ln_delta < 0.0 {
+            let psi = interval_time_psi_near_one(ln_delta);
+            return interval_time_scaled_value(h, sqrt_sum, d, psi);
+        }
+        if !z.is_finite() || z >= 1.0 {
+            return f64::INFINITY;
+        }
+    }
+
+    if unsafe_scale && z.is_sign_negative() && ln_abs_z > 0.5 * f64::MAX.ln() {
+        let ln_psi = std::f64::consts::FRAC_PI_2.ln() - 0.5 * ln_abs_z;
+        return (std::f64::consts::LN_2 + h.ln() - sqrt_sum.ln() + ln_psi).exp();
+    }
+
+    let psi = interval_time_psi(z);
+    if unsafe_scale || z > 0.5 {
+        interval_time_scaled_value(h, sqrt_sum, d, psi)
+    } else {
+        2.0 * d * psi
+    }
+}
+
+/// Invert the same natural ordinary-interval model used by
+/// [`integral_constant_jerk_interval`].  The rounded dimensionless `eps` below
+/// is only an evaluation parameter for the analytic solution; no second
+/// rounded-coefficient polynomial is used for feasibility or interval time.
+#[inline(always)]
+fn inverse_constant_jerk_interval(h: f64, a: f64, b: f64, u: f64, dt: f64) -> f64 {
+    if dt == 0.0 {
+        return 0.0;
+    }
+    let eps = ((u - b) / h) * dt * dt;
+    let sqrt_a = a.sqrt();
+    let half_b_dt = 0.5 * b * dt;
+
+    if eps.abs() < TAYLOR_INVERSE_CONSTANT_JERK {
+        let first = eps.mul_add(
+            eps.mul_add(eps.mul_add(1.0 / 5040.0, 1.0 / 120.0), 1.0 / 6.0),
+            1.0,
+        );
+        let second = eps.mul_add(
+            eps.mul_add(eps.mul_add(1.0 / 20160.0, 1.0 / 360.0), 1.0 / 12.0),
+            1.0,
+        );
+        dt * sqrt_a.mul_add(first, half_b_dt * second)
+    } else if eps > 0.0 {
+        let k = eps.sqrt();
+        let sinh_half_over_k = (0.5 * k).sinh() / k;
+        dt * sqrt_a.mul_add(
+            k.sinh() / k,
+            2.0 * b * dt * sinh_half_over_k * sinh_half_over_k,
+        )
+    } else {
+        let k = (-eps).sqrt();
+        let sin_half_over_k = (0.5 * k).sin() / k;
+        dt * sqrt_a.mul_add(
+            k.sin() / k,
+            2.0 * b * dt * sin_half_over_k * sin_half_over_k,
+        )
     }
 }
 
@@ -624,4 +866,159 @@ fn check_stationary_counts(
         ));
     };
     check_input_len_at_least(function_name, "`s.len()`", s_len, min_len)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_close(actual: f64, expected: f64, relative: f64) {
+        let scale = actual.abs().max(expected.abs()).max(1.0);
+        assert!(
+            (actual - expected).abs() <= relative * scale,
+            "actual={actual:.17e}, expected={expected:.17e}"
+        );
+    }
+
+    #[test]
+    fn profile_time_reverse_fixed_zero_round_trip() -> Result<(), CoppError> {
+        let s = [0.0_f64, 1.0];
+        let b = [-0.1_f64, -0.4];
+        let a = [(-1.0_f64).mul_add(b[0] + b[1], 0.0), 0.0];
+        assert!(integral_constant_jerk_interval(1.0, a[0], b[0], b[1]).is_nan());
+        let (total, knots) = s_to_t_topp3(&s, (&a, &b, (0, 0)), 0.0)?;
+        assert!(total.is_finite() && total > 0.0);
+        let queries = [0.0, 0.25 * total, 0.5 * total, 0.75 * total, total];
+        let positions = t_to_s_topp3(
+            &s,
+            (&a, &b, (0, 0)),
+            &knots,
+            InterpolationMode::NonUniformTimeGrid(&queries),
+        )?;
+        assert_eq!(positions[0], s[0]);
+        assert_eq!(positions[4], s[1]);
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+        for (&time, &position) in queries[1..4].iter().zip(&positions[1..4]) {
+            let distance = 1.0 - position;
+            let reverse_b = -b[1] + (b[1] - b[0]) * distance;
+            let remaining = integral_constant_jerk_interval(distance, 0.0, -b[1], reverse_b);
+            assert_close(remaining, total - time, 2.0e-13);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn profile_time_preserves_stationary_divergence_and_simple_zeros() {
+        let s = [0.0, 1.0];
+        for (a, b) in [([0.0, 1.0], [0.0, 1.0]), ([1.0, 0.0], [-1.0, 0.0])] {
+            assert!(s_to_t_topp3(&s, (&a, &b, (0, 0)), 0.0).is_err());
+        }
+        let (total, _) = s_to_t_topp3(&[0.0, 2.0], (&[0.0, 0.0], &[1.0, -1.0], (0, 0)), 0.0)
+            .expect("two simple zeros have finite time");
+        assert_close(total, std::f64::consts::PI, 4.0 * f64::EPSILON);
+    }
+
+    #[test]
+    fn profile_anchor_does_not_retry_the_easier_soc_direction() {
+        // An inconsistent input must not get accepted by testing both sides
+        // and choosing whichever makes the time finite.
+        assert!(integral_constant_jerk_interval(1.0, 1.0, -1.0, 1.0).is_finite());
+        assert!(s_to_t_topp3(&[0.0, 1.0], (&[1.0, 0.25], &[-1.0, 1.0], (0, 0)), 0.0).is_err());
+    }
+
+    #[test]
+    fn natural_interval_time_handles_zero_curvature_and_two_simple_zeros() {
+        assert_close(
+            integral_constant_jerk_interval(3.0, 4.0, 0.0, 0.0),
+            1.5,
+            4.0 * f64::EPSILON,
+        );
+        assert_close(
+            integral_constant_jerk_interval(2.0, 0.0, 1.0, -1.0),
+            std::f64::consts::PI,
+            4.0 * f64::EPSILON,
+        );
+    }
+
+    #[test]
+    fn natural_interval_time_does_not_turn_an_exact_double_root_into_a_finite_time() {
+        // The ideal curvature is 1/3, which is not binary64. Materializing
+        // RN((u-b)/h) first therefore defines a different quadratic. The
+        // natural data satisfy D=a*(u-b)-h*b*b=0 exactly and have an interior
+        // double root at x=3.
+        let (h, a, b, u) = (6.0, 3.0, -1.0, 1.0);
+        assert!(matches!(
+            classify_interval_a_nonnegative(h, a, b, u),
+            Some(IntervalANonnegativeClassification::InteriorZero)
+        ));
+        assert_eq!(integral_constant_jerk_interval(h, a, b, u), f64::INFINITY);
+        assert!(integral_constant_jerk_interval(h, a, b, u.next_up()).is_finite());
+        assert!(integral_constant_jerk_interval(h, a, b, u.next_down()).is_nan());
+
+        let s = [0.0, h];
+        let acceleration = [a, h.mul_add(u, h.mul_add(b, a))];
+        let slope = [b, u];
+        assert!(s_to_t_topp3(&s, (&acceleration, &slope, (0, 0)), 0.0).is_err());
+    }
+
+    #[test]
+    fn natural_time_and_inverse_round_trip_for_all_curvature_signs() -> Result<(), CoppError> {
+        let cases = [
+            (0.5, 1.0, -0.1, 0.4),
+            (0.5, 1.0, 0.2, 0.2),
+            (0.5, 1.0, 0.5, -0.2),
+        ];
+        for (h, a, b, u) in cases {
+            let a_next = h.mul_add(u, h.mul_add(b, a));
+            let s = [0.0, h];
+            let acceleration = [a, a_next];
+            let slope = [b, u];
+            let (t_final, t_s) = s_to_t_topp3(&s, (&acceleration, &slope, (0, 0)), 0.0)?;
+            assert!(t_final.is_finite() && t_final > 0.0);
+
+            let query = [0.0, 0.25 * t_final, 0.5 * t_final, 0.75 * t_final, t_final];
+            let sampled = t_to_s_topp3(
+                &s,
+                (&acceleration, &slope, (0, 0)),
+                &t_s,
+                InterpolationMode::NonUniformTimeGrid(&query),
+            )?;
+            assert_eq!(sampled.len(), query.len());
+            assert_eq!(sampled[0], 0.0);
+            assert_eq!(sampled[query.len() - 1], h);
+            for pair in sampled.windows(2) {
+                assert!(pair[0] < pair[1], "non-monotone inverse: {sampled:?}");
+            }
+
+            for (&time, &x) in query[1..query.len() - 1]
+                .iter()
+                .zip(&sampled[1..sampled.len() - 1])
+            {
+                let b_at_x = ((u - b) / h).mul_add(x, b);
+                let reconstructed = integral_constant_jerk_interval(x, a, b, b_at_x);
+                assert_close(reconstructed, time, 2.0e-13);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn stationary_head_and_tail_convention_is_unchanged() -> Result<(), CoppError> {
+        let s = [0.0, 1.0, 2.0, 3.0];
+        let a = [0.0, 1.0, 1.0, 0.0];
+        let b = [0.0, 0.0, 0.0, 0.0];
+        let (t_final, t_s) = s_to_t_topp3(&s, (&a, &b, (1, 1)), 0.0)?;
+        assert_eq!(t_final, 7.0);
+        assert_eq!(t_s, [0.0, 3.0, 4.0, 7.0]);
+
+        let query = [0.0, 3.0, 3.5, 4.0, 7.0];
+        let sampled = t_to_s_topp3(
+            &s,
+            (&a, &b, (1, 1)),
+            &t_s,
+            InterpolationMode::NonUniformTimeGrid(&query),
+        )?;
+        assert_eq!(sampled, [0.0, 1.0, 1.5, 2.0, 3.0]);
+        Ok(())
+    }
 }

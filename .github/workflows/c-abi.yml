@@ -23,7 +23,6 @@ env:
   # Keep these in sync with the generator used for committed C headers.
   # Upgrade them only together with regenerating and reviewing those headers.
   CBINDGEN_VERSION: 0.29.2
-  CBINDGEN_NIGHTLY: nightly-2026-02-05
 
 jobs:
   build-package:
@@ -124,13 +123,8 @@ jobs:
       - name: Build Rust native library
         run: cargo build --release --locked --lib --features c
 
-      - name: Install nightly Rust for cbindgen expand
-        run: rustup toolchain install ${{ env.CBINDGEN_NIGHTLY }} --profile minimal
-
       - name: Generate C headers
         shell: pwsh
-        env:
-          RUSTUP_TOOLCHAIN: ${{ env.CBINDGEN_NIGHTLY }}
         run: ./bindings/c/scripts/generate_headers.ps1
 
       - name: Check generated C headers are committed

@@ -246,7 +246,10 @@ $blocks = @{
     CoppMatrixViewF64 = Get-CoppBlock "CoppMatrixViewF64" "typedef struct CoppMatrixViewF64\s*\{.*?\}\s*CoppMatrixViewF64;"
     CoppSliceF64 = Get-CoppBlock "CoppSliceF64" "typedef struct CoppSliceF64\s*\{.*?\}\s*CoppSliceF64;"
     CoppSliceMutF64 = Get-CoppBlock "CoppSliceMutF64" "typedef struct CoppSliceMutF64\s*\{.*?\}\s*CoppSliceMutF64;"
+    CoppSliceUsize = Get-CoppBlock "CoppSliceUsize" "typedef struct CoppSliceUsize\s*\{.*?\}\s*CoppSliceUsize;"
     CoppPathOptions = Get-CoppBlock "CoppPathOptions" "typedef struct CoppPathOptions\s*\{.*?\}\s*CoppPathOptions;"
+    CoppSmoothingOptions = Get-CoppBlock "CoppSmoothingOptions" "typedef struct CoppSmoothingOptions\s*\{.*?\}\s*CoppSmoothingOptions;"
+    CoppSmoothingReport = Get-CoppBlock "CoppSmoothingReport" "typedef struct CoppSmoothingReport\s*\{.*?\}\s*CoppSmoothingReport;"
     CoppPathParametricFn = Get-CoppBlock "CoppPathParametricFn" "typedef enum CoppStatus\s+\(\*CoppPathParametricFn\)\(.*?\);"
     CoppPathEvaluate2ndFn = Get-CoppBlock "CoppPathEvaluate2ndFn" "typedef enum CoppStatus\s+\(\*CoppPathEvaluate2ndFn\)\(.*?\);"
     CoppPathEvaluate3rdFn = Get-CoppBlock "CoppPathEvaluate3rdFn" "typedef enum CoppStatus\s+\(\*CoppPathEvaluate3rdFn\)\(.*?\);"
@@ -286,7 +289,12 @@ $functions = @{
     copp_set_last_error_message = Get-CoppFunction "copp_set_last_error_message"
     copp_set_last_error_message_n = Get-CoppFunction "copp_set_last_error_message_n"
     copp_path_default_options = Get-CoppFunction "copp_path_default_options"
+    copp_path_from_waypoints_interpolating = Get-CoppFunction "copp_path_from_waypoints_interpolating"
     copp_path_from_waypoints = Get-CoppFunction "copp_path_from_waypoints"
+    copp_smoothing_default_options = Get-CoppFunction "copp_smoothing_default_options"
+    copp_path_from_waypoints_fitting = Get-CoppFunction "copp_path_from_waypoints_fitting"
+    copp_path_smoothing_report = Get-CoppFunction "copp_path_smoothing_report"
+    copp_smoothing_report_free = Get-CoppFunction "copp_smoothing_report_free"
     copp_path_from_parametric = Get-CoppFunction "copp_path_from_parametric"
     copp_path_from_evaluator_2nd = Get-CoppFunction "copp_path_from_evaluator_2nd"
     copp_path_from_evaluator_3rd = Get-CoppFunction "copp_path_from_evaluator_3rd"
@@ -314,6 +322,8 @@ $functions = @{
     copp_robot_acc_constraints_at = Get-CoppFunction "copp_robot_acc_constraints_at"
     copp_robot_jerk_constraints_at = Get-CoppFunction "copp_robot_jerk_constraints_at"
     copp_robot_jerk_linear_constraints_at = Get-CoppFunction "copp_robot_jerk_linear_constraints_at"
+    copp_robot_exceed_topp2 = Get-CoppFunction "copp_robot_exceed_topp2"
+    copp_robot_exceed_topp3 = Get-CoppFunction "copp_robot_exceed_topp3"
     copp_robot_clear_constraints = Get-CoppFunction "copp_robot_clear_constraints"
     copp_robot_pop_front_n = Get-CoppFunction "copp_robot_pop_front_n"
     copp_robot_pop_back_n = Get-CoppFunction "copp_robot_pop_back_n"
@@ -598,6 +608,49 @@ extern "C" {
 #endif
 "@
 
+$cargoToml = [System.IO.File]::ReadAllText((Join-Path $repoRoot "Cargo.toml"), [System.Text.Encoding]::UTF8)
+$packageSection = [regex]::Match($cargoToml, '(?ms)^\[package\][ \t]*\r?$(.*?)(?=^\[|\z)')
+if (-not $packageSection.Success) {
+    throw "Could not find [package] in Cargo.toml"
+}
+$packageVersion = [regex]::Match($packageSection.Groups[1].Value, '(?m)^[ \t]*version[ \t]*=[ \t]*"([^"]+)"')
+if (-not $packageVersion.Success) {
+    throw "Could not find [package].version in Cargo.toml"
+}
+$coppVersion = $packageVersion.Groups[1].Value
+$coppVersionParts = [regex]::Match($coppVersion, '^(\d+)\.(\d+)\.(\d+)')
+if (-not $coppVersionParts.Success) {
+    throw "Cargo.toml [package].version '$coppVersion' does not start with MAJOR.MINOR.PATCH"
+}
+$versionMacros = @"
+/**
+ * Major version of the COPP headers.
+ *
+ * The ``COPP_VERSION_*`` macros are generated from the COPP package version
+ * together with these headers. Compare ``COPP_VERSION_STRING`` with
+ * ``copp_version()`` to detect a header/library version mismatch at run time.
+ */
+#define COPP_VERSION_MAJOR $($coppVersionParts.Groups[1].Value)
+
+/**
+ * Minor version of the COPP headers.
+ */
+#define COPP_VERSION_MINOR $($coppVersionParts.Groups[2].Value)
+
+/**
+ * Patch version of the COPP headers.
+ */
+#define COPP_VERSION_PATCH $($coppVersionParts.Groups[3].Value)
+
+/**
+ * Full version string of the COPP headers.
+ *
+ * A library that matches these headers returns the same string from
+ * `copp_version()`.
+ */
+#define COPP_VERSION_STRING "$coppVersion"
+"@
+
 Write-CoppUmbrellaHeader
 
 Write-CoppHeader "core.h" "COPP_CORE_H" @(
@@ -615,6 +668,7 @@ Write-CoppHeader "core.h" "COPP_CORE_H" @(
     $functions.copp_set_last_error_message,
     $functions.copp_set_last_error_message_n,
     $functions.copp_version,
+    $versionMacros,
     $blocks.CoppVerbosity,
     $blocks.CoppClarabelDirectSolveMethod,
     $blocks.CoppClarabelSolverStatus,
@@ -654,6 +708,7 @@ Write-CoppHeader "core.h" "COPP_CORE_H" @(
 "@,
     $blocks.CoppSliceF64,
     $blocks.CoppSliceMutF64,
+    $blocks.CoppSliceUsize,
     $blocks.CoppVecF64,
     $blocks.CoppVecUsize,
     $blocks.CoppMatrixF64,
@@ -688,7 +743,14 @@ Write-CoppHeader "path.h" "COPP_PATH_H" @(
     $blocks.CoppPathEvaluate3rdFn,
     $jet3Helpers,
     $functions.copp_path_default_options,
+    $functions.copp_path_from_waypoints_interpolating,
     $functions.copp_path_from_waypoints,
+    $blocks.CoppSmoothingOptions,
+    $blocks.CoppSmoothingReport,
+    $functions.copp_smoothing_default_options,
+    $functions.copp_path_from_waypoints_fitting,
+    $functions.copp_path_smoothing_report,
+    $functions.copp_smoothing_report_free,
     $functions.copp_path_from_parametric,
     $functions.copp_path_from_evaluator_2nd,
     $functions.copp_path_from_evaluator_3rd,
@@ -725,6 +787,8 @@ Write-CoppHeader "robot.h" "COPP_ROBOT_H" @(
     $functions.copp_robot_acc_constraints_at,
     $functions.copp_robot_jerk_constraints_at,
     $functions.copp_robot_jerk_linear_constraints_at,
+    $functions.copp_robot_exceed_topp2,
+    $functions.copp_robot_exceed_topp3,
     $functions.copp_robot_clear_constraints,
     $functions.copp_robot_pop_front_n,
     $functions.copp_robot_pop_back_n,

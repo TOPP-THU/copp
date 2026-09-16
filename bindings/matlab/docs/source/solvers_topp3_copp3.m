@@ -11,7 +11,8 @@
 % * Station vector \(s\) has length \(N\) and may be row or column input.
 % * Robot derivative matrices \(q\), \(\dot{q}\), \(\ddot{q}\), and \(q^{(3)}\) are \(\mathrm{dim} \times N\).
 % * |a_linearization| may be \(1 \times N\) or \(N \times 1\) and is stored as an \(N \times 1\)
-%   column inside Problem objects.
+%   column inside Problem objects. The optional |b_linearization| follows
+%   the same convention and is empty by default.
 % * |Profile3rd.a| and |Profile3rd.b| are \(s_\mathrm{len} \times 1\) columns.
 
 %% Which third-order solver should I use?
@@ -76,6 +77,34 @@ fprintf("TOPP3 profile shapes a/b: %d x %d / %d x %d\n", ...
     size(profile_lp.a, 1), size(profile_lp.a, 2), ...
     size(profile_lp.b, 1), size(profile_lp.b, 2));
 
+%% Adaptive linearization around a solved profile
+% By default every third-order row of station \(k\) is linearized at
+% |a_linearization(k)|. Passing |b_linearization| as well selects adaptive
+% linearization: each row is anchored where it is nearly active at the
+% feasible state \((a_\mathrm{lin}, b_\mathrm{lin})\), so a slack row is
+% anchored high and a tight one stays near the state. Both vectors must have
+% the same length and come from one previously solved third-order
+% |Profile3rd|; the \(b\) of a TOPP2 profile is discretized differently and
+% must not be used.
+%
+% Prefer this mode when \(a\) spans a wide range, and especially when \(a\)
+% approaches zero (about \(10^{-10}\)): anchoring both rows of an axis at the
+% same small \(a_\mathrm{lin}(k)\) leaves \(a(k) \le 3 a_\mathrm{lin}(k)\). On
+% profiles well away from zero the default direct mode is cheaper and nearly
+% identical. Every third-order Problem class accepts |b_linearization|.
+
+refined_problem = copp.solver.topp3_lp.Problem( ...
+    robot, ...
+    max(profile_lp.a, 0), ...
+    idx_s_start=1, ...
+    a_boundary=[0, 0], ...
+    b_boundary=[0, 0], ...
+    num_stationary_max=1, ...
+    b_linearization=profile_lp.b);
+profile_refined = copp.solver.topp3_lp.solve(refined_problem);
+
+fprintf("Refined TOPP3-LP max(a)=%.6f\n", max(profile_refined.a));
+
 %% COPP3-SOCP
 
 objectives = {
@@ -98,12 +127,28 @@ result_copp3 = copp.solver.copp3_socp.solve_expert(copp3_problem);
 fprintf("COPP3-SOCP status=%s, objective=%.6f\n", ...
     result_copp3.solver_status, result_copp3.objective_value);
 
+%% Positive-a repair and constraint audit
+% A third-order profile whose \(a\) touches zero can have an interpolated
+% \(a(s)\) that dips below zero between stations.
+% |Profile3rd.force_positive_a(s)| returns an adjusted copy whose
+% interpolated \(a(s)\) stays strictly positive on each interval; its second
+% output is |false| when the adjustment fails, which is not an error. The
+% repair rewrites \(a\) and \(b\) without knowing the robot limits, so audit
+% the delivered profile with |Robot.exceed_topp3|, which returns the maximum
+% first-order, second-order, and original nonlinear third-order violations.
+% Values \(\le 0\) are feasible.
+
+[profile_safe, repaired] = profile_socp.force_positive_a(s);
+[exceed_1st, exceed_2nd, exceed_3rd] = robot.exceed_topp3(profile_safe);
+fprintf("force_positive_a succeeded=%d, max violations: %.3g / %.3g / %.3g\n", ...
+    repaired, exceed_1st, exceed_2nd, exceed_3rd);
+
 %% Interpolate a Profile3rd
 
 [t_final, t_s] = copp.interpolation.s_to_t_topp3(s, profile_socp);
 profile_table = table(s, profile_socp.a, profile_socp.b, t_s, ...
     'VariableNames', {'s', 'a', 'b', 't_s'});
-disp(profile_table)
+disp(head(profile_table))
 fprintf("TOPP3-SOCP final traversal time: %.6f seconds\n", t_final);
 
 %% Expert results

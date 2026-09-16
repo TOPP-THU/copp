@@ -7,4 +7,6 @@ updates:
       day: monday
       time: "09:00"
       timezone: America/Santiago
-    open-pull-requests-limit: 10
+    # Version-update PRs are off: actions are pinned by SHA and updated by
+    # hand. Set this above zero to resume them.
+    open-pull-requests-limit: 0

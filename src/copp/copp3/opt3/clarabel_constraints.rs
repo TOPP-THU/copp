@@ -27,9 +27,10 @@ use core::f64;
 /// 1. Boundary equalities for `a` and `b` at start/end samples.
 /// 2. Dynamic equalities for stationary and moving intervals.
 /// 3. First-order bounds (including stationary-endpoint handling).
-/// 4. Second-order acceleration bounds.
-/// 5. Third-order jerk-linear bounds.
-/// 6. Final nonnegative cone packing for all inequality rows added after dynamic equalities.
+/// 4. Continuous-interval first-order constraints on moving intervals.
+/// 5. Second-order acceleration bounds.
+/// 6. Third-order jerk-linear bounds.
+/// 7. Final nonnegative cone packing for all inequality rows added after dynamic equalities.
 ///
 /// # Logging behavior
 /// - [`Debug`](crate::diag::Verbosity::Debug): emits stage-by-stage matrix/vector/cone sizes.
@@ -92,11 +93,15 @@ pub(crate) fn clarabel_standard_constraint_topp3(
         ));
     }
     report_counts("first_order", row, col, val, b, cones);
-    // Step 4. second-order constraints
+    // Step 4. continuous-interval first-order constraints
+    // num_val<=5*n, num_b<=2*n, num_cone<=1 (if packed independently)
+    clarabel_interval_a_constraint_topp3(s, num_stationary, (row, col, val, b, cones), false);
+    report_counts("interval_first_order", row, col, val, b, cones);
+    // Step 5. second-order constraints
     // num_val<=2*count_acc_constraints, num_b<=count_acc_constraints, num_cone<=1 (if packed independently)
     clarabel_2order_constraint_topp3(problem, s, num_stationary, (row, col, val, b, cones), false);
     report_counts("second_order", row, col, val, b, cones);
-    // Step 5. third-order constraints
+    // Step 6. third-order constraints
     // num_val<=6*count_jerk_constraints, num_b<=2*count_jerk_constraints, num_cone<=1 (if packed independently)
     clarabel_3order_constraint_topp3(problem, s, num_stationary, (row, col, val, b, cones), false);
     cones.push(NonnegativeConeT(b.len() - n_b_old));
@@ -329,6 +334,55 @@ fn clarabel_1order_constraint_topp3(
     true
 }
 
+/// Append continuous-interval first-order constraints on moving intervals.
+///
+/// For `t=(s-s[k])/ds` in `[0,1]`, the quadratic reconstruction is
+/// `a(t)=a[k]*(1-t)^2+2*(a[k]+ds*b[k])*t*(1-t)+a[k+1]*t^2`.
+/// Bisecting it once with de Casteljau's algorithm gives two adjacent interior
+/// control values whose average is the shared midpoint control. Requiring
+/// these two values to be nonnegative gives
+/// `2*a[k]+ds*b[k]>=0` and
+/// `2*a[k]+2*ds*b[k]+ds*b[k+1]>=0`.
+/// Together with the endpoint bounds, these two linear sufficient conditions
+/// certify `a(t)>=0` throughout the interval.
+/// They are a conservative polyhedral inner approximation of the exact convex
+/// condition `a[k]+ds*b[k]+sqrt(a[k]*a[k+1])>=0`, chosen to keep TOPP3-LP linear.
+///
+/// Upper-bound estimate: `num_val<=5*n`, `num_b<=2*n`, `num_cone<=1`.
+///
+/// If `modify_cones=true`, a single [`NonnegativeConeT`](clarabel::solver::SupportedConeT::NonnegativeConeT) is appended for all added rows.
+fn clarabel_interval_a_constraint_topp3(
+    s: &[f64],
+    num_stationary: (usize, usize),
+    constraints: ConstraintsClarabel,
+    modify_cones: bool,
+) {
+    let (row, col, val, b, cones) = constraints;
+    let n_b_old = b.len();
+    let n = s.len() - 1;
+
+    for k in num_stationary.0..(n - num_stationary.1) {
+        let ds = s[k + 1] - s[k];
+        // 2*a[k] + ds*b[k] >= 0
+        // A*x-b = -s = -2*x[k] - ds*x[n+k+1] <= 0
+        row.resize(row.len() + 2, b.len());
+        col.extend([k, n + k + 1]);
+        val.extend([-2.0, -ds]);
+        b.push(0.0);
+
+        // 2*a[k] + 2*ds*b[k] + ds*b[k+1] >= 0
+        // A*x-b = -s = -2*x[k] - 2*ds*x[n+k+1] - ds*x[n+k+2] <= 0
+        row.resize(row.len() + 3, b.len());
+        col.extend([k, n + k + 1, n + k + 2]);
+        val.extend([-2.0, -2.0 * ds, -ds]);
+        b.push(0.0);
+    }
+
+    if modify_cones {
+        cones.push(NonnegativeConeT(b.len() - n_b_old));
+    }
+}
+
 /// Append boundary equalities for `a` and `b` as Clarabel zero-cone rows.
 ///
 /// Upper-bound estimate: `num_val==4`, `num_b==4`, `num_cone<=1`.
@@ -475,13 +529,74 @@ pub(crate) fn clarabel_standard_capacity_topp3(
     // Step 2. Dynamic constraints (num_val<=4*n; num_b<=n)
     // Step 3. first-order constraints
     // num_val<=2*(n-1), num_b<=2*(n-1)
-    // Step 4. second-order constraints
+    // Step 4. continuous-interval first-order constraints
+    // num_val<=5*n, num_b<=2*n
+    // Step 5. second-order constraints
     // num_val<=2*count_acc_constraints, num_b<=count_acc_constraints
-    // Step 5. third-order constraints
+    // Step 6. third-order constraints
     // num_val<=6*count_jerk_constraints, num_b<=2*count_jerk_constraints
-    // Step 6. cone packing
+    // Step 7. cone packing
     // num_cone==2 (1 x ZeroCone for equalities + 1 x NonnegativeCone for inequalities)
-    let capacity_val = 2 + 6 * n + 2 * count_acc_constraints + 6 * count_jerk_constraints;
-    let capacity_b = 2 + 3 * n + count_acc_constraints + 2 * count_jerk_constraints;
+    let capacity_val = 2 + 11 * n + 2 * count_acc_constraints + 6 * count_jerk_constraints;
+    let capacity_b = 2 + 5 * n + count_acc_constraints + 2 * count_jerk_constraints;
     (capacity_val, capacity_b, 2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interval_a_constraint_rejects_hidden_negative_quadratic() {
+        let mut row = Vec::new();
+        let mut col = Vec::new();
+        let mut val = Vec::new();
+        let mut b = Vec::new();
+        let mut cones = Vec::new();
+        clarabel_interval_a_constraint_topp3(
+            &[0.0, 1.0],
+            (0, 0),
+            (&mut row, &mut col, &mut val, &mut b, &mut cones),
+            true,
+        );
+
+        assert_eq!(row, [0, 0, 1, 1, 1]);
+        assert_eq!(col, [0, 2, 0, 2, 3]);
+        assert_eq!(val, [-2.0, -1.0, -2.0, -2.0, -1.0]);
+        assert_eq!(b, [0.0, 0.0]);
+        assert!(matches!(cones.as_slice(), [NonnegativeConeT(2)]));
+
+        // a[0]=a[1]=0.1 and b[0]=-1,b[1]=1 obey the endpoint dynamics,
+        // but the reconstructed a(1/2)=-0.4.  The first row rejects it.
+        let x = [0.1, 0.1, -1.0, 1.0];
+        let lhs = row
+            .iter()
+            .zip(&col)
+            .zip(&val)
+            .filter_map(|((row_id, col_id), value)| (*row_id == 0).then_some(*value * x[*col_id]))
+            .sum::<f64>();
+        assert!(lhs > b[0]);
+    }
+
+    #[test]
+    fn interval_a_constraint_skips_stationary_intervals() {
+        let mut row = Vec::new();
+        let mut col = Vec::new();
+        let mut val = Vec::new();
+        let mut b = Vec::new();
+        let mut cones = Vec::new();
+        clarabel_interval_a_constraint_topp3(
+            &[0.0, 1.0, 3.0, 6.0],
+            (1, 1),
+            (&mut row, &mut col, &mut val, &mut b, &mut cones),
+            true,
+        );
+
+        // Only [s[1],s[2]] is an ordinary moving interval; ds=2 and n=3.
+        assert_eq!(row, [0, 0, 1, 1, 1]);
+        assert_eq!(col, [1, 5, 1, 5, 6]);
+        assert_eq!(val, [-2.0, -2.0, -2.0, -4.0, -2.0]);
+        assert_eq!(b, [0.0, 0.0]);
+        assert!(matches!(cones.as_slice(), [NonnegativeConeT(2)]));
+    }
 }

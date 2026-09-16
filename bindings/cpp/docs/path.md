@@ -32,10 +32,11 @@ double ddq_axis0_at_mid = out.ddq.value()(0, 1);
 ## Waypoint Splines
 
 Waypoint paths are the easiest entry point.  Each inner initializer-list is one
-waypoint vector:
+waypoint vector.  `Path::from_waypoints_interpolating` builds a spline that
+passes through every waypoint; `Path::from_waypoints` is an equivalent alias:
 
 ```cpp
-auto path = copp::Path::from_waypoints({
+auto path = copp::Path::from_waypoints_interpolating({
     {0.0, 0.0},
     {0.5, 0.25},
     {1.0, 1.0},
@@ -54,7 +55,7 @@ auto waypoints = copp::Matrix::from_columns({
     {1.0, 1.0},
 });
 
-auto path = copp::Path::from_waypoints(waypoints.view());
+auto path = copp::Path::from_waypoints_interpolating(waypoints.view());
 ```
 
 The default spline configuration follows Rust/Python:
@@ -72,8 +73,51 @@ config.s_min = -1.0;
 config.s_max = 1.0;
 config.out_of_range = copp::OutOfRangeMode::Clamp;
 
-auto path = copp::Path::from_waypoints(waypoints.view(), config);
+auto path = copp::Path::from_waypoints_interpolating(waypoints.view(), config);
 ```
+
+## Interpolating Versus Fitting Waypoint Paths
+
+`Path::from_waypoints_interpolating` constrains the path to pass through
+**every** waypoint at its assigned parameter.  Choose it when each waypoint is a
+position or event that must be retained.
+
+`Path::from_waypoints_fitting` instead treats adjacent columns as a reference
+polyline under one common parameter and builds an adaptive nonuniform C4
+quintic B-spline.  The fitted curve does **not** pass through interior
+waypoints: selected axes may deviate from the polyline within their absolute
+tolerances (input units, same parameter), and that error is numerically audited
+over every complete reference interval.  Endpoint positions are retained.
+Unselected axes keep C4 quintic interpolation through all waypoints.
+
+```cpp
+copp::SmoothingConfig config;
+config.axes = std::vector<std::size_t>{0, 1};
+config.tolerance_per_axis = {1.0e-3, 1.0e-2}; // follows `axes` order
+config.parameters = std::vector<double>{0.0, 0.3, 1.0}; // one per column
+
+auto fitted = copp::Path::from_waypoints_fitting(waypoints.view(), config);
+
+if (auto report = fitted.smoothing_report()) {
+    // report->max_errors[i] <= tolerance of axis report->axes[i]
+}
+```
+
+`SmoothingConfig` defaults to a uniform tolerance of `1e-3` on every row,
+uniform parameters on `[0, 1]`, 20 refinement passes, 20000 selected-axis
+spans, and out-of-range errors.  An empty `tolerance_per_axis` uses
+`tolerance` for every selected axis.  Invalid configurations, or tolerances
+that cannot be met within the budgets, throw `copp::Error` (or return an error
+from the `copp::no_throw` overloads).  `smoothing_report()` returns
+`std::nullopt` for interpolated, parametric, and evaluator paths.
+
+Fitting is geometric preprocessing, not time parameterization: evaluated
+derivatives are still derivatives with respect to `s`.
+
+@warning Both waypoint constructor families (`from_waypoints_interpolating` /
+`from_waypoints` and `from_waypoints_fitting`) are currently unstable.  Their
+names, signatures, and configuration types may change as more algorithms are
+added.
 
 ## Scalar Parametric Paths
 

@@ -149,6 +149,10 @@ typedef enum CoppStatus {
      */
     COPP_STATUS_PATH_UNSUPPORTED_DERIVATIVE_ORDER = 308,
     /**
+     * Tolerance-bounded waypoint fitting failed.
+     */
+    COPP_STATUS_PATH_SMOOTHING = 309,
+    /**
      * Solver reported infeasibility.
      */
     COPP_STATUS_SOLVER_INFEASIBLE = 400,
@@ -325,6 +329,33 @@ enum CoppStatus copp_set_last_error_message_n(enum CoppStatus status,
  * The returned pointer is a static null-terminated string owned by the library.
  */
 const char *copp_version(void);
+
+/**
+ * Major version of the COPP headers.
+ *
+ * The `COPP_VERSION_*` macros are generated from the COPP package version
+ * together with these headers. Compare `COPP_VERSION_STRING` with
+ * `copp_version()` to detect a header/library version mismatch at run time.
+ */
+#define COPP_VERSION_MAJOR 0
+
+/**
+ * Minor version of the COPP headers.
+ */
+#define COPP_VERSION_MINOR 2
+
+/**
+ * Patch version of the COPP headers.
+ */
+#define COPP_VERSION_PATCH 3
+
+/**
+ * Full version string of the COPP headers.
+ *
+ * A library that matches these headers returns the same string from
+ * copp_version().
+ */
+#define COPP_VERSION_STRING "0.2.3"
 
 /**
  * C ABI verbosity level for solver diagnostics.
@@ -806,6 +837,23 @@ typedef struct CoppSliceMutF64 {
      */
     size_t len;
 } CoppSliceMutF64;
+
+/**
+ * Borrowed immutable `size_t` slice passed from C to COPP.
+ *
+ * The pointer must reference at least `len` contiguous `size_t` values unless
+ * `len == 0`, in which case `data` may be null.
+ */
+typedef struct CoppSliceUsize {
+    /**
+     * Pointer to the first element.
+     */
+    const size_t *data;
+    /**
+     * Number of elements.
+     */
+    size_t len;
+} CoppSliceUsize;
 
 /**
  * Library-owned `f64` vector returned to C.

@@ -39,6 +39,26 @@ namespace copp::solver::topp3
     /// linearize third-order constraints into the underlying constraint cache.
     /// The owning `Robot` or `Constraints` object must outlive this problem and
     /// solver calls using it.
+    ///
+    /// By default every third-order row of a station is linearized directly at
+    /// `a_linearization[k]`. Passing a non-empty `b_linearization` selects
+    /// adaptive anchoring (Rust `LinearizationModeTopp3::GivenFeasibleAdaptive`):
+    /// each row is anchored where it is nearly active at the feasible state
+    /// `(a_linearization, b_linearization)`. This requires `a_linearization`
+    /// and `b_linearization` to be the `a` and `b` of the same previously
+    /// solved third-order profile, with equal length; a TOPP2 profile
+    /// discretizes `b` differently and must not be used. Prefer it when `a`
+    /// spans a wide range over the window, and especially when `a` can approach
+    /// zero (around `1e-10`): anchoring both rows of one axis at the same small
+    /// `a_linearization[k]` cancels `b` and `c` and leaves
+    /// `a[k] <= 3 * a_linearization[k]`. On profiles well away from zero the
+    /// default direct linearization is cheaper and nearly identical.
+    ///
+    /// @code
+    /// auto profile = copp::solver::topp3_socp::solve(problem, options);
+    /// copp::solver::topp3::Problem refined{
+    ///     constraints.ref(), profile.a, 0, boundary, 1, 1.0e-10, profile.b};
+    /// @endcode
     class COPP_API Problem
     {
     public:
@@ -53,6 +73,10 @@ namespace copp::solver::topp3
         /// @param num_stationary_max Upper bounds for inferred stationary
         /// boundary intervals.
         /// @param a_linearization_floor Lower numerical floor applied by Rust.
+        /// @param b_linearization Optional node profile `b = ddot{s}` paired
+        /// with `a_linearization`. Empty (default) selects direct
+        /// linearization; non-empty selects adaptive anchoring and must have
+        /// the same length as `a_linearization`. The values are copied.
         /// @throws copp::Error if the interval, boundary, or linearization is invalid.
         Problem(
             ConstraintsRef constraints,
@@ -60,7 +84,8 @@ namespace copp::solver::topp3
             std::size_t idx_s_start = 0,
             Boundary3 boundary = {},
             StationaryBounds num_stationary_max = {},
-            double a_linearization_floor = 1.0e-10);
+            double a_linearization_floor = 1.0e-10,
+            Span<const double> b_linearization = {});
 
         Problem(
             ConstraintsRef constraints,
@@ -68,10 +93,13 @@ namespace copp::solver::topp3
             std::size_t idx_s_start,
             Boundary3 boundary,
             std::size_t symmetric_num_stationary_max,
-            double a_linearization_floor = 1.0e-10);
+            double a_linearization_floor = 1.0e-10,
+            Span<const double> b_linearization = {});
 
         ConstraintsRef constraints() const noexcept { return constraints_; }
         const std::vector<double> &a_linearization() const noexcept { return a_linearization_; }
+        /// Copied `b_linearization`; empty when direct linearization is used.
+        const std::vector<double> &b_linearization() const noexcept { return b_linearization_; }
         std::size_t idx_s_start() const noexcept { return idx_s_start_; }
         std::size_t idx_s_final() const noexcept { return idx_s_final_; }
         Boundary3 boundary() const noexcept { return boundary_; }
@@ -83,6 +111,7 @@ namespace copp::solver::topp3
     private:
         ConstraintsRef constraints_;
         std::vector<double> a_linearization_;
+        std::vector<double> b_linearization_;
         std::size_t idx_s_start_ = 0;
         std::size_t idx_s_final_ = 0;
         Boundary3 boundary_;

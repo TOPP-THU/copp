@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from typing import overload
+
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from .core import MatrixLayout, MatrixLayoutLike
+from .interpolation import Profile3rd
 
 
 class Constraints:
@@ -139,5 +142,96 @@ class Constraints:
         Rows follow the Rust constraint model
         ``sqrt(a) * (jerk_a*a + jerk_b*b + jerk_c*c + jerk_d) <= jerk_max``.
         ``is_negative=True`` forwards the Rust sign-flip mode.
+        """
+        ...
+
+    def exceed_topp2(
+        self,
+        a: ArrayLike,
+        *,
+        idx_s_start: int = 0,
+    ) -> tuple[float, float]:
+        """Return maximum TOPP2 constraint violations of an ``a`` profile.
+
+        The path acceleration of each interval is reconstructed by the TOPP2
+        relation ``b[k] = (a[k+1] - a[k]) / (2 * ds[k])``, and the
+        second-order rows of both endpoint stations are checked against that
+        interval's ``b``.
+
+        Parameters
+        ----------
+        a:
+            One-dimensional node profile ``a = (ds/dt)^2`` convertible to
+            ``float64``, sampled on the stations starting at ``idx_s_start``.
+        idx_s_start:
+            Global station index of ``a[0]``.
+
+        Returns
+        -------
+        tuple[float, float]
+            ``(exceed_1st, exceed_2nd)``. Each value is ``<= 0`` when the
+            profile is feasible and positive when violated. The first-order
+            term covers ``0 <= a[k] <= amax[k]``. Both values are ``NaN`` if
+            the station range is unavailable or ``b`` cannot be reconstructed,
+            i.e. fewer than two stations are given, the station grid is not
+            strictly increasing, or ``a`` contains non-finite values.
+        """
+        ...
+
+    @overload
+    def exceed_topp3(
+        self,
+        profile: Profile3rd,
+        /,
+        *,
+        idx_s_start: int = 0,
+    ) -> tuple[float, float, float]:
+        """Return maximum TOPP3 constraint violations of a ``Profile3rd``.
+
+        ``profile`` supplies ``a``, ``b``, and ``num_stationary`` together;
+        passing ``b`` or ``num_stationary`` as well raises ``ValueError``.
+        See the array overload for the returned values.
+        """
+        ...
+
+    @overload
+    def exceed_topp3(
+        self,
+        a: ArrayLike,
+        b: ArrayLike,
+        *,
+        num_stationary: tuple[int, int] | None = None,
+        idx_s_start: int = 0,
+    ) -> tuple[float, float, float]:
+        """Return maximum TOPP3 constraint violations of an ``(a, b)`` profile.
+
+        The third-order term uses the original nonlinear ``sqrt(a)`` form,
+        not the linearized rows, so it audits the profile that is actually
+        delivered. Run it after post-processing such as
+        ``Profile3rd.force_positive_a``. The third-order term skips the two
+        stationary boundary blocks described by ``num_stationary``.
+
+        Parameters
+        ----------
+        a:
+            One-dimensional node profile ``a = (ds/dt)^2`` convertible to
+            ``float64``.
+        b:
+            Node profile ``b = dds/dt`` with the same length as ``a``.
+        num_stationary:
+            Stationary boundary interval counts ``(start, end)``. ``None``
+            means ``(0, 0)``.
+        idx_s_start:
+            Global station index of ``a[0]``.
+
+        Returns
+        -------
+        tuple[float, float, float]
+            ``(exceed_1st, exceed_2nd, exceed_3rd)``. Each value is ``<= 0``
+            when the profile is feasible and positive when violated. All
+            values are ``NaN`` if fewer than two stations are given, the
+            station range is unavailable, the station grid is not strictly
+            increasing, ``a`` and ``b`` disagree in length, or ``a`` or ``b``
+            contains non-finite values.
         """
         ...

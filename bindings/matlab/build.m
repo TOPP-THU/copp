@@ -39,37 +39,13 @@ lib_file = nativeLibraryFile(lib_dir, linkage);
 link_inputs = nativeLinkInputs(lib_dir, lib_file, linkage);
 mex_overrides = nativeMexOverrides(linkage);
 
-mex_args = [{'-R2018a'}, ...
-    {['-I', include_dir]}, ...
-    {src}, ...
-    link_inputs(:)', ...
-    mex_overrides(:)', ...
-    {'-outdir'}, {out_dir}, ...
-    {'-output'}, {'copp_mex'}];
-
-% On Linux, statically link libstdc++ to avoid GLIBCXX version conflicts
-% with MATLAB's bundled libstdc++.so
-if isunix && ~ismac
-    % Append -static-libstdc++ to CXXFLAGS in the environment so mex
-    % receives separate tokens rather than a single quoted arg.
-    origCXX = getenv('CXXFLAGS');
-    if isempty(origCXX)
-        newCXX = '-static-libstdc++';
-    else
-        newCXX = [origCXX ' -static-libstdc++'];
-    end
-    setenv('CXXFLAGS', newCXX);
-end
-
-% Debug: print the mex arguments so CI logs show what will be passed.
-disp('mex will be called with arguments:');
-for k = 1:numel(mex_args)
-    disp(['  ', mex_args{k}]);
-end
-
-mex(mex_args{:});
-
-mex(mex_args{:});
+mex('-R2018a', ...
+    ['-I', include_dir], ...
+    src, ...
+    link_inputs{:}, ...
+    mex_overrides{:}, ...
+    '-outdir', out_dir, ...
+    '-output', 'copp_mex');
 
 if strcmp(linkage, 'dynamic')
     runtime = nativeRuntimeFile(lib_dir);

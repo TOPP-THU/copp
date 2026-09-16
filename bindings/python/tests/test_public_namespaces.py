@@ -26,6 +26,8 @@ def test_top_level_keeps_core_convenience_aliases() -> None:
     assert copp.Constraints is copp.constraints.Constraints
     assert copp.Profile3rd is copp.interpolation.Profile3rd
     assert copp.SplineConfig is copp.path.SplineConfig
+    assert copp.SmoothingConfig is copp.path.SmoothingConfig
+    assert copp.SmoothingReport is copp.path.SmoothingReport
     assert copp.CoppError is copp.core.CoppError
     assert copp.PathError is copp.core.PathError
     assert copp.ConstraintError is copp.core.ConstraintError

@@ -1,7 +1,7 @@
 //! Waypoint-based spline path construction and evaluation kernels.
 //!
 //! Most users should construct waypoint paths through
-//! [`Path::from_waypoints`](crate::path::Path::from_waypoints), passing a
+//! [`Path::from_waypoints_interpolating`](crate::path::Path::from_waypoints_interpolating), passing a
 //! [`SplineConfig`] when the default spline settings
 //! need to be changed. This module contains the lower-level spline
 //! implementation used by that constructor.
@@ -48,7 +48,8 @@ pub enum Parametrization {
 /// derivative boundary conditions and out-of-range errors.
 ///
 /// Most callers use this type through
-/// [`Path::from_waypoints`](crate::path::Path::from_waypoints) rather than
+/// [`Path::from_waypoints_interpolating`](crate::path::Path::from_waypoints_interpolating)
+/// rather than
 /// constructing [`SplinePath`] directly.
 ///
 /// # Example
@@ -84,7 +85,7 @@ pub enum Parametrization {
 ///     end_state: Some(end_state),
 /// };
 ///
-/// let path = Path::from_waypoints(&waypoints, cfg)?;
+/// let path = Path::from_waypoints_interpolating(&waypoints, cfg)?;
 /// assert_eq!(path.dim(), 2);
 /// # Ok(())
 /// # }
@@ -131,7 +132,8 @@ impl Default for SplineConfig {
 /// `[dim0_seg0.., dim0_seg1.., ..., dim1_seg0.., ...]`.
 ///
 /// Most users should construct a public [`Path`](crate::path::Path) with
-/// [`Path::from_waypoints`](crate::path::Path::from_waypoints) instead of using
+/// [`Path::from_waypoints_interpolating`](crate::path::Path::from_waypoints_interpolating)
+/// instead of using
 /// this implementation type directly.
 pub struct SplinePath {
     // --- Evaluation metadata (all cheap Copy types) ----------------------

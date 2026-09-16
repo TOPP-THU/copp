@@ -9,14 +9,16 @@ use crate::ffi::python::array::{array_like_to_vec_f64, array_like_to_vec2_f64};
 use crate::ffi::python::error::to_py_err;
 use crate::path::{
     OutOfRangeMode as RustOutOfRangeMode, Parametrization as RustParametrization, Path as RustPath,
-    PathEvaluator2nd, PathEvaluator3rd, SplineConfig as RustSplineConfig,
+    PathEvaluator2nd, PathEvaluator3rd, SmoothingConfig as RustSmoothingConfig,
+    SmoothingReport as RustSmoothingReport, SmoothingTolerance as RustSmoothingTolerance,
+    SplineConfig as RustSplineConfig,
 };
 use nalgebra::DMatrix;
 use numpy::{PyArray1, PyArray2, PyArrayMethods};
 use pyo3::Borrowed;
 use pyo3::exceptions::{PyAttributeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAnyMethods, PyTuple, PyTupleMethods};
+use pyo3::types::{PyAnyMethods, PyFloat, PyTuple, PyTupleMethods};
 use std::sync::{Arc, Mutex};
 
 /// Register path-related classes on the native [`PyModule`].
@@ -25,6 +27,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyParametrization>()?;
     m.add_class::<PyMatrixLayout>()?;
     m.add_class::<PySplineConfig>()?;
+    m.add_class::<PySmoothingConfig>()?;
+    m.add_class::<PySmoothingReport>()?;
     m.add_class::<PyPathDerivatives>()?;
     m.add_class::<PyPath>()?;
     Ok(())
@@ -390,6 +394,280 @@ impl PySplineConfig {
     }
 }
 
+/// Internal parser for `float | ArrayLike` smoothing tolerances.
+struct SmoothingToleranceArg(
+    /// Parsed uniform or per-axis tolerance.
+    RustSmoothingTolerance,
+);
+
+impl FromPyObject<'_, '_> for SmoothingToleranceArg {
+    /// [`PyErr`] returned when parsing fails.
+    type Error = PyErr;
+
+    /// Parse a scalar into a uniform tolerance or a vector into per-axis tolerances.
+    fn extract(obj: Borrowed<'_, '_, PyAny>) -> Result<Self, Self::Error> {
+        parse_smoothing_tolerance(&obj).map(Self)
+    }
+}
+
+/// Python-owned tolerance-bounded fitting configuration backed by [`RustSmoothingConfig`].
+#[pyclass(name = "SmoothingConfig", module = "copp_py._native")]
+pub(crate) struct PySmoothingConfig {
+    /// Absolute deviation limits for the selected axes.
+    tolerance: RustSmoothingTolerance,
+    /// Selected 0-based path dimensions, or `None` for every dimension.
+    axes: Option<Vec<usize>>,
+    /// Optional common path parameter assigned to each waypoint.
+    parameters: Option<Vec<f64>>,
+    /// Maximum number of adaptive knot-refinement passes.
+    max_refinements: usize,
+    /// Maximum number of polynomial spans used by the selected axes.
+    max_segments: usize,
+    /// Runtime behavior for path evaluation outside the parameter range.
+    out_of_range: PyOutOfRangeMode,
+}
+
+#[pymethods]
+impl PySmoothingConfig {
+    /// Configuration for tolerance-bounded waypoint fitting.
+    ///
+    /// Used by ``Path.from_waypoints_fitting``. This API is unstable: names,
+    /// signatures, and configuration types may change as more waypoint
+    /// algorithms are added.
+    ///
+    /// Parameters
+    /// ----------
+    /// tolerance : float | ArrayLike, default=0.001
+    ///     Maximum absolute deviation of each selected axis from the
+    ///     piecewise-linear reference polyline through the waypoints, in that
+    ///     axis's input units. A scalar applies to every selected axis. A
+    ///     one-dimensional array gives one finite, positive value per selected
+    ///     axis and follows the order of ``axes`` (natural dimension order
+    ///     when ``axes`` is ``None``).
+    /// axes : list[int] | None, default=None
+    ///     Distinct 0-based path dimensions allowed to deviate from the
+    ///     waypoints. ``None`` selects every dimension. Unselected dimensions
+    ///     keep quintic C4 interpolation through every waypoint.
+    /// parameters : ArrayLike | None, default=None
+    ///     Finite, strictly increasing path parameter for each waypoint. The
+    ///     first and last values become the path range. ``None`` assigns
+    ///     waypoints uniformly on ``[0, 1]``.
+    /// max_refinements : int, default=20
+    ///     Maximum number of adaptive knot-refinement passes.
+    /// max_segments : int, default=20000
+    ///     Maximum number of polynomial spans used by the selected axes.
+    /// out_of_range : OutOfRangeMode | str, default=OutOfRangeMode.ERROR
+    ///     Behavior when evaluating outside the path range. Strings
+    ///     ``"error"`` and ``"clamp"`` are accepted for convenience.
+    #[new]
+    #[pyo3(
+        signature = (*, tolerance = SmoothingToleranceArg(RustSmoothingTolerance::Uniform(0.001)), axes = None, parameters = None, max_refinements = 20, max_segments = 20000, out_of_range = OutOfRangeArg(PyOutOfRangeMode::Error)),
+        text_signature = "(*, tolerance=0.001, axes=None, parameters=None, max_refinements=20, max_segments=20000, out_of_range='error')"
+    )]
+    fn new<'py>(
+        tolerance: SmoothingToleranceArg,
+        axes: Option<&Bound<'py, PyAny>>,
+        parameters: Option<&Bound<'py, PyAny>>,
+        max_refinements: usize,
+        max_segments: usize,
+        out_of_range: OutOfRangeArg,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            tolerance: tolerance.0,
+            axes: optional_smoothing_axes(axes)?,
+            parameters: optional_smoothing_parameters(parameters)?,
+            max_refinements,
+            max_segments,
+            out_of_range: out_of_range.0,
+        })
+    }
+
+    /// Return the tolerance as a float (uniform) or a per-axis array.
+    #[getter]
+    fn tolerance(&self, py: Python<'_>) -> Py<PyAny> {
+        match &self.tolerance {
+            RustSmoothingTolerance::Uniform(value) => PyFloat::new(py, *value).into_any().unbind(),
+            RustSmoothingTolerance::PerAxis(values) => {
+                PyArray1::from_slice(py, values).into_any().unbind()
+            }
+        }
+    }
+
+    /// Set the tolerance from a float or a one-dimensional array.
+    #[setter]
+    fn set_tolerance(&mut self, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.tolerance = parse_smoothing_tolerance(value)?;
+        Ok(())
+    }
+
+    /// Return the selected 0-based path dimensions, or ``None`` for all.
+    #[getter]
+    fn axes(&self) -> Option<Vec<usize>> {
+        self.axes.clone()
+    }
+
+    /// Set or clear the selected path dimensions.
+    #[setter]
+    fn set_axes(&mut self, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.axes = optional_smoothing_axes(Some(value))?;
+        Ok(())
+    }
+
+    /// Return a copy of the waypoint parameters, if present.
+    #[getter]
+    fn parameters<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray1<f64>>> {
+        self.parameters
+            .as_deref()
+            .map(|values| PyArray1::from_slice(py, values))
+    }
+
+    /// Set or clear the waypoint parameters.
+    #[setter]
+    fn set_parameters(&mut self, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.parameters = optional_smoothing_parameters(Some(value))?;
+        Ok(())
+    }
+
+    /// Return the maximum number of adaptive knot-refinement passes.
+    #[getter]
+    fn max_refinements(&self) -> usize {
+        self.max_refinements
+    }
+
+    /// Set the maximum number of adaptive knot-refinement passes.
+    #[setter]
+    fn set_max_refinements(&mut self, value: usize) {
+        self.max_refinements = value;
+    }
+
+    /// Return the maximum number of spans used by the selected axes.
+    #[getter]
+    fn max_segments(&self) -> usize {
+        self.max_segments
+    }
+
+    /// Set the maximum number of spans used by the selected axes.
+    #[setter]
+    fn set_max_segments(&mut self, value: usize) {
+        self.max_segments = value;
+    }
+
+    /// Return the out-of-range evaluation policy.
+    #[getter]
+    fn out_of_range(&self) -> PyOutOfRangeMode {
+        self.out_of_range
+    }
+
+    /// Set the out-of-range evaluation policy from an enum value or string.
+    #[setter]
+    fn set_out_of_range(&mut self, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.out_of_range = parse_out_of_range(value)?;
+        Ok(())
+    }
+
+    /// Return a compact representation for interactive Python sessions.
+    fn __repr__(&self) -> String {
+        let tolerance = match &self.tolerance {
+            RustSmoothingTolerance::Uniform(value) => format!("{value}"),
+            RustSmoothingTolerance::PerAxis(values) => format!("{values:?}"),
+        };
+        let axes = match &self.axes {
+            Some(axes) => format!("{axes:?}"),
+            None => "None".to_owned(),
+        };
+        let parameters = match &self.parameters {
+            Some(parameters) => format!("<{} values>", parameters.len()),
+            None => "None".to_owned(),
+        };
+        format!(
+            "SmoothingConfig(tolerance={}, axes={}, parameters={}, max_refinements={}, max_segments={}, out_of_range={:?})",
+            tolerance, axes, parameters, self.max_refinements, self.max_segments, self.out_of_range
+        )
+    }
+}
+
+impl PySmoothingConfig {
+    /// Convert the owned Python configuration into [`RustSmoothingConfig`].
+    fn to_rust(&self) -> RustSmoothingConfig {
+        RustSmoothingConfig {
+            tolerance: self.tolerance.clone(),
+            axes: self.axes.clone(),
+            parameters: self.parameters.clone(),
+            max_refinements: self.max_refinements,
+            max_segments: self.max_segments,
+            out_of_range_mode: self.out_of_range.to_rust(),
+        }
+    }
+}
+
+/// Python-visible construction diagnostics of a tolerance-fitted waypoint path.
+#[pyclass(name = "SmoothingReport", module = "copp_py._native")]
+pub(crate) struct PySmoothingReport {
+    /// Rust core report copied from the fitted path.
+    inner: RustSmoothingReport,
+}
+
+#[pymethods]
+impl PySmoothingReport {
+    /// Return the selected 0-based path dimensions in tolerance/report order.
+    #[getter]
+    fn axes(&self) -> Vec<usize> {
+        self.inner.axes.clone()
+    }
+
+    /// Return the number of final polynomial spans shared by the selected axes.
+    #[getter]
+    fn segments(&self) -> usize {
+        self.inner.segments
+    }
+
+    /// Return the number of spans in the separate unselected-axis interpolant.
+    #[getter]
+    fn interpolated_segments(&self) -> usize {
+        self.inner.interpolated_segments
+    }
+
+    /// Return the number of completed local knot-refinement passes.
+    #[getter]
+    fn refinements(&self) -> usize {
+        self.inner.refinements
+    }
+
+    /// Return the cumulative number of fitting rows assembled.
+    #[getter]
+    fn fitting_rows(&self) -> usize {
+        self.inner.fitting_rows
+    }
+
+    /// Return the cumulative number of reference intervals visited by audits.
+    #[getter]
+    fn checked_intervals(&self) -> usize {
+        self.inner.checked_intervals
+    }
+
+    /// Return the final whole-domain absolute-error bound per selected axis.
+    ///
+    /// Values are in input units and follow ``axes`` order. They are
+    /// Bernstein-derived numerical bounds computed in ordinary floating-point
+    /// arithmetic, not formal certificates or Cartesian errors.
+    #[getter]
+    fn max_errors<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_slice(py, &self.inner.max_errors)
+    }
+
+    /// Return a compact representation for interactive Python sessions.
+    fn __repr__(&self) -> String {
+        format!(
+            "SmoothingReport(axes={:?}, segments={}, interpolated_segments={}, refinements={}, max_errors={:?})",
+            self.inner.axes,
+            self.inner.segments,
+            self.inner.interpolated_segments,
+            self.inner.refinements,
+            self.inner.max_errors
+        )
+    }
+}
+
 /// Python-visible path evaluation result container.
 #[pyclass(name = "PathDerivatives", module = "copp_py._native")]
 pub(crate) struct PyPathDerivatives {
@@ -428,7 +706,13 @@ pub(crate) struct PyPath {
 
 #[pymethods]
 impl PyPath {
-    /// Build a waypoint spline path.
+    /// Build a waypoint spline path that interpolates every waypoint.
+    ///
+    /// The path passes exactly through every waypoint. Use
+    /// ``Path.from_waypoints_fitting`` instead when waypoints only need to be
+    /// followed within a tolerance. This constructor family is unstable:
+    /// names, signatures, and configuration types may change as more waypoint
+    /// algorithms are added.
     ///
     /// Parameters
     /// ----------
@@ -472,6 +756,81 @@ impl PyPath {
         signature = (waypoints, config = None, *, order = 5, s_min = 0.0, s_max = 1.0, out_of_range = OutOfRangeArg(PyOutOfRangeMode::Error), parametrization = ParametrizationArg(PyParametrization::Uniform), start_state = None, end_state = None, layout = MatrixLayoutArg(PyMatrixLayout::SampleMajor)),
         text_signature = "(waypoints, config=None, *, order=5, s_min=0.0, s_max=1.0, out_of_range='error', parametrization='uniform', start_state=None, end_state=None, layout='sample_major')"
     )]
+    #[allow(clippy::too_many_arguments)]
+    fn from_waypoints_interpolating<'py>(
+        waypoints: &Bound<'py, PyAny>,
+        config: Option<PyRef<'py, PySplineConfig>>,
+        order: usize,
+        s_min: f64,
+        s_max: f64,
+        out_of_range: OutOfRangeArg,
+        parametrization: ParametrizationArg,
+        start_state: Option<&Bound<'py, PyAny>>,
+        end_state: Option<&Bound<'py, PyAny>>,
+        layout: MatrixLayoutArg,
+    ) -> PyResult<Self> {
+        Self::from_waypoints(
+            waypoints,
+            config,
+            order,
+            s_min,
+            s_max,
+            out_of_range,
+            parametrization,
+            start_state,
+            end_state,
+            layout,
+        )
+    }
+
+    /// Build a waypoint spline path.
+    ///
+    /// Equivalent alias for ``Path.from_waypoints_interpolating``: both names
+    /// accept the same arguments and build the same interpolating path.
+    ///
+    /// Parameters
+    /// ----------
+    /// waypoints : ArrayLike
+    ///     Waypoint matrix convertible to float64. With the default
+    ///     ``MatrixLayout.SAMPLE_MAJOR``, shape is ``(n_points, dim)`` and
+    ///     each row is one waypoint. With ``MatrixLayout.DIM_MAJOR``, shape is
+    ///     ``(dim, n_points)`` and each column is one waypoint.
+    /// config : SplineConfig | None, default=None
+    ///     Spline construction options. When omitted, keyword arguments build
+    ///     an equivalent temporary ``SplineConfig``.
+    /// order : int, default=5
+    ///     Odd spline order used only when ``config`` is omitted.
+    /// s_min, s_max : float, default=0.0, 1.0
+    ///     Path-parameter range used only when ``config`` is omitted.
+    /// out_of_range : OutOfRangeMode | str, default=OutOfRangeMode.ERROR
+    ///     Out-of-range policy used only when ``config`` is omitted.
+    /// parametrization : Parametrization | str, default=Parametrization.UNIFORM
+    ///     Waypoint parameter assignment used only when ``config`` is omitted.
+    /// start_state, end_state : ArrayLike | None
+    ///     Boundary derivative matrices used only when ``config`` is omitted.
+    /// layout : MatrixLayout | str, default=MatrixLayout.SAMPLE_MAJOR
+    ///     Matrix layout for both input waypoints and returned derivative
+    ///     arrays. Strings ``"sample_major"`` and ``"dim_major"`` are
+    ///     accepted for convenience.
+    ///
+    /// Returns
+    /// -------
+    /// Path
+    ///     A Python-owned wrapper around the Rust path object.
+    ///
+    /// Raises
+    /// ------
+    /// ValueError
+    ///     If array layout, dtype, wrapper-level options, or mixed
+    ///     ``config``/keyword options are invalid.
+    /// CoppError
+    ///     If the Rust COPP core rejects the path data or spline options.
+    #[staticmethod]
+    #[pyo3(
+        signature = (waypoints, config = None, *, order = 5, s_min = 0.0, s_max = 1.0, out_of_range = OutOfRangeArg(PyOutOfRangeMode::Error), parametrization = ParametrizationArg(PyParametrization::Uniform), start_state = None, end_state = None, layout = MatrixLayoutArg(PyMatrixLayout::SampleMajor)),
+        text_signature = "(waypoints, config=None, *, order=5, s_min=0.0, s_max=1.0, out_of_range='error', parametrization='uniform', start_state=None, end_state=None, layout='sample_major')"
+    )]
+    #[allow(clippy::too_many_arguments)]
     fn from_waypoints<'py>(
         waypoints: &Bound<'py, PyAny>,
         config: Option<PyRef<'py, PySplineConfig>>,
@@ -502,7 +861,106 @@ impl PyPath {
             }
             None => direct_config.to_rust(),
         };
-        let inner = RustPath::from_waypoints(&waypoints, config)
+        let inner = RustPath::from_waypoints_interpolating(&waypoints, config)
+            .map_err(|error| to_py_err(error.into()))?;
+        Ok(Self {
+            inner,
+            layout,
+            callback_state: None,
+        })
+    }
+
+    /// Build a tolerance-bounded fitted waypoint path.
+    ///
+    /// The path is an adaptive nonuniform quintic B-spline with C4
+    /// continuity. Unlike ``Path.from_waypoints_interpolating``, it does not
+    /// pass through interior waypoints: each selected axis may deviate from
+    /// the piecewise-linear reference polyline through the waypoints by at
+    /// most its tolerance. The absolute error is audited at the same path
+    /// parameter over every complete reference interval, not only at the
+    /// waypoints. Endpoints are retained. Unselected axes keep quintic C4
+    /// interpolation through every waypoint. Construction diagnostics are
+    /// available from ``Path.smoothing_report``.
+    ///
+    /// This constructor family is unstable: names, signatures, and
+    /// configuration types may change as more waypoint algorithms are added.
+    ///
+    /// Parameters
+    /// ----------
+    /// waypoints : ArrayLike
+    ///     Waypoint matrix convertible to float64. With the default
+    ///     ``MatrixLayout.SAMPLE_MAJOR``, shape is ``(n_points, dim)`` and
+    ///     each row is one waypoint. With ``MatrixLayout.DIM_MAJOR``, shape is
+    ///     ``(dim, n_points)`` and each column is one waypoint.
+    /// config : SmoothingConfig | None, default=None
+    ///     Fitting options. When omitted, keyword arguments build an
+    ///     equivalent temporary ``SmoothingConfig``.
+    /// tolerance : float | ArrayLike, default=0.001
+    ///     Absolute per-axis tolerance used only when ``config`` is omitted.
+    /// axes : list[int] | None, default=None
+    ///     Selected 0-based path dimensions used only when ``config`` is
+    ///     omitted.
+    /// parameters : ArrayLike | None, default=None
+    ///     Waypoint parameters used only when ``config`` is omitted.
+    /// max_refinements : int, default=20
+    ///     Refinement-pass budget used only when ``config`` is omitted.
+    /// max_segments : int, default=20000
+    ///     Selected-axis span budget used only when ``config`` is omitted.
+    /// out_of_range : OutOfRangeMode | str, default=OutOfRangeMode.ERROR
+    ///     Out-of-range policy used only when ``config`` is omitted.
+    /// layout : MatrixLayout | str, default=MatrixLayout.SAMPLE_MAJOR
+    ///     Matrix layout for both input waypoints and returned derivative
+    ///     arrays. Strings ``"sample_major"`` and ``"dim_major"`` are
+    ///     accepted for convenience.
+    ///
+    /// Returns
+    /// -------
+    /// Path
+    ///     A Python-owned wrapper around the Rust path object.
+    ///
+    /// Raises
+    /// ------
+    /// ValueError
+    ///     If array layout, dtype, wrapper-level options, or mixed
+    ///     ``config``/keyword options are invalid.
+    /// PathError
+    ///     If the Rust COPP core rejects the waypoints or options, or cannot
+    ///     satisfy the tolerance within the configured budgets.
+    #[staticmethod]
+    #[pyo3(
+        signature = (waypoints, config = None, *, tolerance = SmoothingToleranceArg(RustSmoothingTolerance::Uniform(0.001)), axes = None, parameters = None, max_refinements = 20, max_segments = 20000, out_of_range = OutOfRangeArg(PyOutOfRangeMode::Error), layout = MatrixLayoutArg(PyMatrixLayout::SampleMajor)),
+        text_signature = "(waypoints, config=None, *, tolerance=0.001, axes=None, parameters=None, max_refinements=20, max_segments=20000, out_of_range='error', layout='sample_major')"
+    )]
+    #[allow(clippy::too_many_arguments)]
+    fn from_waypoints_fitting<'py>(
+        waypoints: &Bound<'py, PyAny>,
+        config: Option<PyRef<'py, PySmoothingConfig>>,
+        tolerance: SmoothingToleranceArg,
+        axes: Option<&Bound<'py, PyAny>>,
+        parameters: Option<&Bound<'py, PyAny>>,
+        max_refinements: usize,
+        max_segments: usize,
+        out_of_range: OutOfRangeArg,
+        layout: MatrixLayoutArg,
+    ) -> PyResult<Self> {
+        let layout = layout.0;
+        let waypoints = waypoints_to_dmatrix("waypoints", waypoints, layout)?;
+        let direct_config = PySmoothingConfig {
+            tolerance: tolerance.0,
+            axes: optional_smoothing_axes(axes)?,
+            parameters: optional_smoothing_parameters(parameters)?,
+            max_refinements,
+            max_segments,
+            out_of_range: out_of_range.0,
+        };
+        let config = match config {
+            Some(config) => {
+                ensure_default_direct_smoothing_config(&direct_config)?;
+                config.to_rust()
+            }
+            None => direct_config.to_rust(),
+        };
+        let inner = RustPath::from_waypoints_fitting(&waypoints, config)
             .map_err(|error| to_py_err(error.into()))?;
         Ok(Self {
             inner,
@@ -757,9 +1215,7 @@ impl PyPath {
         s_max: f64,
         layout: MatrixLayoutArg,
     ) -> PyResult<Py<PyAny>> {
-        let helper = py
-            .import("copp_py._parametric")?
-            .getattr("_from_autograd")?;
+        let helper = py.import("copp_py._parametric")?.getattr("_from_autograd")?;
         Ok(helper
             .call1((q_fn, s_min, s_max, layout_token(layout.0)))?
             .unbind())
@@ -844,6 +1300,19 @@ impl PyPath {
     #[getter]
     fn s_range(&self) -> (f64, f64) {
         self.inner.s_range()
+    }
+
+    /// Return construction diagnostics of a tolerance-fitted waypoint path.
+    ///
+    /// ``None`` for paths not built by ``Path.from_waypoints_fitting``, such
+    /// as interpolated, evaluator-backed, and parametric paths.
+    #[getter]
+    fn smoothing_report(&self) -> Option<PySmoothingReport> {
+        self.inner
+            .smoothing_report()
+            .map(|report| PySmoothingReport {
+                inner: report.clone(),
+            })
     }
 
     /// Evaluate position ``q`` only at the query path parameters.
@@ -1427,6 +1896,71 @@ fn ensure_default_direct_config(config: &PySplineConfig) -> PyResult<()> {
     }
 
     Ok(())
+}
+
+/// Reject ambiguous calls that pass both `config` and direct smoothing keywords.
+fn ensure_default_direct_smoothing_config(config: &PySmoothingConfig) -> PyResult<()> {
+    let default_tolerance =
+        matches!(config.tolerance, RustSmoothingTolerance::Uniform(value) if value == 0.001);
+    let has_non_default = !default_tolerance
+        || config.axes.is_some()
+        || config.parameters.is_some()
+        || config.max_refinements != 20
+        || config.max_segments != 20_000
+        || config.out_of_range != PyOutOfRangeMode::Error;
+
+    if has_non_default {
+        return Err(PyValueError::new_err(
+            "pass either a `SmoothingConfig` object or direct smoothing keyword options, not both",
+        ));
+    }
+
+    Ok(())
+}
+
+/// Parse a smoothing tolerance from a scalar or a one-dimensional array.
+///
+/// A zero-dimensional value becomes a uniform tolerance and a one-dimensional
+/// value becomes per-axis tolerances. `None` selects the default `0.001`.
+fn parse_smoothing_tolerance(value: &Bound<'_, PyAny>) -> PyResult<RustSmoothingTolerance> {
+    if value.is_none() {
+        return Ok(RustSmoothingTolerance::Uniform(0.001));
+    }
+
+    let message = "`tolerance` must be a float or a one-dimensional float64 array";
+    let numpy = value.py().import("numpy")?;
+    let array = numpy
+        .getattr("asarray")?
+        .call1((value, numpy.getattr("float64")?))
+        .map_err(|_| PyValueError::new_err(message))?;
+    match array.getattr("ndim")?.extract::<usize>()? {
+        0 => Ok(RustSmoothingTolerance::Uniform(
+            array.call_method0("item")?.extract::<f64>()?,
+        )),
+        1 => Ok(RustSmoothingTolerance::PerAxis(array_like_to_vec_f64(
+            "tolerance",
+            &array,
+        )?)),
+        _ => Err(PyValueError::new_err(message)),
+    }
+}
+
+/// Convert an optional Python axis sequence into 0-based axis indices.
+fn optional_smoothing_axes(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<usize>>> {
+    match value {
+        Some(value) if !value.is_none() => value.extract::<Vec<usize>>().map(Some).map_err(|_| {
+            PyValueError::new_err("`axes` must be None or a sequence of nonnegative integers")
+        }),
+        _ => Ok(None),
+    }
+}
+
+/// Convert optional Python waypoint parameters into an owned vector.
+fn optional_smoothing_parameters(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<f64>>> {
+    match value {
+        Some(value) if !value.is_none() => array_like_to_vec_f64("parameters", value).map(Some),
+        _ => Ok(None),
+    }
 }
 
 /// Convert an optional Python boundary-state array into an optional [`DMatrix`].

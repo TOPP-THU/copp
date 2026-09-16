@@ -7,7 +7,7 @@ pub mod version;
 
 pub use status::CoppStatus;
 pub use types::{
-    CoppMatrixF64, CoppMatrixLayout, CoppMatrixViewF64, CoppSliceF64, CoppSliceMutF64, CoppVecF64,
-    CoppVecUsize,
+    CoppMatrixF64, CoppMatrixLayout, CoppMatrixViewF64, CoppSliceF64, CoppSliceMutF64,
+    CoppSliceUsize, CoppVecF64, CoppVecUsize,
 };
 pub use verbosity::CoppVerbosity;

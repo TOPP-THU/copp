@@ -6,6 +6,8 @@ from ._native import (
     Parametrization,
     Path,
     PathDerivatives,
+    SmoothingConfig,
+    SmoothingReport,
     SplineConfig,
 )
 
@@ -15,5 +17,7 @@ __all__ = [
     "Parametrization",
     "Path",
     "PathDerivatives",
+    "SmoothingConfig",
+    "SmoothingReport",
     "SplineConfig",
 ]

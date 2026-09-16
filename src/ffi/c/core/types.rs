@@ -345,6 +345,38 @@ impl CoppSliceMutF64 {
     }
 }
 
+/// Borrowed immutable `size_t` slice passed from C to COPP.
+///
+/// The pointer must reference at least `len` contiguous `size_t` values unless
+/// `len == 0`, in which case `data` may be null.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct CoppSliceUsize {
+    /// Pointer to the first element.
+    pub data: *const usize,
+    /// Number of elements.
+    pub len: usize,
+}
+
+impl CoppSliceUsize {
+    /// Convert this C slice descriptor into an internal slice.
+    ///
+    /// # Safety
+    /// For non-empty slices, `data` must point to at least `len` contiguous
+    /// initialized `usize` values that remain valid for the returned lifetime.
+    pub(crate) unsafe fn as_slice<'a>(&self) -> Result<&'a [usize], CoppStatus> {
+        if self.len == 0 {
+            return Ok(&[]);
+        }
+        if self.data.is_null() {
+            return Err(CoppStatus::NullPointer);
+        }
+        // SAFETY: The C ABI contract requires `data` to point to at least
+        // `len` contiguous usize values for the duration of the call.
+        Ok(unsafe { slice::from_raw_parts(self.data, self.len) })
+    }
+}
+
 /// Library-owned `f64` vector returned to C.
 ///
 /// C callers may read `data[0..len]` and must release the vector exactly once
@@ -588,6 +620,20 @@ impl CoppVecUsize {
         }
     }
 
+    /// Transfer ownership of a vector to C.
+    pub(crate) fn from_vec(vec: Vec<usize>) -> Self {
+        if vec.is_empty() {
+            return Self::empty();
+        }
+
+        let mut vec = ManuallyDrop::new(vec);
+        Self {
+            data: vec.as_mut_ptr(),
+            len: vec.len(),
+            capacity: vec.capacity(),
+        }
+    }
+
     /// Release a vector previously returned by COPP.
     pub(crate) fn free(self) {
         if self.data.is_null() || self.capacity == 0 || self.len > self.capacity {
@@ -696,6 +742,31 @@ mod tests {
 
         let matrix = unsafe { view.to_dmatrix().unwrap() };
         assert_eq!(matrix.as_slice(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn usize_slice_borrows_values_and_rejects_null_data() {
+        let values = [4_usize, 0, 2];
+        let slice = CoppSliceUsize {
+            data: values.as_ptr(),
+            len: values.len(),
+        };
+        assert_eq!(unsafe { slice.as_slice().unwrap() }, &values);
+
+        let empty = CoppSliceUsize {
+            data: ptr::null(),
+            len: 0,
+        };
+        assert!(unsafe { empty.as_slice().unwrap() }.is_empty());
+
+        let null = CoppSliceUsize {
+            data: ptr::null(),
+            len: 1,
+        };
+        assert!(matches!(
+            unsafe { null.as_slice() },
+            Err(CoppStatus::NullPointer)
+        ));
     }
 
     #[test]

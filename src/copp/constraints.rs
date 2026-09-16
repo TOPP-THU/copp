@@ -49,6 +49,7 @@
 //!   In practice this means every active scalar RHS must stay strictly positive:
 //!   `amax > 0`, `acc_max > 0`, and `jerk_max > 0` (after sign normalization).
 
+use crate::copp::copp2::stable::basic::a_to_b_topp2;
 use crate::diag::{ConstraintError, CoppError};
 use crate::path::Path;
 use core::f64;
@@ -57,9 +58,6 @@ use nalgebra::{Const, DMatrix, DMatrixView, Dyn, Matrix, RowDVector, ViewStorage
 use std::cmp::{max, min};
 use std::collections::BTreeMap;
 use std::ops::Bound::{Excluded, Included, Unbounded};
-
-#[cfg(test)]
-use crate::copp::copp2::stable::basic::a_to_b_topp2;
 
 /// Small numerical threshold used by feasibility and bound computations.
 ///
@@ -185,6 +183,13 @@ pub struct Constraints {
     valid_rows_jerk: ValidRows,
     /// Valid station-id interval for linearized jerk constraints `[left, right)`.
     valid_ids_linear_jerk: (usize, usize),
+    /// Floor applied to `a` before evaluating `1/sqrt(a)` in third-order constraints.
+    ///
+    /// Set by [`Constraints::linearize_constraint_3order_with_floor`] and read back by
+    /// [`Constraints::stationary_constraint_topp3`], so that both paths floor the
+    /// *same* quantity. Flooring `sqrt(a)` instead of `a` squares the effective
+    /// floor and inflates `a^{-3/2}` by the square of that factor.
+    a_linearization_floor: f64,
     /// Physical column in circular buffer that corresponds to logical offset `0`.
     head_col: usize,
     /// Number of valid logical columns currently stored.
@@ -236,6 +241,45 @@ impl AsInputMatrix1D for Vec<f64> {
     }
 }
 
+/// Linearization point of one third-order row at one station.
+///
+/// See [`Constraints::linearize_constraint_3order_adaptive`] for the derivation.
+/// `None` asks the caller to keep the uniform anchor: a non-finite `jerk_max` is
+/// dropped downstream anyway, and a non-finite `amax` would let the anchor run to
+/// infinity, which collapses the row to `value <= -jerk_d`.
+#[inline]
+fn adaptive_anchor_3order(
+    row: (f64, f64, f64, f64, f64),
+    state: (f64, f64, f64),
+    amax: f64,
+) -> Option<f64> {
+    let (jerk_a, jerk_b, jerk_c, jerk_d, jerk_max) = row;
+    let (a_lin, b_lin, c_lin) = state;
+    if !jerk_max.is_finite() || !amax.is_finite() {
+        return None;
+    }
+    let value = jerk_a * a_lin + jerk_b * b_lin + jerk_c * c_lin + jerk_d;
+    if value <= 0.0 {
+        // Slack at the reference state whatever `a` is, and it stays slack for
+        // every anchor at or above `a_lin`.  Anchoring high is what removes the
+        // `a <= 3 * a_lin` cap this row would otherwise contribute.
+        return Some(amax);
+    }
+    // `a_active` is the `a` at which the row becomes active with `(b, c)` frozen,
+    // so `a_lin <= a_active` is exactly "the reference state satisfies the
+    // nonlinear row".  Anchors keeping that property form an interval spanned by
+    // the two, and the geometric mean sits inside it.
+    let a_active_sqrt = jerk_max / value;
+    let a_active = a_active_sqrt * a_active_sqrt;
+    if a_lin <= 0.0 {
+        // The geometric mean degenerates to zero; `a_active` stays admissible
+        // because the reference state then satisfies the row for every anchor up
+        // to `2.25 * a_active`.
+        return Some(a_active.min(amax));
+    }
+    Some((a_lin.sqrt() * a_active_sqrt).min(amax))
+}
+
 impl Constraints {
     /// Default number of constraint stations preallocated for a new container.
     pub const DEFAULT_CAPACITY: usize = 1000;
@@ -285,6 +329,7 @@ impl Constraints {
             valid_rows_q: BTreeMap::new(),
             valid_rows_dddq: BTreeMap::new(),
             valid_ids_linear_jerk: (0, 0),
+            a_linearization_floor: EPSILON_NUMERIC,
             head_col: 0,
             len: 0,
             idx_s: 0,
@@ -1423,6 +1468,14 @@ impl Constraints {
             )
         });
 
+        // Keep the linearized pair row-compatible with the rows just added.
+        let rows = self.jerk_a.nrows();
+        if self.jerk_a_linear.nrows() < rows {
+            self.jerk_a_linear.resize_vertically_mut(rows, 0.0);
+            self.jerk_max_linear
+                .resize_vertically_mut(rows, f64::INFINITY);
+        }
+
         Self::merge_valid_rows(&mut self.valid_rows_jerk, idx_s, idx_s + jerk_a_new.ncols());
 
         Ok(self)
@@ -1473,6 +1526,9 @@ impl Constraints {
         if a_linear.iter().any(|&a| a < 0.0) {
             return Err(ConstraintError::NonPositiveA);
         }
+
+        // Record the floor so `stationary_constraint_topp3` floors the same quantity.
+        self.a_linearization_floor = a_linearization_floor;
 
         let a_linear_half = a_linear
             .iter()
@@ -1536,6 +1592,193 @@ impl Constraints {
         }
 
         self.valid_ids_linear_jerk = (start_idx_s, start_idx_s + a_linear.len());
+        Ok(())
+    }
+
+    /// Linearize third-order rows at a per-row anchor recovered from `a_linear`.
+    ///
+    /// The tangent of `1/sqrt(a)` at `a_L` lies below `1/sqrt(a)` for every
+    /// `a_L > 0`, so any anchor keeps the linearized row an inner approximation of
+    /// `sqrt(a) * (jerk_a * a + jerk_b * b + jerk_c * c + jerk_d) <= jerk_max`.
+    /// One anchor per station is nevertheless harmful when that anchor is small:
+    /// the upper and lower row of one axis differ only by an overall sign, so
+    /// adding them cancels `b` and `c` and leaves `a <= 3 * a_L` whatever the path
+    /// derivatives are, including on an axis that does not move at all.  Anchoring
+    /// each row where that row is nearly active breaks the cancellation.
+    ///
+    /// Writing `value := jerk_a * a + jerk_b * b + jerk_c * c + jerk_d` at the state
+    /// recovered from `a_linear`, a row is anchored
+    ///
+    /// - at `amax` when `value <= 0`: the row is slack there for every `a`, and it
+    ///   stays slack for every anchor at or above `a_linear[k]`;
+    /// - at `sqrt(a_linear[k] * a_active)` when `value > 0`, where
+    ///   `a_active := (jerk_max / value)^2` is the `a` at which the row becomes
+    ///   active with `(b, c)` frozen.  `a_linear[k] <= a_active` is exactly "the
+    ///   reference state satisfies the nonlinear row", the anchors preserving that
+    ///   property form an interval spanned by the two, and the geometric mean sits
+    ///   inside it.
+    ///
+    /// # Numerical safety
+    /// - `b_linear` must belong to the same feasible profile as `a_linear`; the
+    ///   anchors are only guaranteed to keep that profile feasible when it does.
+    /// - `value <= 0` is tested before `a_active` is formed, so `a_linear[k] == 0`
+    ///   together with `value == 0` cannot produce `sqrt(0 * inf)`.
+    /// - Rows whose `jerk_max` or `amax` is not finite keep the uniform anchor.
+    /// - The anchor is floored by `a_linearization_floor` exactly as in
+    ///   [`Self::linearize_constraint_3order_with_floor`].
+    ///
+    /// # Parameters
+    /// - `a_linear`: reference profile.
+    /// - `b_linear`: path acceleration of the same feasible profile as `a_linear`.
+    /// - `start_idx_s`: global start index of both slices.
+    /// - `a_linearization_floor`: strictly positive denominator floor for
+    ///   `1/sqrt(a)` evaluation.
+    /// - `num_stationary`: effective boundary pair. Its one-sided
+    ///   `delta b / delta s` values are excluded because stationary intervals
+    ///   use the separate constant-time-jerk boundary model.
+    pub(crate) fn linearize_constraint_3order_adaptive(
+        &mut self,
+        a_linear: &[f64],
+        b_linear: &[f64],
+        start_idx_s: usize,
+        a_linearization_floor: f64,
+        num_stationary: (usize, usize),
+    ) -> Result<(), ConstraintError> {
+        if a_linear.is_empty() {
+            return Ok(());
+        }
+        self.check_s_in_bounds(start_idx_s, a_linear.len())?;
+        if a_linearization_floor <= 0.0 {
+            return Err(ConstraintError::NonPositiveLinearizationFloor);
+        }
+        if a_linear.iter().any(|&a| a < 0.0) {
+            return Err(ConstraintError::NonPositiveA);
+        }
+
+        // Record the floor so `stationary_constraint_topp3` floors the same quantity.
+        self.a_linearization_floor = a_linearization_floor;
+
+        let n = a_linear.len();
+        let ordinary_interval_end = n - 1 - num_stationary.1;
+
+        // `c` is the one-sided difference of `b` the model uses.  One stored row is
+        // emitted once with the forward stencil and once with the backward one, so
+        // the anchor takes the smaller of the two candidates and stays admissible
+        // under both: each admissible set is an interval containing `a_linear[k]`.
+        // Stationary boundary intervals use the separate constant-time-jerk model
+        // in `stationary_constraint_topp3`; their delta-b/delta-s is not this
+        // model's `c` and must not participate in adaptive anchor selection.
+        let max_rows = self.jerk_a.nrows();
+        let mut anchor_half = DMatrix::zeros(max_rows, n);
+        let mut anchor_one_half = DMatrix::zeros(max_rows, n);
+        for k in 0..n {
+            let idx_s = start_idx_s + k;
+            let amax = self.amax_unchecked(idx_s);
+            let (jerk_a, jerk_b, jerk_c, jerk_d, jerk_max) = self.jerk_constraints_unchecked(idx_s);
+            let mut c_stencils = [f64::NAN; 2];
+            if k >= num_stationary.0 && k < ordinary_interval_end {
+                let ds = self.s_unchecked(idx_s + 1) - self.s_unchecked(idx_s);
+                c_stencils[0] = (b_linear[k + 1] - b_linear[k]) / ds;
+            }
+            if k > num_stationary.0 && k <= ordinary_interval_end {
+                let ds = self.s_unchecked(idx_s) - self.s_unchecked(idx_s - 1);
+                c_stencils[1] = (b_linear[k] - b_linear[k - 1]) / ds;
+            }
+            for row in 0..jerk_max.nrows() {
+                let coefficients = (
+                    jerk_a[(row, 0)],
+                    jerk_b[(row, 0)],
+                    jerk_c[(row, 0)],
+                    jerk_d[(row, 0)],
+                    jerk_max[(row, 0)],
+                );
+                let mut anchor: Option<f64> = None;
+                let mut keep_uniform = false;
+                for &c_lin in c_stencils.iter().filter(|c| c.is_finite()) {
+                    match adaptive_anchor_3order(
+                        coefficients,
+                        (a_linear[k], b_linear[k], c_lin),
+                        amax,
+                    ) {
+                        Some(value) => {
+                            anchor = Some(anchor.map_or(value, |held: f64| held.min(value)));
+                        }
+                        None => {
+                            keep_uniform = true;
+                            break;
+                        }
+                    }
+                }
+                let anchor = if keep_uniform {
+                    a_linear[k]
+                } else {
+                    anchor.unwrap_or(a_linear[k])
+                };
+                let half = 1.0 / anchor.max(a_linearization_floor).sqrt();
+                anchor_half[(row, k)] = half;
+                anchor_one_half[(row, k)] = half * half * half;
+            }
+        }
+
+        let start_idx = self.idx(start_idx_s - self.idx_s);
+        let anchor_half = &anchor_half;
+        let anchor_one_half = &anchor_one_half;
+        for (&idx_s_right, &(idx_s_left, num_valid_rows)) in self
+            .valid_rows_jerk
+            .range((Excluded(start_idx_s), Unbounded))
+        {
+            if idx_s_left >= start_idx_s + n {
+                break;
+            }
+            let idx_left = idx_s_left.max(start_idx_s) - start_idx_s;
+            let idx_right = idx_s_right.min(start_idx_s + n) - start_idx_s;
+            let start_idx_here = start_idx + idx_left;
+            let ncols_data = idx_right - idx_left;
+            if self.jerk_a_linear.nrows() < num_valid_rows {
+                self.jerk_a_linear
+                    .resize_vertically_mut(num_valid_rows, 0.0);
+                self.jerk_max_linear
+                    .resize_vertically_mut(num_valid_rows, f64::INFINITY);
+            }
+            // Same algebra as `linearize_constraint_3order_with_floor`, but the
+            // anchor is per row, so the scalar of `axpy` becomes a column of
+            // `anchor_*` and the update turns into a component-wise multiply-add.
+            // The access pattern is unchanged: one `copy_from` and one pass.
+            let func = |start_idx_: usize, ncols: usize, offset: usize| {
+                // jerk_a_linear = jerk_a + 0.5 * jerk_max * anchor_one_half
+                self.jerk_a_linear
+                    .view_mut((0, start_idx_), (num_valid_rows, ncols))
+                    .copy_from(&self.jerk_a.view((0, start_idx_), (num_valid_rows, ncols)));
+                self.jerk_a_linear
+                    .view_mut((0, start_idx_), (num_valid_rows, ncols))
+                    .zip_zip_apply(
+                        &self.jerk_max.view((0, start_idx_), (num_valid_rows, ncols)),
+                        &anchor_one_half.view((0, idx_left + offset), (num_valid_rows, ncols)),
+                        |jerk_a_linear, jerk_max, a_lin_o_h| {
+                            *jerk_a_linear += 0.5 * jerk_max * a_lin_o_h;
+                        },
+                    );
+                // jerk_max_linear = 1.5 * jerk_max * anchor_half - jerk_d
+                self.jerk_max_linear
+                    .view_mut((0, start_idx_), (num_valid_rows, ncols))
+                    .copy_from(&self.jerk_d.view((0, start_idx_), (num_valid_rows, ncols)));
+                self.jerk_max_linear
+                    .view_mut((0, start_idx_), (num_valid_rows, ncols))
+                    .neg_mut();
+                self.jerk_max_linear
+                    .view_mut((0, start_idx_), (num_valid_rows, ncols))
+                    .zip_zip_apply(
+                        &self.jerk_max.view((0, start_idx_), (num_valid_rows, ncols)),
+                        &anchor_half.view((0, idx_left + offset), (num_valid_rows, ncols)),
+                        |jerk_max_linear, jerk_max, a_lin_h| {
+                            *jerk_max_linear += 1.5 * jerk_max * a_lin_h;
+                        },
+                    );
+            };
+            Self::circular_process(self.jerk_max.ncols(), start_idx_here, ncols_data, func);
+        }
+
+        self.valid_ids_linear_jerk = (start_idx_s, start_idx_s + n);
         Ok(())
     }
 
@@ -1797,7 +2040,7 @@ impl Constraints {
     ///   otherwise reset it to `0`.
     ///
     /// # Notes
-    /// `amax` is reinitialized to `+鈭瀈; other matrices are kept allocated and may
+    /// `amax` is reinitialized to `+inf`; other matrices are kept allocated and may
     /// retain old values outside the active logical window.
     pub fn clear(&mut self, keep_idx_s: bool) {
         self.head_col = 0;
@@ -1867,6 +2110,78 @@ impl Constraints {
         Ok(())
     }
 
+    /// Bounds on a stationary template's anchor from its zero-speed endpoint.
+    ///
+    /// For anchor value `A` at signed distance `D`, the template has
+    /// `sqrt(a) * c = A^(3/2) / (4.5 * D^2)`, including at the endpoint.
+    /// The other terms in the original jerk row vanish there; substituting
+    /// `a = 0` into an ordinary finite-c row would incorrectly drop this limit.
+    /// Both the start and end templates have a positive path-jerk limit.
+    pub(crate) fn stationary_boundary_jerk_anchor_bounds(
+        &self,
+        idx_s_boundary: usize,
+        ds_anchor: f64,
+    ) -> (f64, f64) {
+        let distance = ds_anchor.abs();
+        if !distance.is_finite() || distance == 0.0 {
+            return (f64::NEG_INFINITY, f64::INFINITY);
+        }
+        let (_, _, jerk_c, _, jerk_max) = self.jerk_constraints_unchecked(idx_s_boundary);
+        let mut upper = f64::INFINITY;
+        let mut lower = 0.0_f64;
+        let distance_cbrt = distance.cbrt();
+        let distance_factor = (4.5_f64.cbrt() * distance_cbrt) * distance_cbrt;
+        for (&coefficient, &rhs) in jerk_c.iter().zip(jerk_max.iter()) {
+            if rhs == f64::INFINITY {
+                continue;
+            }
+            if !rhs.is_finite() || !coefficient.is_finite() {
+                return (f64::NEG_INFINITY, f64::INFINITY);
+            }
+            if coefficient == 0.0 {
+                if rhs < 0.0 {
+                    return (f64::NEG_INFINITY, f64::INFINITY);
+                }
+                continue;
+            }
+            if coefficient > 0.0 && rhs < 0.0 {
+                return (f64::NEG_INFINITY, f64::INFINITY);
+            }
+            if coefficient < 0.0 && rhs >= 0.0 {
+                continue;
+            }
+            // Take cube roots before forming the ratio or D^2, avoiding
+            // overflow/underflow when the resulting anchor bound is finite.
+            let root_a = (rhs.abs().cbrt() / coefficient.abs().cbrt()) * distance_factor;
+            let bound = root_a * root_a;
+            if coefficient > 0.0 {
+                upper = upper.min(bound);
+            } else {
+                lower = lower.max(bound);
+            }
+        }
+        // Only compensate for the fixed cbrt/product evaluation above. Do
+        // not erase a valid singleton/tiny interval by independently moving
+        // two opposite rows inward; the final row audit retains its existing
+        // arithmetic allowance for that case.
+        let inset = 64.0 * f64::EPSILON;
+        let inset_upper = if upper.is_finite() && upper > 0.0 {
+            (upper * (1.0 - inset)).next_down().max(0.0)
+        } else {
+            upper
+        };
+        let inset_lower = if lower.is_finite() && lower > 0.0 {
+            (lower * (1.0 + inset)).next_up()
+        } else {
+            lower
+        };
+        if inset_lower <= inset_upper {
+            (inset_upper, inset_lower)
+        } else {
+            (upper, lower)
+        }
+    }
+
     /// Derive equivalent scalar bounds for stationary boundary handling in TOPP3.
     ///
     /// # Purpose
@@ -1909,6 +2224,11 @@ impl Constraints {
         // Preconditions already verified above, so `*_unchecked` access is valid here.
         let s_start = self.s_unchecked(idx_s_start + id_start);
         let ds_stationary = self.s_unchecked(idx_s_start + id_a) - s_start;
+        let (mut amax_stationary, mut amin_stationary) =
+            self.stationary_boundary_jerk_anchor_bounds(idx_s_start + id_start, ds_stationary);
+        if amax_stationary < amin_stationary {
+            return (amax_stationary, amin_stationary);
+        }
 
         // ds2start_alpha is the collection of (ds_to_start=s_curr-s_start, alpha) for each stationary interval
         let map_ds2start_alpha = |i_s: (usize, &f64)| {
@@ -1917,7 +2237,11 @@ impl Constraints {
             let ds_to_start = s - s_start;
             let mut alpha = ds_to_start / ds_stationary;
             alpha *= alpha.cbrt();
-            let a_linear_half = 1.0 / i_s.1.sqrt().max(EPSILON_NUMERIC);
+            // Floor `a`, not `sqrt(a)`: flooring the root squares the effective floor
+            // on `a` (1e-10 on the root == 1e-20 on `a`) and inflates `a^{-3/2}` by
+            // 1e15. `linearize_constraint_3order_with_floor` floors `a` directly, so
+            // both third-order paths must use the same recorded floor.
+            let a_linear_half = 1.0 / i_s.1.max(self.a_linearization_floor).sqrt();
             let a_linear_one_half = a_linear_half * a_linear_half * a_linear_half;
             (i_s.0, ds_to_start, alpha, a_linear_half, a_linear_one_half)
         };
@@ -1940,8 +2264,6 @@ impl Constraints {
                 .map(map_ds2start_alpha)
                 .collect()
         };
-        let mut amax_stationary = f64::INFINITY;
-        let mut amin_stationary: f64 = 0.0;
         // 1st-order constraints at the start
         vec_prepare.iter().for_each(|(i, _, alpha, _, _)| {
             let amax_curr = self.amax_unchecked(idx_s_start + i);
@@ -1996,6 +2318,160 @@ impl Constraints {
         }
 
         (amax_stationary, amin_stationary)
+    }
+
+    /// Evaluate maximum violation magnitudes of the TOPP2 constraints for a profile.
+    ///
+    /// `a_profile` holds `a = s_dot^2` on the stations starting at `idx_s_start`.
+    /// The path acceleration of each interval is reconstructed from it by the
+    /// TOPP2 relation `b[k] = (a[k+1] - a[k]) / (2 * ds[k])`, and the acceleration
+    /// rows of both endpoint stations are checked against that interval's `b`.
+    ///
+    /// # Returns
+    /// `(exceed_1order, exceed_2order)`, each `<= 0` when fully feasible and
+    /// positive when violated. The first-order term covers `0 <= a[k] <= amax[k]`.
+    /// Returns `NaN`s if the station range is unavailable or `b` cannot be
+    /// reconstructed from `a_profile`, e.g. because it contains a non-finite value.
+    pub fn exceed_topp2(&self, idx_s_start: usize, a_profile: &[f64]) -> (f64, f64) {
+        let Ok(s) = self.s_vec(idx_s_start, idx_s_start + a_profile.len()) else {
+            return (f64::NAN, f64::NAN);
+        };
+        let Ok(b_profile) = a_to_b_topp2(&s, a_profile) else {
+            return (f64::NAN, f64::NAN);
+        };
+        let mut excced_1order = -a_profile
+            .iter()
+            .fold(f64::INFINITY, |a, &b| a.min(b))
+            .min(0.0);
+        for (i, &a) in a_profile.iter().enumerate() {
+            let idx_s = idx_s_start + i;
+            let amax_curr = self.amax_unchecked(idx_s);
+            if amax_curr.is_finite() {
+                excced_1order = excced_1order.max(a - amax_curr);
+            }
+        }
+        let mut excced_2order: f64 = 0.0;
+        for (i, (a, &b)) in a_profile.windows(2).zip(b_profile.iter()).enumerate() {
+            let idx_s = idx_s_start + i;
+            let (acc_a_curr, acc_b_curr, acc_max_curr) = self.acc_constraints_unchecked(idx_s);
+            for (&acc_a, &acc_b, &acc_max) in
+                izip!(acc_a_curr.iter(), acc_b_curr.iter(), acc_max_curr.iter())
+            {
+                if acc_max.is_finite() {
+                    excced_2order = excced_2order.max(acc_a * a[0] + acc_b * b - acc_max);
+                }
+            }
+            let (acc_a_next, acc_b_next, acc_max_next) = self.acc_constraints_unchecked(idx_s + 1);
+            for (&acc_a, &acc_b, &acc_max) in
+                izip!(acc_a_next.iter(), acc_b_next.iter(), acc_max_next.iter())
+            {
+                if acc_max.is_finite() {
+                    excced_2order = excced_2order.max(acc_a * a[1] + acc_b * b - acc_max);
+                }
+            }
+        }
+
+        (excced_1order, excced_2order)
+    }
+
+    /// Evaluate maximum violation magnitudes of the TOPP3 constraints for a profile.
+    ///
+    /// The third-order term uses the original `sqrt(a)` form, not the linearized
+    /// one, so this certifies the profile that is actually delivered rather than
+    /// the model the solver optimized. Run it after any post-processing such as
+    /// [`force_positive_a`](crate::solver::topp3_socp::force_positive_a), which rewrites
+    /// `a` and `b` without knowing about the acceleration and jerk limits.
+    ///
+    /// The third-order term covers only the intervals the solver models with a
+    /// constant `c`, i.e. it skips the two stationary blocks. There `b` follows the
+    /// `sdddot`-constant law and `c = 2a/(9 d^2)`, so a finite difference of `b`
+    /// across a block edge overestimates `c` by a factor of three and would report
+    /// a violation that the model never claimed.
+    ///
+    /// # Returns
+    /// `(exceed_1order, exceed_2order, exceed_3order)`, each `<= 0` when fully
+    /// feasible and positive when violated. Returns `NaN`s if the station range is
+    /// unavailable, the two profiles disagree in length, or either profile
+    /// contains a non-finite value.
+    pub fn exceed_topp3(
+        &self,
+        idx_s_start: usize,
+        a_profile: &[f64],
+        b_profile: &[f64],
+        num_stationary: (usize, usize),
+    ) -> (f64, f64, f64) {
+        let n = a_profile.len();
+        if n < 2
+            || b_profile.len() != n
+            || !a_profile.iter().chain(b_profile).all(|v| v.is_finite())
+        {
+            return (f64::NAN, f64::NAN, f64::NAN);
+        }
+        let Ok(s) = self.s_vec(idx_s_start, idx_s_start + n) else {
+            return (f64::NAN, f64::NAN, f64::NAN);
+        };
+
+        // First order: 0 <= a[k] <= amax[k].
+        let mut exceed_1order: f64 = 0.0;
+        for (i, &a) in a_profile.iter().enumerate() {
+            exceed_1order = exceed_1order.max(-a);
+            let amax = self.amax_unchecked(idx_s_start + i);
+            if amax.is_finite() {
+                exceed_1order = exceed_1order.max(a - amax);
+            }
+        }
+
+        // Second order: acc_a * a[k] + acc_b * b[k] <= acc_max.
+        let mut exceed_2order: f64 = 0.0;
+        for (i, (&a, &b)) in a_profile.iter().zip(b_profile.iter()).enumerate() {
+            let (acc_a, acc_b, acc_max) = self.acc_constraints_unchecked(idx_s_start + i);
+            for (&r_a, &r_b, &r_max) in izip!(acc_a.iter(), acc_b.iter(), acc_max.iter()) {
+                if r_max.is_finite() {
+                    exceed_2order = exceed_2order.max(r_a * a + r_b * b - r_max);
+                }
+            }
+        }
+
+        // Third order: sqrt(a[k]) * (jerk_a * a[k] + jerk_b * b[k] + jerk_c * c + jerk_d) <= jerk_max.
+        // Each interval contributes its own `c` at both of its endpoints, matching
+        // how the solver emits the rows.
+        let mut exceed_3order: f64 = 0.0;
+        let k_first = num_stationary.0;
+        let k_last = (n - 1).saturating_sub(num_stationary.1);
+        for k in k_first..k_last {
+            let ds = s[k + 1] - s[k];
+            if ds <= 0.0 {
+                return (f64::NAN, f64::NAN, f64::NAN);
+            }
+            let c = (b_profile[k + 1] - b_profile[k]) / ds;
+            for i in [k, k + 1] {
+                let a = a_profile[i];
+                // Negative `a` is already reported by the first-order term, and
+                // sqrt() of it would poison the maximum. Non-finite input was
+                // rejected above, because f64::max drops NaN.
+                if a < 0.0 {
+                    continue;
+                }
+                let b = b_profile[i];
+                let a_sqrt = a.sqrt();
+                let (jerk_a, jerk_b, jerk_c, jerk_d, jerk_max) =
+                    self.jerk_constraints_unchecked(idx_s_start + i);
+                for (&r_a, &r_b, &r_c, &r_d, &r_max) in izip!(
+                    jerk_a.iter(),
+                    jerk_b.iter(),
+                    jerk_c.iter(),
+                    jerk_d.iter(),
+                    jerk_max.iter()
+                ) {
+                    if r_max.is_finite() {
+                        exceed_3order =
+                            exceed_3order.max(a_sqrt * (r_a * a + r_b * b + r_c * c + r_d) - r_max);
+                    }
+                }
+            }
+        }
+
+        (exceed_1order, exceed_2order, exceed_3order)
     }
 
     /// Test-only projection of `a_ori` toward feasible profile `a_fea` for TOPP2.
@@ -2225,6 +2701,248 @@ pub enum ModePopConstraints {
 mod tests {
     use super::*;
     use crate::robot::Robot;
+
+    fn stationary_boundary_fixture(
+        s: &[f64],
+        boundary: usize,
+        coefficient: f64,
+        rhs: f64,
+    ) -> Result<Constraints, ConstraintError> {
+        let mut constraints = Constraints::with_capacity(1, s.len());
+        constraints.with_s(s)?;
+        let zero = DMatrix::zeros(1, 1);
+        let jerk_c = DMatrix::from_element(1, 1, coefficient);
+        // This finite term vanishes at the zero-speed boundary; it must not
+        // enter the anchor bound through a floored inverse-speed formula.
+        let jerk_d = DMatrix::from_element(1, 1, 1.0e100);
+        let jerk_max = DMatrix::from_element(1, 1, rhs);
+        constraints.with_constraint_3order(
+            &zero.as_view(),
+            &zero.as_view(),
+            &jerk_c.as_view(),
+            &jerk_d.as_view(),
+            &jerk_max.as_view(),
+            boundary,
+            false,
+        )?;
+        Ok(constraints)
+    }
+
+    #[test]
+    fn stationary_boundary_jerk_bounds_cover_head_tail_and_multiple_intervals()
+    -> Result<(), ConstraintError> {
+        let s = [0.0, 0.25, 1.0, 1.5, 2.0];
+        let a_linear = [0.0, 1.0, 1.0, 1.0, 0.0];
+        for reverse in [false, true] {
+            let boundary = if reverse { s.len() - 1 } else { 0 };
+            let constraints = stationary_boundary_fixture(&s, boundary, 0.75, 3.0)?;
+            for count in [1, 2] {
+                let anchor = if reverse { boundary - count } else { count };
+                let distance = (s[anchor] - s[boundary]).abs();
+                let (upper, lower) = if reverse {
+                    constraints.stationary_constraint_topp3::<true>(&a_linear, 0, count)
+                } else {
+                    constraints.stationary_constraint_topp3::<false>(&a_linear, 0, count)
+                };
+                let expected = (4.5 * distance * distance * 3.0 / 0.75).cbrt().powi(2);
+                assert_eq!(lower, 0.0);
+                assert!(upper > 0.0 && upper <= expected);
+                assert!((upper / expected - 1.0).abs() < 1.0e-12);
+                let path_jerk = (upper.sqrt() / distance / 4.5) * (upper / distance);
+                assert!(0.75 * path_jerk <= 3.0);
+            }
+            let opposite = if reverse {
+                constraints.stationary_constraint_topp3::<false>(&a_linear, 0, 1)
+            } else {
+                constraints.stationary_constraint_topp3::<true>(&a_linear, 0, 1)
+            };
+            assert_eq!(opposite, (f64::INFINITY, 0.0));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn stationary_boundary_jerk_bounds_handle_signed_and_disabled_rows()
+    -> Result<(), ConstraintError> {
+        let s = [0.0, 1.0];
+        for (coefficient, rhs) in [
+            (0.0, 0.0),
+            (0.0, 1.0),
+            (-1.0, 0.0),
+            (-1.0, 1.0),
+            (f64::NAN, f64::INFINITY),
+        ] {
+            let constraints = stationary_boundary_fixture(&s, 0, coefficient, rhs)?;
+            assert_eq!(
+                constraints.stationary_boundary_jerk_anchor_bounds(0, 1.0),
+                (f64::INFINITY, 0.0),
+            );
+        }
+        for (coefficient, rhs) in [
+            (0.0, -1.0),
+            (1.0, -1.0),
+            (1.0, f64::NAN),
+            (1.0, f64::NEG_INFINITY),
+            (f64::INFINITY, 1.0),
+        ] {
+            let constraints = stationary_boundary_fixture(&s, 0, coefficient, rhs)?;
+            let (upper, lower) = constraints.stationary_boundary_jerk_anchor_bounds(0, 1.0);
+            assert!(upper < lower);
+        }
+        let mut constraints = stationary_boundary_fixture(&s, 0, -2.0, -4.0)?;
+        let (upper, lower) = constraints.stationary_boundary_jerk_anchor_bounds(0, -1.0);
+        assert_eq!(upper, f64::INFINITY);
+        assert!(lower > 0.0);
+        assert!(-2.0 * (lower.sqrt() / 4.5) * lower <= -4.0);
+        let zero = DMatrix::zeros(1, 1);
+        let positive_c = DMatrix::from_element(1, 1, 2.0);
+        let positive_rhs = DMatrix::from_element(1, 1, 4.0);
+        constraints.with_constraint_3order(
+            &zero.as_view(),
+            &zero.as_view(),
+            &positive_c.as_view(),
+            &zero.as_view(),
+            &positive_rhs.as_view(),
+            0,
+            false,
+        )?;
+        let (upper, lower) = constraints.stationary_boundary_jerk_anchor_bounds(0, -1.0);
+        assert!(upper.is_finite() && upper > 0.0);
+        assert_eq!(upper, lower);
+        assert!((2.0 * (upper.sqrt() / 4.5) * upper - 4.0).abs() < 1.0e-12);
+        let constraints = stationary_boundary_fixture(&s, 0, 1.0, 0.0)?;
+        assert_eq!(
+            constraints.stationary_boundary_jerk_anchor_bounds(0, 1.0),
+            (0.0, 0.0)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stationary_boundary_jerk_bounds_keep_small_coefficients_and_scaled_limits()
+    -> Result<(), ConstraintError> {
+        let s = [0.0, 1.0];
+        let constraints = stationary_boundary_fixture(&s, 0, 1.0e-20, 1.0e-20)?;
+        let (upper, _) = constraints.stationary_boundary_jerk_anchor_bounds(0, 1.0);
+        assert!((upper / 4.5_f64.cbrt().powi(2) - 1.0).abs() < 1.0e-12);
+        let constraints = stationary_boundary_fixture(&s, 0, 1.0e300, 1.0e-300)?;
+        let (upper, _) = constraints.stationary_boundary_jerk_anchor_bounds(0, 1.0e150);
+        let expected = (4.5e-300_f64).cbrt().powi(2);
+        assert!(upper.is_finite() && upper > 0.0);
+        assert!((upper / expected - 1.0).abs() < 1.0e-12);
+        Ok(())
+    }
+
+    #[test]
+    fn adaptive_linearization_ignores_stationary_boundary_stencils() -> Result<(), ConstraintError>
+    {
+        let mut constraints = Constraints::with_capacity(1, 3);
+        constraints.with_s(&[0.0, 1.0, 2.0][..])?;
+        constraints.amax.fill(10.0);
+
+        let zero = DMatrix::zeros(1, 1);
+        let jerk_c = DMatrix::from_element(1, 1, 1.0);
+        let jerk_max = DMatrix::from_element(1, 1, 0.5);
+        constraints.with_constraint_3order(
+            &zero.as_view(),
+            &zero.as_view(),
+            &jerk_c.as_view(),
+            &zero.as_view(),
+            &jerk_max.as_view(),
+            1,
+            false,
+        )?;
+
+        let cases = [
+            (
+                [2.8233333333333333, 1.0, 0.0],
+                [-1.1566666666666667, -2.0 / 3.0, 0.0],
+                (0, 1),
+                0.49,
+            ),
+            (
+                [0.0, 1.0, 2.8233333333333333],
+                [0.0, 2.0 / 3.0, 1.1566666666666667],
+                (1, 0),
+                0.49,
+            ),
+            ([1.49, 1.0, 1.49], [-0.49, 0.0, 0.49], (0, 0), 0.49),
+        ];
+        for (a, b, num_stationary, c_ordinary) in cases {
+            constraints.linearize_constraint_3order_adaptive(&a, &b, 0, 1.0e-10, num_stationary)?;
+            let (jerk_a, jerk_b, jerk_c, jerk_max) =
+                constraints.jerk_linear_constraints_unchecked(1);
+            let lhs = jerk_a[(0, 0)] * a[1] + jerk_b[(0, 0)] * b[1] + jerk_c[(0, 0)] * c_ordinary;
+            assert!(
+                lhs <= jerk_max[(0, 0)],
+                "ordinary-side witness was excluded for num_stationary={num_stationary:?}: \
+                 lhs={lhs}, rhs={}",
+                jerk_max[(0, 0)]
+            );
+        }
+        Ok(())
+    }
+
+    /// Three stations with `a <= 4`, `b <= 1` and `sqrt(a) * c <= 1` everywhere.
+    fn exceed_topp3_fixture() -> Result<Constraints, ConstraintError> {
+        let mut constraints = Constraints::with_capacity(1, 3);
+        constraints.with_s(&[0.0, 1.0, 2.0][..])?;
+        constraints.amax.fill(4.0);
+        let zero = DMatrix::zeros(1, 3);
+        let one = DMatrix::from_element(1, 3, 1.0);
+        constraints.with_constraint_2order(
+            &zero.as_view(),
+            &one.as_view(),
+            &one.as_view(),
+            0,
+            false,
+        )?;
+        constraints.with_constraint_3order(
+            &zero.as_view(),
+            &zero.as_view(),
+            &one.as_view(),
+            &zero.as_view(),
+            &one.as_view(),
+            0,
+            false,
+        )?;
+        Ok(constraints)
+    }
+
+    #[test]
+    fn exceed_topp3_keeps_finite_profiles() -> Result<(), ConstraintError> {
+        let constraints = exceed_topp3_fixture()?;
+        let a = [1.0, 1.0, 1.0];
+        assert_eq!(
+            constraints.exceed_topp3(0, &a, &[0.0, 0.0, 0.0], (0, 0)),
+            (0.0, 0.0, 0.0)
+        );
+        // b[2] = 4 exceeds 1 by 3, and c = 2 gives sqrt(1) * 2 - 1 = 1.
+        assert_eq!(
+            constraints.exceed_topp3(0, &a, &[0.0, 2.0, 4.0], (0, 0)),
+            (0.0, 3.0, 1.0)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn exceed_topp3_reports_non_finite_profiles_as_nan() -> Result<(), ConstraintError> {
+        let constraints = exceed_topp3_fixture()?;
+        let finite_a = [1.0, 1.0, 1.0];
+        let finite_b = [0.0, 0.0, 0.0];
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let bad_a = [1.0, bad, 1.0];
+            let bad_b = [0.0, bad, 0.0];
+            for (a, b) in [(&bad_a, &finite_b), (&finite_a, &bad_b), (&bad_a, &bad_b)] {
+                let (e1, e2, e3) = constraints.exceed_topp3(0, a, b, (0, 0));
+                assert!(
+                    e1.is_nan() && e2.is_nan() && e3.is_nan(),
+                    "a={a:?}, b={b:?} gave ({e1}, {e2}, {e3})"
+                );
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn test_constraints() -> Result<(), ConstraintError> {

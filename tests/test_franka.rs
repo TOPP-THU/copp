@@ -1,4 +1,4 @@
-﻿//! Franka Panda no-viscous RobotTorque integration model.
+//! Franka Panda no-viscous RobotTorque integration model.
 
 #![allow(clippy::float_cmp)]
 #![allow(clippy::many_single_char_names)]
@@ -1382,7 +1382,7 @@ mod tests {
         ];
 
         let wp_mat = DMatrix::<f64>::from_fn(FRANKA_DOF, waypoints.len(), |i, j| waypoints[j][i]);
-        let path = Path::from_waypoints(&wp_mat, SplineConfig::default())?;
+        let path = Path::from_waypoints_interpolating(&wp_mat, SplineConfig::default())?;
         let s: Vec<f64> = (0..n).map(|j| j as f64 / (n - 1) as f64).collect();
 
         let mut robot = Robot::with_capacity(FrankaNoViscousModel, n);

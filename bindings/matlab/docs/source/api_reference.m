@@ -32,8 +32,12 @@
 %% Path
 % |copp.Path| constructors:
 %
-% * |Path.from_waypoints(waypoints, ...)| - spline path through
-%   \(\mathrm{dim} \times n_\mathrm{waypoints}\) samples.
+% * |Path.from_waypoints_interpolating(waypoints, ...)| - spline path through
+%   every column of a \(\mathrm{dim} \times n_\mathrm{waypoints}\) matrix;
+%   |Path.from_waypoints(waypoints, ...)| is an equivalent alias.
+% * |Path.from_waypoints_fitting(waypoints, tolerance=..., ...)| -
+%   tolerance-bounded quintic B-spline fit that keeps the end waypoints. The
+%   waypoint constructors are currently unstable.
 % * |Path.from_evaluator_2nd(evaluator, dim=..., ...)| - callback path with
 %   \(q\), \(\dot{q}\), and \(\ddot{q}\).
 % * |Path.from_evaluator_3rd(evaluator, dim=..., ...)| - callback path with
@@ -48,6 +52,8 @@
 % * |evaluate_q(s)| returns \(q(s)\).
 % * |evaluate_up_to_2nd(s)| returns \(q\), \(\dot{q}\), and \(\ddot{q}\).
 % * |evaluate_up_to_3rd(s)| returns \(q\), \(\dot{q}\), \(\ddot{q}\), and \(q^{(3)}\).
+% * |smoothing_report()| returns the fitting diagnostics of a
+%   |from_waypoints_fitting| path, or |[]| for other paths.
 % * |release| explicitly releases the native handle; |delete| also releases
 %   it during ordinary MATLAB cleanup.
 
@@ -79,6 +85,14 @@
 % * |clear_inverse_dynamics| restores default point dynamics.
 % * |clear_constraints|, |pop_front_n|, and |pop_back_n| mutate the station
 %   buffer for reuse or receding-horizon workflows.
+%
+% Constraint audits:
+%
+% * |exceed_topp2(a, ...)| returns the maximum first- and second-order
+%   violations of a TOPP2 profile.
+% * |exceed_topp3(a, b, ...)| or |exceed_topp3(profile, ...)| returns the
+%   maximum first-, second-, and nonlinear third-order violations of a TOPP3
+%   profile.
 
 %% Objective descriptors
 % Objective descriptors are lightweight MATLAB structs created by factory
@@ -139,6 +153,9 @@
 %   |solve_expert| - Clarabel/SOCP TOPP3.
 % * |copp.solver.copp3_socp.Problem|, |Options|, |Result|, |solve|, and
 %   |solve_expert| - Clarabel/SOCP COPP3.
+%
+% Third-order Problem classes accept an optional |b_linearization| for
+% adaptive linearization around a solved profile.
 
 %% Interpolation
 % Interpolation helpers convert solver profiles into time-domain samples.
@@ -157,6 +174,8 @@
 %   |Profile3rd|.
 % * |t_to_s_topp3_uniform|, |t_to_s_topp3_samples|, and |t_to_s_topp3| -
 %   third-order time-to-path sampling helpers.
+% * |Profile3rd.force_positive_a(s, ...)| - adjusted profile copy whose
+%   interpolated \(a(s)\) stays strictly positive.
 
 %% Optional dependencies
 % The core MATLAB binding does not require Symbolic Math Toolbox or CasADi.

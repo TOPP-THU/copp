@@ -157,3 +157,30 @@ def test_independent_constraints_work_with_topp2_problem():
 
     assert a.shape == (3,)
     assert np.all(np.isfinite(a))
+
+
+def test_constraints_exceed_topp2_reports_violations():
+    constraints = copp.Constraints(1)
+    constraints.append_s(np.linspace(0.0, 1.0, 5, dtype=np.float64))
+    constraints.add_constraint_1st(np.full((5, 1), 2.0, dtype=np.float64), 0)
+    constraints.add_constraint_2nd(
+        np.zeros((5, 1), dtype=np.float64),
+        np.ones((5, 1), dtype=np.float64),
+        np.full((5, 1), 10.0, dtype=np.float64),
+        0,
+    )
+    problem = copp.solver.topp2_ra.Problem(
+        constraints,
+        idx_s_interval=(0, 4),
+        a_boundary=(0.0, 0.0),
+    )
+    a = copp.solver.topp2_ra.solve(problem)
+
+    exceed_1st, exceed_2nd = constraints.exceed_topp2(a)
+    assert exceed_1st <= 1.0e-9
+    assert exceed_2nd <= 1.0e-9
+
+    too_fast = a.copy()
+    too_fast[2] = 3.0
+    assert constraints.exceed_topp2(too_fast)[0] > 0.5
+    assert np.isnan(constraints.exceed_topp2(a, idx_s_start=3)).all()

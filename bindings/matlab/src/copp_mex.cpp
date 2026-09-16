@@ -267,6 +267,23 @@ namespace
         Copp3SocpResultGuard &operator=(const Copp3SocpResultGuard &) = delete;
     };
 
+    class CoppSmoothingReportGuard
+    {
+    public:
+        // Owned waypoint-fitting report. The C ABI writes an empty report for
+        // non-fitted paths, and freeing an empty report is allowed.
+        CoppSmoothingReport value{};
+
+        ~CoppSmoothingReportGuard()
+        {
+            copp_smoothing_report_free(value);
+        }
+
+        CoppSmoothingReportGuard() = default;
+        CoppSmoothingReportGuard(const CoppSmoothingReportGuard &) = delete;
+        CoppSmoothingReportGuard &operator=(const CoppSmoothingReportGuard &) = delete;
+    };
+
     const char *safe_cstr(const char *value)
     {
         return value == nullptr ? "" : value;
@@ -337,6 +354,8 @@ namespace
 //       Inspect or release MEX-registry handles.
 //   path_from_waypoints, path_dim, path_s_range
 //       Construct and query native CoppPath handles.
+//   path_from_waypoints_fitting, path_smoothing_report
+//       Construct tolerance-fitted waypoint paths and read their report.
 //   path_from_evaluator_2nd, path_from_evaluator_3rd
 //       Construct callback-backed native CoppPath handles.
 //   path_evaluate_up_to_2nd, path_evaluate_up_to_3rd
@@ -353,6 +372,8 @@ namespace
 //   robot_pop_front_n, robot_pop_back_n, robot_set_inverse_dynamics,
 //   robot_clear_inverse_dynamics
 //       Advanced robot constraint and dynamics operations.
+//   robot_exceed_topp2, robot_exceed_topp3
+//       Evaluate maximum constraint violations of candidate profiles.
 //   topp2_ra_solve
 //       Solve TOPP2-RA over a borrowed Robot handle.
 //   reach_set2_backward, reach_set2_bidirectional
@@ -367,6 +388,8 @@ namespace
 //   a_to_b_topp2, s_to_t_topp2, t_to_s_topp2_uniform, t_to_s_topp2_samples
 //   s_to_t_topp3, t_to_s_topp3_uniform, t_to_s_topp3_samples
 //       Convert and sample second- and third-order profiles.
+//   force_positive_a_3rd
+//       Adjust a copied third-order profile so interpolated a(s) stays positive.
 //
 // All native resources are owned by this MEX instance. MATLAB receives only
 // uint64 registry ids, never raw pointers.
@@ -420,6 +443,16 @@ public:
         if (command == "path_from_waypoints")
         {
             path_from_waypoints(outputs, inputs);
+            return;
+        }
+        if (command == "path_from_waypoints_fitting")
+        {
+            path_from_waypoints_fitting(outputs, inputs);
+            return;
+        }
+        if (command == "path_smoothing_report")
+        {
+            path_smoothing_report(outputs, inputs);
             return;
         }
         if (command == "path_from_evaluator_2nd")
@@ -557,6 +590,16 @@ public:
             robot_clear_inverse_dynamics(outputs, inputs);
             return;
         }
+        if (command == "robot_exceed_topp2")
+        {
+            robot_exceed_topp2(outputs, inputs);
+            return;
+        }
+        if (command == "robot_exceed_topp3")
+        {
+            robot_exceed_topp3(outputs, inputs);
+            return;
+        }
         if (command == "topp2_ra_solve")
         {
             topp2_ra_solve(outputs, inputs);
@@ -645,6 +688,11 @@ public:
         if (command == "t_to_s_topp3_samples")
         {
             t_to_s_topp3_samples(outputs, inputs);
+            return;
+        }
+        if (command == "force_positive_a_3rd")
+        {
+            force_positive_a_3rd(outputs, inputs);
             return;
         }
 
@@ -1650,7 +1698,7 @@ private:
         options.end_state = end_state.view();
 
         CoppPath *path = nullptr;
-        status = copp_path_from_waypoints(waypoints.view(), options, &path);
+        status = copp_path_from_waypoints_interpolating(waypoints.view(), options, &path);
         if (status != COPP_STATUS_OK)
         {
             const std::string identifier = status_identifier(status);
@@ -1663,6 +1711,97 @@ private:
         }
 
         outputs[0] = factory_.createScalar(store_handle(HandleKind::Path, path));
+    }
+
+    void path_from_waypoints_fitting(ArgumentList outputs, ArgumentList inputs)
+    {
+        require_input_count(inputs, 8, "path_from_waypoints_fitting");
+        require_output_count_at_least(outputs, 1, "path_from_waypoints_fitting");
+        require_output_count_at_most(outputs, 1, "path_from_waypoints_fitting");
+
+        const NumericMatrix waypoints = copy_real_matrix(inputs[1], "waypoints");
+        if (waypoints.rows == 0 || waypoints.cols == 0)
+        {
+            throw_error("copp:InvalidArgument", "waypoints must be a non-empty dim-by-N matrix.");
+        }
+
+        // A scalar tolerance is broadcast to every selected axis; a longer
+        // vector is forwarded as tolerance_per_axis in the order of axes.
+        const auto tolerance = copy_real_vector(inputs[2], "tolerance");
+        if (tolerance.empty())
+        {
+            throw_error("copp:InvalidArgument", "tolerance must be a scalar or a vector with one entry per selected axis.");
+        }
+        const auto axes = copy_size_vector(inputs[3], "axes");
+        const auto parameters = copy_real_vector(inputs[4], "parameters");
+        const std::size_t max_refinements = copy_size_scalar(inputs[5], "max_refinements");
+        const std::size_t max_segments = copy_size_scalar(inputs[6], "max_segments");
+        const CoppPathOutOfRangeMode out_of_range_mode = parse_out_of_range_mode(inputs[7]);
+
+        CoppSmoothingOptions options;
+        CoppStatus status = copp_smoothing_default_options(&options);
+        if (status != COPP_STATUS_OK)
+        {
+            throw_status(status);
+        }
+        if (tolerance.size() == 1)
+        {
+            options.tolerance = tolerance[0];
+        }
+        else
+        {
+            options.tolerance_per_axis = CoppSliceF64{slice_data(tolerance), tolerance.size()};
+        }
+        options.axes = CoppSliceUsize{axes.empty() ? nullptr : axes.data(), axes.size()};
+        options.parameters = CoppSliceF64{slice_data(parameters), parameters.size()};
+        options.max_refinements = max_refinements;
+        options.max_segments = max_segments;
+        options.out_of_range_mode = out_of_range_mode;
+
+        CoppPath *path = nullptr;
+        status = copp_path_from_waypoints_fitting(waypoints.view(), options, &path);
+        if (status != COPP_STATUS_OK)
+        {
+            const std::string identifier = status_identifier(status);
+            const std::string message = status_message(status);
+            if (path != nullptr)
+            {
+                copp_path_free(path);
+            }
+            throw_error(identifier, message);
+        }
+
+        outputs[0] = factory_.createScalar(store_handle(HandleKind::Path, path));
+    }
+
+    void path_smoothing_report(ArgumentList outputs, ArgumentList inputs)
+    {
+        require_input_count(inputs, 2, "path_smoothing_report");
+        require_output_count_at_least(outputs, 8, "path_smoothing_report");
+        require_output_count_at_most(outputs, 8, "path_smoothing_report");
+
+        const auto id = copy_handle_id(inputs[1], "handle_id");
+        const auto *path = static_cast<const CoppPath *>(checked_handle(id, HandleKind::Path));
+        bool has_report = false;
+        CoppSmoothingReportGuard report;
+        const CoppStatus status = copp_path_smoothing_report(path, &has_report, &report.value);
+        if (status != COPP_STATUS_OK)
+        {
+            throw_status(status);
+        }
+
+        // axes are returned as native 0-based row indices; the MATLAB wrapper
+        // converts them to 1-based row indices.
+        outputs[0] = factory_.createScalar(has_report);
+        outputs[1] = report.value.axes.len == 0
+                         ? factory_.createArray<double>({0, 1})
+                         : usize_column_vector_output(report.value.axes);
+        outputs[2] = factory_.createScalar(static_cast<double>(report.value.segments));
+        outputs[3] = factory_.createScalar(static_cast<double>(report.value.interpolated_segments));
+        outputs[4] = factory_.createScalar(static_cast<double>(report.value.refinements));
+        outputs[5] = factory_.createScalar(static_cast<double>(report.value.fitting_rows));
+        outputs[6] = factory_.createScalar(static_cast<double>(report.value.checked_intervals));
+        outputs[7] = column_vector_output(report.value.max_errors);
     }
 
     void path_from_evaluator_2nd(ArgumentList outputs, ArgumentList inputs)
@@ -2326,6 +2465,69 @@ private:
         }
     }
 
+    void robot_exceed_topp2(ArgumentList outputs, ArgumentList inputs)
+    {
+        require_input_count(inputs, 4, "robot_exceed_topp2");
+        require_output_count_at_least(outputs, 2, "robot_exceed_topp2");
+        require_output_count_at_most(outputs, 2, "robot_exceed_topp2");
+
+        const auto id = copy_handle_id(inputs[1], "handle_id");
+        const auto *robot = static_cast<const CoppRobot *>(checked_handle(id, HandleKind::Robot));
+        const std::size_t idx_s_start = copy_size_scalar(inputs[2], "idx_s_start");
+        const auto a = copy_real_vector(inputs[3], "a");
+
+        double exceed_1st = 0.0;
+        double exceed_2nd = 0.0;
+        const CoppStatus status = copp_robot_exceed_topp2(
+            robot,
+            idx_s_start,
+            CoppSliceF64{slice_data(a), a.size()},
+            &exceed_1st,
+            &exceed_2nd);
+        if (status != COPP_STATUS_OK)
+        {
+            throw_status(status);
+        }
+        outputs[0] = factory_.createScalar(exceed_1st);
+        outputs[1] = factory_.createScalar(exceed_2nd);
+    }
+
+    void robot_exceed_topp3(ArgumentList outputs, ArgumentList inputs)
+    {
+        require_input_count(inputs, 7, "robot_exceed_topp3");
+        require_output_count_at_least(outputs, 3, "robot_exceed_topp3");
+        require_output_count_at_most(outputs, 3, "robot_exceed_topp3");
+
+        const auto id = copy_handle_id(inputs[1], "handle_id");
+        const auto *robot = static_cast<const CoppRobot *>(checked_handle(id, HandleKind::Robot));
+        const std::size_t idx_s_start = copy_size_scalar(inputs[2], "idx_s_start");
+        const auto a = copy_real_vector(inputs[3], "a");
+        const auto b = copy_real_vector(inputs[4], "b");
+        const std::size_t num_stationary_start = copy_size_scalar(inputs[5], "num_stationary_start");
+        const std::size_t num_stationary_end = copy_size_scalar(inputs[6], "num_stationary_end");
+
+        double exceed_1st = 0.0;
+        double exceed_2nd = 0.0;
+        double exceed_3rd = 0.0;
+        const CoppStatus status = copp_robot_exceed_topp3(
+            robot,
+            idx_s_start,
+            CoppSliceF64{slice_data(a), a.size()},
+            CoppSliceF64{slice_data(b), b.size()},
+            num_stationary_start,
+            num_stationary_end,
+            &exceed_1st,
+            &exceed_2nd,
+            &exceed_3rd);
+        if (status != COPP_STATUS_OK)
+        {
+            throw_status(status);
+        }
+        outputs[0] = factory_.createScalar(exceed_1st);
+        outputs[1] = factory_.createScalar(exceed_2nd);
+        outputs[2] = factory_.createScalar(exceed_3rd);
+    }
+
     void topp2_ra_solve(ArgumentList outputs, ArgumentList inputs)
     {
         require_input_count(inputs, 10, "topp2_ra_solve");
@@ -2494,7 +2696,10 @@ private:
         outputs[18] = factory_.createScalar(static_cast<double>(result.value.linsolver.nnz_l));
     }
 
-    Topp3Problem copy_topp3_problem(ArgumentList inputs, std::size_t offset, std::vector<double> &a_linearization)
+    Topp3Problem copy_topp3_problem(ArgumentList inputs,
+                                    std::size_t offset,
+                                    std::vector<double> &a_linearization,
+                                    std::vector<double> &b_linearization)
     {
         const auto id = copy_handle_id(inputs[offset], "handle_id");
         auto *robot = static_cast<CoppRobot *>(checked_handle(id, HandleKind::Robot));
@@ -2507,6 +2712,9 @@ private:
         const std::size_t num_stationary_max_start = copy_size_scalar(inputs[offset + 7], "num_stationary_max_start");
         const std::size_t num_stationary_max_end = copy_size_scalar(inputs[offset + 8], "num_stationary_max_end");
         const double a_linearization_floor = copy_real_scalar(inputs[offset + 9], "a_linearization_floor");
+        // Empty b_linearization selects direct linearization; a non-empty
+        // profile selects the native given-feasible adaptive anchoring.
+        b_linearization = copy_real_vector(inputs[offset + 10], "b_linearization");
 
         return Topp3Problem{
             robot,
@@ -2519,24 +2727,26 @@ private:
             num_stationary_max_start,
             num_stationary_max_end,
             a_linearization_floor,
+            CoppSliceF64{slice_data(b_linearization), b_linearization.size()},
         };
     }
 
     Copp3Problem copy_copp3_problem(ArgumentList inputs,
                                    std::size_t offset,
                                    std::vector<double> &a_linearization,
+                                   std::vector<double> &b_linearization,
                                    ObjectiveStorage &objectives)
     {
-        const Topp3Problem topp3 = copy_topp3_problem(inputs, offset, a_linearization);
+        const Topp3Problem topp3 = copy_topp3_problem(inputs, offset, a_linearization, b_linearization);
         objectives = copy_objectives(
-            inputs[offset + 10],
             inputs[offset + 11],
             inputs[offset + 12],
             inputs[offset + 13],
             inputs[offset + 14],
             inputs[offset + 15],
             inputs[offset + 16],
-            inputs[offset + 17]);
+            inputs[offset + 17],
+            inputs[offset + 18]);
 
         return Copp3Problem{
             topp3.robot,
@@ -2551,6 +2761,7 @@ private:
             topp3.a_linearization_floor,
             objectives.objectives.data(),
             objectives.objectives.size(),
+            topp3.b_linearization,
         };
     }
 
@@ -2614,14 +2825,15 @@ private:
 
     void copp3_socp_solve(ArgumentList outputs, ArgumentList inputs)
     {
-        require_input_count(inputs, 19 + kClarabelOptionsArgCount, "copp3_socp_solve");
+        require_input_count(inputs, 20 + kClarabelOptionsArgCount, "copp3_socp_solve");
         require_output_count_at_least(outputs, 4, "copp3_socp_solve");
         require_output_count_at_most(outputs, 4, "copp3_socp_solve");
 
         std::vector<double> a_linearization;
+        std::vector<double> b_linearization;
         ObjectiveStorage objectives;
-        const Copp3Problem problem = copy_copp3_problem(inputs, 1, a_linearization, objectives);
-        const CoppClarabelOptions options = copy_clarabel_options(inputs, 19);
+        const Copp3Problem problem = copy_copp3_problem(inputs, 1, a_linearization, b_linearization, objectives);
+        const CoppClarabelOptions options = copy_clarabel_options(inputs, 20);
 
         CoppProfile3rdGuard profile;
         const CoppStatus status = copp3_socp(problem, options, &profile.value);
@@ -2635,14 +2847,15 @@ private:
 
     void copp3_socp_solve_expert(ArgumentList outputs, ArgumentList inputs)
     {
-        require_input_count(inputs, 19 + kClarabelOptionsArgCount, "copp3_socp_solve_expert");
+        require_input_count(inputs, 20 + kClarabelOptionsArgCount, "copp3_socp_solve_expert");
         require_output_count_at_least(outputs, 22, "copp3_socp_solve_expert");
         require_output_count_at_most(outputs, 22, "copp3_socp_solve_expert");
 
         std::vector<double> a_linearization;
+        std::vector<double> b_linearization;
         ObjectiveStorage objectives;
-        const Copp3Problem problem = copy_copp3_problem(inputs, 1, a_linearization, objectives);
-        const CoppClarabelOptions options = copy_clarabel_options(inputs, 19);
+        const Copp3Problem problem = copy_copp3_problem(inputs, 1, a_linearization, b_linearization, objectives);
+        const CoppClarabelOptions options = copy_clarabel_options(inputs, 20);
 
         Copp3SocpResultGuard result;
         const CoppStatus status = copp3_socp_expert(problem, options, &result.value);
@@ -2781,7 +2994,7 @@ private:
     void topp3_solve(ArgumentList outputs, ArgumentList inputs, bool socp)
     {
         const char *name = socp ? "topp3_socp_solve" : "topp3_lp_solve";
-        require_input_count(inputs, 11 + kClarabelOptionsArgCount, name);
+        require_input_count(inputs, 12 + kClarabelOptionsArgCount, name);
         require_output_count_at_least(outputs, 4, name);
         require_output_count_at_most(outputs, 4, name);
 
@@ -2796,8 +3009,9 @@ private:
         const std::size_t num_stationary_max_start = copy_size_scalar(inputs[8], "num_stationary_max_start");
         const std::size_t num_stationary_max_end = copy_size_scalar(inputs[9], "num_stationary_max_end");
         const double a_linearization_floor = copy_real_scalar(inputs[10], "a_linearization_floor");
+        const auto b_linearization = copy_real_vector(inputs[11], "b_linearization");
 
-        const CoppClarabelOptions options = copy_clarabel_options(inputs, 11);
+        const CoppClarabelOptions options = copy_clarabel_options(inputs, 12);
 
         const Topp3Problem problem{
             robot,
@@ -2810,6 +3024,7 @@ private:
             num_stationary_max_start,
             num_stationary_max_end,
             a_linearization_floor,
+            CoppSliceF64{slice_data(b_linearization), b_linearization.size()},
         };
 
         CoppProfile3rdGuard profile;
@@ -2827,13 +3042,14 @@ private:
     void topp3_solve_expert(ArgumentList outputs, ArgumentList inputs, bool socp)
     {
         const char *name = socp ? "topp3_socp_solve_expert" : "topp3_lp_solve_expert";
-        require_input_count(inputs, 11 + kClarabelOptionsArgCount, name);
+        require_input_count(inputs, 12 + kClarabelOptionsArgCount, name);
         require_output_count_at_least(outputs, 22, name);
         require_output_count_at_most(outputs, 22, name);
 
         std::vector<double> a_linearization;
-        const Topp3Problem problem = copy_topp3_problem(inputs, 1, a_linearization);
-        const CoppClarabelOptions options = copy_clarabel_options(inputs, 11);
+        std::vector<double> b_linearization;
+        const Topp3Problem problem = copy_topp3_problem(inputs, 1, a_linearization, b_linearization);
+        const CoppClarabelOptions options = copy_clarabel_options(inputs, 12);
 
         Copp3SocpResultGuard result;
         const CoppStatus status = socp
@@ -2962,6 +3178,44 @@ private:
             throw_status(status);
         }
         outputs[0] = column_vector_output(s_t.value);
+    }
+
+    void force_positive_a_3rd(ArgumentList outputs, ArgumentList inputs)
+    {
+        require_input_count(inputs, 7, "force_positive_a_3rd");
+        require_output_count_at_least(outputs, 3, "force_positive_a_3rd");
+        require_output_count_at_most(outputs, 3, "force_positive_a_3rd");
+
+        // a and b are copied into MEX-owned buffers, adjusted in place by the
+        // native helper, and returned as new MATLAB columns.
+        const auto s = copy_real_vector(inputs[1], "s");
+        auto a = copy_real_vector(inputs[2], "a");
+        auto b = copy_real_vector(inputs[3], "b");
+        const std::size_t num_stationary_start = copy_size_scalar(inputs[4], "num_stationary_start");
+        const std::size_t num_stationary_end = copy_size_scalar(inputs[5], "num_stationary_end");
+        const double a_min = copy_real_scalar(inputs[6], "a_min");
+
+        bool succeeded = false;
+        const CoppStatus status = copp_force_positive_a_3rd(
+            CoppSliceF64{slice_data(s), s.size()},
+            CoppSliceMutF64{a.empty() ? nullptr : a.data(), a.size()},
+            CoppSliceMutF64{b.empty() ? nullptr : b.data(), b.size()},
+            num_stationary_start,
+            num_stationary_end,
+            a_min,
+            &succeeded);
+        if (status != COPP_STATUS_OK)
+        {
+            throw_status(status);
+        }
+
+        outputs[0] = a.empty()
+                         ? factory_.createArray<double>({0, 1})
+                         : factory_.createArray<double>({a.size(), 1}, a.data(), a.data() + a.size());
+        outputs[1] = b.empty()
+                         ? factory_.createArray<double>({0, 1})
+                         : factory_.createArray<double>({b.size(), 1}, b.data(), b.data() + b.size());
+        outputs[2] = factory_.createScalar(succeeded);
     }
 };
 

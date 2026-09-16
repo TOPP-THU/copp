@@ -277,6 +277,74 @@ namespace copp
         return Path::from_waypoints(matrix.view(), config);
     }
 
+    Path Path::from_waypoints_interpolating(
+        std::initializer_list<std::initializer_list<double>> waypoints,
+        SplineConfig config)
+    {
+        return Path::from_waypoints(waypoints, config);
+    }
+
+    Path Path::from_waypoints_interpolating(MatrixView waypoints, SplineConfig config)
+    {
+        return Path::from_waypoints(waypoints, config);
+    }
+
+    Path Path::from_waypoints_fitting(
+        std::initializer_list<std::initializer_list<double>> waypoints,
+        SmoothingConfig config)
+    {
+        auto matrix = Matrix::from_columns(waypoints);
+        return Path::from_waypoints_fitting(matrix.view(), config);
+    }
+
+    Path Path::from_waypoints_fitting(MatrixView waypoints, SmoothingConfig config)
+    {
+        check_matrix_view(waypoints, "waypoints");
+
+        Matrix owned;
+        MatrixView bridge_view = waypoints;
+        if (waypoints.layout() == MatrixLayout::RowMajor)
+        {
+            owned = copy_to_column_major(waypoints);
+            bridge_view = owned.view();
+        }
+
+        // `std::nullopt` and an explicit empty list are different requests;
+        // the bridge flags keep them apart while the slices stay borrowed.
+        const std::vector<std::size_t> no_axes;
+        const std::vector<double> no_parameters;
+        const auto &axes = config.axes ? *config.axes : no_axes;
+        const auto &parameters = config.parameters ? *config.parameters : no_parameters;
+
+        try
+        {
+            auto handle = bridge::path_from_waypoints_fitting(
+                to_rust_slice(bridge_view),
+                bridge::MatrixDescriptor{
+                    bridge_view.rows(),
+                    bridge_view.cols(),
+                    bridge_view.leading_dim(),
+                    uint8_t{0},
+                },
+                bridge::SmoothingConfigBridge{
+                    config.tolerance,
+                    config.axes.has_value(),
+                    config.parameters.has_value(),
+                    config.max_refinements,
+                    config.max_segments,
+                    to_bridge(config.out_of_range),
+                },
+                to_rust_slice(config.tolerance_per_axis),
+                rust::Slice<const std::size_t>(axes.data(), axes.size()),
+                to_rust_slice(parameters));
+            return Path(std::make_unique<Impl>(std::move(handle)));
+        }
+        catch (const rust::Error &error)
+        {
+            throw Error(Status::invalid_input, to_std_string(error));
+        }
+    }
+
     Path Path::from_parametric(
         PathParametric parametric,
         double s_min,
@@ -515,6 +583,27 @@ namespace copp
         {
             throw Error(Status::invalid_input, to_std_string(error));
         }
+    }
+
+    std::optional<SmoothingReport> Path::smoothing_report() const
+    {
+        auto report = impl_->path->smoothing_report();
+        if (!report->has_report())
+        {
+            return std::nullopt;
+        }
+
+        const auto axes = report->axes();
+        const auto max_errors = report->max_errors();
+        return SmoothingReport{
+            std::vector<std::size_t>(axes.begin(), axes.end()),
+            report->segments(),
+            report->interpolated_segments(),
+            report->refinements(),
+            report->fitting_rows(),
+            report->checked_intervals(),
+            std::vector<double>(max_errors.begin(), max_errors.end()),
+        };
     }
 
 } // namespace copp

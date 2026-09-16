@@ -212,6 +212,8 @@ pub enum CoppStatus {
     PathSingularSystem = 307,
     /// Requested path derivative order is not supported by this path.
     PathUnsupportedDerivativeOrder = 308,
+    /// Tolerance-bounded waypoint fitting failed.
+    PathSmoothing = 309,
 
     /// Solver reported infeasibility.
     SolverInfeasible = 400,
@@ -270,6 +272,7 @@ impl CoppStatus {
             Self::PathUnsupportedBoundary => c"path error: unsupported boundary",
             Self::PathSingularSystem => c"path error: singular system",
             Self::PathUnsupportedDerivativeOrder => c"path error: unsupported derivative order",
+            Self::PathSmoothing => c"path error: smoothing failed",
             Self::SolverInfeasible => c"solver error: infeasible",
             Self::SolverUnbounded => c"solver error: unbounded",
             Self::SolverInvalidInput => c"solver error: invalid input",
@@ -353,6 +356,7 @@ impl From<&PathError> for CoppStatus {
             PathError::UnsupportedBoundary { .. } => Self::PathUnsupportedBoundary,
             PathError::SingularSystem => Self::PathSingularSystem,
             PathError::EvaluatorError { .. } => Self::SolverOther,
+            PathError::Smoothing { .. } => Self::PathSmoothing,
         };
         set_last_error_message(status, error.to_string());
         status
@@ -562,5 +566,27 @@ unsafe fn ptr_copy_nonoverlapping(src: *const u8, dst: *mut u8, len: usize) {
     // contract to the standard library primitive.
     unsafe {
         std::ptr::copy_nonoverlapping(src, dst, len);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn smoothing_path_error_maps_to_path_smoothing() {
+        clear_last_error();
+        let error = PathError::Smoothing {
+            message: "segment budget exhausted".into(),
+        };
+
+        let status = CoppStatus::from(&error);
+
+        assert_eq!(status, CoppStatus::PathSmoothing);
+        assert_eq!(status as i32, 309);
+        assert_eq!(status.message(), c"path error: smoothing failed");
+        assert_eq!(copp_last_error_code(), CoppStatus::PathSmoothing);
+        assert_eq!(current_last_error_message_lossy(), Some(error.to_string()));
+        clear_last_error();
     }
 }

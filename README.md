@@ -1,8 +1,7 @@
 # COPP
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE) [![Website](https://img.shields.io/badge/website-copp.pro-2ff0d8)](https://copp.pro/) [![Docs](https://img.shields.io/badge/docs-docs.copp.pro-1f6feb)](https://docs.copp.pro/) [![Crates.io](https://img.shields.io/crates/v/copp.svg?color=b7410e)](https://crates.io/crates/copp)  [![PyPI](https://img.shields.io/pypi/v/copp-py.svg?color=3A6DA8)](https://pypi.org/project/copp-py/)
-
-[![Rust](https://img.shields.io/badge/Rust-native-b7410e)](https://docs.rs/copp/latest/copp/) [![C](https://img.shields.io/badge/C-ABI-a8b9cc)](bindings/c/README.md) [![Python](https://img.shields.io/badge/Python-bindings-ffd43b)](bindings/python/README.md) [![C++](https://img.shields.io/badge/C%2B%2B-bindings-00599c)](bindings/cpp/README.md) [![MATLAB](https://img.shields.io/badge/MATLAB-bindings-e16737)](bindings/matlab/README.md)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE) [![Website](https://img.shields.io/badge/website-copp.pro-2ff0d8)](https://copp.pro/) [![Docs](https://img.shields.io/badge/docs-docs.copp.pro-1f6feb)](https://docs.copp.pro/) [![Crates.io](https://img.shields.io/crates/v/copp.svg?color=b7410e)](https://crates.io/crates/copp) [![PyPI](https://img.shields.io/pypi/v/copp-py.svg?color=3A6DA8)](https://pypi.org/project/copp-py/)
+[![Rust](https://img.shields.io/badge/Rust-native-b7410e)](https://docs.rs/copp/latest/copp/) [![C](https://img.shields.io/badge/C-ABI-a8b9cc)](bindings/c/README.md) [![Python](https://img.shields.io/badge/Python-bindings-ffd43b)](bindings/python/README.md) [![C++](https://img.shields.io/badge/C%2B%2B-bindings-00599c)](bindings/cpp/README.md) [![MATLAB](https://img.shields.io/badge/MATLAB-toolbox-e16737)](https://www.mathworks.com/matlabcentral/fileexchange/184715-copp-convex-objective-path-parameterization)
 
 ## <font color="#C00000">C</font>onvex-<font color="#C00000">O</font>bjective <font color="#C00000">P</font>ath <font color="#C00000">P</font>arameterization
 
@@ -129,12 +128,13 @@ If your work uses RDDP methods from the PRO release, please cite:
 For other use cases, please cite:
 
 ```tex
-@misc{thu2026copp,
-  title = {COPP: Convex-Objective Path Parameterization},
-  author = {Wang, Yunan and He, Suqin and Lin, Shize and Hu, Chuxiong},
-  year = {2026},
-  publisher = {GitHub},
-  howpublished = {\url{https://github.com/TOPP-THU/copp}}
+@inproceedings{wang2026copp,
+  title={{COPP}: An Open-Source Ultra-Fast Library for Convex-Objective Path Parameterization},
+  author={Wang, Yunan and He, Suqin and Lin, Shize and Hu, Chuxiong},
+  booktitle={American Control Conference},
+  pages={2335},
+  year={2026},
+  organization={IEEE}
 }
 ```
 
@@ -267,7 +267,7 @@ fn main() -> Result<(), CoppError> {
 - C: enable the Cargo `c` feature with `cargo build --release --lib --features c`, then refer to [README.md for C](./bindings/c/README.md).
 - Python: Please refer to [README.md for Python](./bindings/python/README.md).
 - C++: Please refer to [README.md for C++](./bindings/cpp/README.md).
-- Matlab: Please refer to [README.md for Matlab](./bindings/matlab/README.md).
+- MATLAB: enable the Cargo `matlab` feature with `cargo build --release --lib --features matlab`, then see [README.md for MATLAB](./bindings/matlab/README.md).
 
 If you have suggestions for these language interfaces, please feel free to [contact us](#contact-us), open an issue, or submit a pull request.
 
@@ -275,7 +275,7 @@ If you have suggestions for these language interfaces, please feel free to [cont
 
 ### Open-source vs <font color="#C00000">**PRO**</font>
 
-The open-source release and PRO release provide complementary solvers for the above problem classes. Performance evaluations for each method are documented in the corresponding Rust test/example source files and summarized below. For challenging trajectory-planning tasks that require both high solution quality and robust numerical behavior, we recommend the PRO solvers. If you are interested in COPP PRO licensing or collaboration, please see [Contact Us](#contact-us).
+The open-source release and PRO release provide complementary solvers for the above problem classes. Performance evaluations for the open-source methods are documented in the corresponding Rust test/example source files; all methods are summarized below. For challenging trajectory-planning tasks that require both high solution quality and robust numerical behavior, we recommend the PRO solvers. If you are interested in COPP PRO licensing or collaboration, please see [Contact Us](#contact-us).
 
 | Problem class | Algorithm  | Availability                         | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | ------------- | ---------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

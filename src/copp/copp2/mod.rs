@@ -26,7 +26,6 @@ pub(crate) mod opt2;
 /// `lib.rs` should import from this module instead of deep internal paths
 /// (e.g. `dp2::reach_set2`, `opt2::copp2_socp`) to avoid breakage when
 /// internal `mod.rs` layouts are refactored.
-#[allow(unused_imports)]
 pub(crate) mod stable {
     pub(crate) mod basic {
         pub use super::super::formulation::{
@@ -36,10 +35,7 @@ pub(crate) mod stable {
     }
 
     pub(crate) mod reach_set2 {
-        pub use super::super::dp2::reach_set2::{
-            ReachSet2, ReachSet2Options, ReachSet2OptionsBuilder, reach_set2_backward,
-            reach_set2_bidirectional,
-        };
+        pub use super::super::dp2::reach_set2::*;
     }
 
     pub(crate) mod topp2_ra {

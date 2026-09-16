@@ -89,7 +89,7 @@ namespace copp
 
         /// Penalize total variation of torque along the path.
         ///
-        /// This objective is supported by SOCP solvers.
+        /// This objective is supported by the SOCP solvers.
         static Objective TotalVariationTorque(double weight, Span<const double> normalize)
         {
             return Objective(

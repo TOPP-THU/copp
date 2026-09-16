@@ -654,7 +654,7 @@ fn backward_bound_a_next<const MAX: bool, const MIN: bool>(
     };
 
     let a_curr_min = if MIN {
-        // Better than transform the sign in the lp_2d_incre function.
+        // Better than transform the sign inside the LP kernel itself.
         a_b.iter_mut().for_each(|(_, b, _)| {
             *b = -*b;
         });

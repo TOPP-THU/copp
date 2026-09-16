@@ -1,5 +1,5 @@
 //! Shared Clarabel backend options for TOPP/COPP optimization solvers.
-//! This module provides a unified configuration surface for all Clarabel-based backends in this crate (e.g., TOPP2-LP, COPP2-SOCP, TOPP3-LP/SOCP, COPP3-OPT).
+//! This module provides a unified configuration surface for all Clarabel-based backends in this crate (e.g., COPP2-SOCP, TOPP3-LP/SOCP, COPP3-SOCP).
 //! Design goals:
 //! - Keep one stable, user-facing option model across multiple solvers;
 //! - Allow advanced users to pass raw [`DefaultSettings<f64>`](clarabel::solver::DefaultSettings) when needed;

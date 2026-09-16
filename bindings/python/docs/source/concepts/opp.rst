@@ -68,7 +68,8 @@ is:
 2. Optionally tighten ``robot.constraints`` with ``amax_substitute``.
 3. Build a TOPP3 or COPP3 problem with that seed.
 4. Rebuild the third-order problem with the previous third-order solution when
-   running a second refinement iteration.
+   running a second refinement iteration, passing its ``a`` as
+   ``a_linearization`` and its ``b`` as ``b_linearization``.
 
 Problem Descriptors and Live Data
 ---------------------------------
@@ -103,7 +104,14 @@ When refining a third-order solve with a new profile, build a new descriptor:
        idx_s_start=0,
        a_boundary=(0.0, 0.0),
        b_boundary=(0.0, 0.0),
+       b_linearization=profile.b,
    )
+
+``b_linearization`` selects adaptive linearization: each jerk row is anchored
+where it is nearly active at the feasible state ``(profile.a, profile.b)``. It
+must be the ``b`` of the same third-order profile, never a TOPP2 ``b``, and is
+most useful when ``a`` approaches zero. Omit it to linearize every row directly
+at ``a_linearization``.
 
 TOPP vs COPP
 ------------

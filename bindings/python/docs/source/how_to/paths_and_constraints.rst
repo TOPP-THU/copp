@@ -4,12 +4,44 @@ Build Paths and Constraints
 Path Options
 ------------
 
-Use ``Path.from_waypoints`` when your path is a sequence of waypoints. The
-default Python matrix layout is ``sample_major``:
+Use ``Path.from_waypoints_interpolating`` when your path is a sequence of
+waypoints that it must pass through exactly. ``Path.from_waypoints`` is an
+equivalent alias with the same arguments. The default Python matrix layout is
+``sample_major``:
 
 .. code-block:: text
 
    waypoints.shape == (n_points, dim)
+
+Use ``Path.from_waypoints_fitting`` when the waypoints are noisy samples or a
+dense programmed polyline that only needs to be followed within a tolerance.
+It fits an adaptive nonuniform C4 quintic B-spline and does not pass through
+interior waypoints: each selected axis may deviate from the piecewise-linear
+reference polyline through the waypoints by at most its tolerance, audited at
+the same path parameter over every complete reference interval. Endpoints are
+retained, and unselected axes keep interpolating every waypoint. Tolerances
+are in each axis's input units, and a per-axis tolerance array follows the
+order of ``axes``:
+
+.. code-block:: python
+
+   path = copp.Path.from_waypoints_fitting(
+       waypoints,
+       tolerance=[1e-3, 1e-2],
+       axes=[0, 3],  # 0-based path dimensions
+   )
+   report = path.smoothing_report
+   assert (report.max_errors <= [1e-3, 1e-2]).all()
+
+``path.smoothing_report`` is ``None`` for paths that were not fitted. Fitting
+failures, such as a tolerance that cannot be met within ``max_segments``,
+raise ``PathError``.
+
+.. note::
+
+   Both waypoint constructor families are unstable: their names, signatures,
+   and configuration types (``SplineConfig`` and ``SmoothingConfig``) may
+   change as more waypoint algorithms are added.
 
 Use ``Path.from_evaluator_2nd`` or ``Path.from_evaluator_3rd`` when you already
 have analytic derivatives. The evaluator receives a one-dimensional ``float64``
@@ -96,6 +128,28 @@ rows in the referenced constraint buffer. This mirrors Rust
 the linearized rows are regenerated from the problem's copied
 ``a_linearization``. To refine a third-order solution, construct a new problem
 with the new ``profile.a``.
+
+When that profile comes from a third-order solve, also pass
+``b_linearization=profile.b``. Each jerk row is then anchored where it is
+nearly active at the feasible state ``(profile.a, profile.b)`` instead of
+directly at ``profile.a``. This is recommended when ``a`` spans a wide range
+and especially when it can approach zero: anchoring both rows of one axis at
+the same tiny ``a_linearization[k]`` cancels ``b`` and ``c`` and leaves
+``a[k] <= 3 * a_linearization[k]``. ``b_linearization`` must have the same
+length as ``a_linearization`` and must come from the same third-order profile;
+a TOPP2 profile's ``b`` is discretized differently and must not be used. On
+profiles well away from zero, the default direct linearization is cheaper and
+nearly identical.
+
+.. code-block:: python
+
+   problem = copp.solver.topp3_lp.Problem(
+       robot.constraints,
+       profile.a,
+       a_boundary=(0.0, 0.0),
+       b_boundary=(0.0, 0.0),
+       b_linearization=profile.b,
+   )
 
 Limit Shapes
 ------------

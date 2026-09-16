@@ -24,7 +24,13 @@ from .core import (
 )
 from .constraints import Constraints as Constraints
 from .interpolation import Profile3rd as Profile3rd
-from .path import Path as Path, PathDerivatives as PathDerivatives, SplineConfig as SplineConfig
+from .path import (
+    Path as Path,
+    PathDerivatives as PathDerivatives,
+    SmoothingConfig as SmoothingConfig,
+    SmoothingReport as SmoothingReport,
+    SplineConfig as SplineConfig,
+)
 from .robot import Robot as Robot
 
 __all__: list[str]

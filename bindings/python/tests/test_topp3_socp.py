@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 import copp_py as copp
 
@@ -35,7 +36,7 @@ def _build_topp3_problem(n_samples=7, dim=2):
         b_boundary=(0.0, 0.0),
         num_stationary_max=1,
     )
-    return s, problem
+    return s, robot, problem
 
 
 def _assert_profile(profile, n_samples):
@@ -60,7 +61,7 @@ def _assert_expert_result(result, n_samples):
 
 
 def test_topp3_lp_and_expert_return_shared_result_type():
-    s, problem = _build_topp3_problem()
+    s, _robot, problem = _build_topp3_problem()
 
     profile = copp.solver.topp3_lp.solve(problem)
     _assert_profile(profile, s.size)
@@ -70,10 +71,40 @@ def test_topp3_lp_and_expert_return_shared_result_type():
 
 
 def test_topp3_socp_and_expert_return_shared_result_type():
-    s, problem = _build_topp3_problem()
+    s, _robot, problem = _build_topp3_problem()
 
     profile = copp.solver.topp3_socp.solve(problem)
     _assert_profile(profile, s.size)
 
     result = copp.solver.topp3_socp.solve_expert(problem)
     _assert_expert_result(result, s.size)
+
+
+def test_constraints_exceed_topp3_audits_post_processed_profile():
+    s, robot, problem = _build_topp3_problem(n_samples=21)
+    profile = copp.solver.topp3_socp.solve(problem)
+    profile.force_positive_a(s)
+    num_stationary = profile.num_stationary
+
+    exceed = robot.constraints.exceed_topp3(profile)
+    assert len(exceed) == 3
+    assert max(exceed) <= 1.0e-6
+    explicit = robot.constraints.exceed_topp3(
+        profile.a, profile.b, num_stationary=num_stationary
+    )
+    assert explicit == exceed
+
+    too_fast = robot.constraints.exceed_topp3(
+        profile.a + 1.0e4, profile.b, num_stationary=num_stationary
+    )
+    assert too_fast[0] > 0.0
+    too_hard = robot.constraints.exceed_topp3(
+        profile.a, 1.0e3 * profile.b, num_stationary=num_stationary
+    )
+    assert too_hard[1] > 0.0
+    assert np.isnan(robot.constraints.exceed_topp3(profile.a, profile.b[:-1])).all()
+
+    with pytest.raises(ValueError, match="`b` is required"):
+        robot.constraints.exceed_topp3(profile.a)
+    with pytest.raises(ValueError, match="not both"):
+        robot.constraints.exceed_topp3(profile, profile.b)

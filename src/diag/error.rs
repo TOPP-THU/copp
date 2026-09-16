@@ -179,11 +179,27 @@ pub enum ConstraintError {
 
 /// Error type for path construction and path evaluation APIs.
 ///
-/// This error is returned by path-related modules such as [`Path`](crate::path::Path)
-/// and spline utilities when input data, parameter ranges, or numerical systems
-/// are invalid.
+/// This error is returned by path-related modules such as [`Path`](crate::path::Path),
+/// strict spline interpolation, and tolerance-bounded waypoint fitting when
+/// input data, parameter ranges, construction budgets, or numerical systems are
+/// invalid.
 #[derive(Error, Debug)]
 pub enum PathError {
+    /// Tolerance-bounded waypoint fitting could not produce an audited path.
+    ///
+    /// This covers invalid smoothing configuration/input, exhausted knot or
+    /// refinement budgets, numerical factorization failures, parameter
+    /// resolution loss, and failure of the final physical-unit interval audit.
+    /// The variant means construction returned no unchecked fallback curve.
+    ///
+    /// The contained text is intended for human diagnostics and may become more
+    /// specific over time; programmatic handling should match this enum variant
+    /// rather than depend on the exact message.
+    #[error("path smoothing failed: {message}")]
+    Smoothing {
+        /// Human-readable construction-stage diagnostic.
+        message: String,
+    },
     /// Path dimension is invalid (typically zero).
     #[error("invalid dimension: {dim}")]
     InvalidDimension {
@@ -540,10 +556,31 @@ pub(crate) fn check_strictly_positive(
 }
 
 #[inline(always)]
+/// Validate the two third-order boundary states `(a, b)`.
+///
+/// Exact zero selects the root-order branch; it is deliberately not a
+/// floating-point closeness test. A strictly positive
+/// `a = dot(s)^2`, however small, is a nonzero-speed state whose adjacent
+/// interval is validated separately.
+///
+/// For an exact zero at the initial station, the one-sided expansion
+/// `a(s_start + x) = 2 b_start x + O(x^2)` requires `b_start >= 0`.
+/// At the terminal station,
+/// `a(s_final - x) = -2 b_final x + O(x^2)` requires `b_final <= 0`.
+/// A zero `b` is a stationary endpoint; a strict compatible sign is a
+/// finite-time simple zero.
 pub(crate) fn check_boundary_state_copp3_valid(
     a_boundary: (f64, f64),
     b_boundary: (f64, f64),
 ) -> Result<(), CoppError> {
+    for (name, value) in [
+        ("initial a", a_boundary.0),
+        ("terminal a", a_boundary.1),
+        ("initial b", b_boundary.0),
+        ("terminal b", b_boundary.1),
+    ] {
+        check_input_not_nan_infinite("copp3", name, value)?;
+    }
     if a_boundary.0 < 0.0 {
         return Err(CoppError::InvalidInput(
             "copp3_socp".into(),
@@ -556,29 +593,29 @@ pub(crate) fn check_boundary_state_copp3_valid(
             format!("The terminal a = {} must be non-negative.", a_boundary.1),
         ));
     }
-    if a_boundary.0.abs() < f64::EPSILON {
-        // If a[0]==0 but b[0]!=0, then a<0 will occur near s_start
-        if b_boundary.0.abs() >= f64::EPSILON {
-            return Err(CoppError::InvalidInput(
-                "copp3_socp".into(),
-                format!(
-                    "The initial a = {} is zero, so the initial b = {} must also be zero.",
-                    a_boundary.0, b_boundary.0
-                ),
-            ));
-        }
+    // These are exact root-order branches, not floating-point closeness tests.
+    // A strictly positive `a = dot(s)^2`, however small, may have nonzero
+    // `b = ddot(s)` while the adjacent continuous interval remains positive.
+    // Its interval certificate is responsible for deciding that geometry.
+    // Treating every `a < EPSILON` as zero rejects valid scale-dependent
+    // boundary states and can break an otherwise bitwise-exact window seam.
+    if a_boundary.0 == 0.0 && b_boundary.0 < 0.0 {
+        return Err(CoppError::InvalidInput(
+            "copp3_socp".into(),
+            format!(
+                "The initial a = {} is zero, so the initial b = {} must be non-negative.",
+                a_boundary.0, b_boundary.0
+            ),
+        ));
     }
-    if a_boundary.1.abs() < f64::EPSILON {
-        // If a[n]==0 but b[n]!=0, then a<0 will occur near s_final
-        if b_boundary.1.abs() >= f64::EPSILON {
-            return Err(CoppError::InvalidInput(
-                "copp3_socp".into(),
-                format!(
-                    "The terminal a = {} is zero, so the terminal b = {} must also be zero.",
-                    a_boundary.1, b_boundary.1
-                ),
-            ));
-        }
+    if a_boundary.1 == 0.0 && b_boundary.1 > 0.0 {
+        return Err(CoppError::InvalidInput(
+            "copp3_socp".into(),
+            format!(
+                "The terminal a = {} is zero, so the terminal b = {} must be non-positive.",
+                a_boundary.1, b_boundary.1
+            ),
+        ));
     }
     Ok(())
 }

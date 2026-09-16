@@ -76,6 +76,38 @@ classdef test_copp3_socp < matlab.unittest.TestCase
 
             clear cleaner
         end
+
+        function copp3_socp_accepts_b_linearization(testCase)
+            % COPP3 descriptors forward b_linearization with the objectives.
+            n = 7;
+            [robot, cleaner] = simple_topp3_robot_for_copp3_socp(n);
+            objectives = {
+                copp.objective.time(1.0)
+                copp.objective.thermal_energy(0.1, ones(robot.dim, 1))
+            };
+            problem = copp.solver.copp3_socp.Problem( ...
+                robot, objectives, ones(n, 1), num_stationary_max=1);
+            profile = copp.solver.copp3_socp.solve(problem);
+
+            refined_problem = copp.solver.copp3_socp.Problem( ...
+                robot, objectives, max(profile.a, 0), ...
+                num_stationary_max=1, ...
+                b_linearization=profile.b);
+            refined = copp.solver.copp3_socp.solve(refined_problem);
+            result = copp.solver.copp3_socp.solve_expert(refined_problem);
+
+            testCase.verifyEqual(refined_problem.b_linearization, profile.b);
+            verify_copp3_profile(testCase, refined, n);
+            testCase.verifyTrue(result.has_profile);
+            % The native solver rejects a length mismatch at solve time.
+            mismatched = copp.solver.copp3_socp.Problem( ...
+                robot, objectives, ones(n, 1), b_linearization=ones(n + 1, 1));
+            testCase.verifyError( ...
+                @() copp.solver.copp3_socp.solve(mismatched), ...
+                'copp:SolverError');
+
+            clear cleaner
+        end
     end
 end
 

@@ -10,6 +10,7 @@ use crate::copp::constraints::ModePopConstraints;
 use crate::diag::{CoppError, RobotDynamicsError};
 use crate::ffi::python::array::{array_like_to_vec_f64, array_like_to_vec2_f64};
 use crate::ffi::python::error::to_py_err;
+use crate::ffi::python::interpolation::PyProfile3rd;
 use crate::ffi::python::path::{PyMatrixLayout, PyPath};
 use crate::robot::{Robot as RustRobot, RobotBasic, RobotTorque};
 use nalgebra::DMatrix;
@@ -691,6 +692,7 @@ impl PyConstraints {
         signature = (jerk_a, jerk_b, jerk_c, jerk_d, jerk_max, idx_s, *, is_negative = false, layout = MatrixLayoutArg(PyMatrixLayout::SampleMajor)),
         text_signature = "(jerk_a, jerk_b, jerk_c, jerk_d, jerk_max, idx_s, *, is_negative=False, layout='sample_major')"
     )]
+    #[allow(clippy::too_many_arguments)]
     fn add_constraint_3rd(
         &self,
         jerk_a: &Bound<'_, PyAny>,
@@ -720,6 +722,122 @@ impl PyConstraints {
             )
             .map(|_| ())
             .map_err(|error| to_py_err(error.into()))
+    }
+
+    /// Evaluate maximum TOPP2 constraint violations of an ``a`` profile.
+    ///
+    /// The path acceleration of each interval is reconstructed by the TOPP2
+    /// relation ``b[k] = (a[k+1] - a[k]) / (2 * ds[k])``, and the second-order
+    /// rows of both endpoint stations are checked against that interval's
+    /// ``b``.
+    ///
+    /// Parameters
+    /// ----------
+    /// a : ArrayLike
+    ///     One-dimensional node profile ``a = (ds/dt)^2`` convertible to
+    ///     float64, sampled on the stations starting at ``idx_s_start``.
+    /// idx_s_start : int, default=0
+    ///     Global station index of ``a[0]``.
+    ///
+    /// Returns
+    /// -------
+    /// tuple[float, float]
+    ///     ``(exceed_1st, exceed_2nd)``. Each value is ``<= 0`` when the
+    ///     profile is feasible and positive when violated. The first-order
+    ///     term covers ``0 <= a[k] <= amax[k]``. Both values are NaN if the
+    ///     station range is unavailable or ``b`` cannot be reconstructed,
+    ///     i.e. fewer than two stations are given, the station grid is not
+    ///     strictly increasing, or ``a`` contains non-finite values.
+    ///
+    /// Raises
+    /// ------
+    /// ValueError
+    ///     If ``a`` cannot be converted to a one-dimensional float64 array.
+    #[pyo3(signature = (a, *, idx_s_start = 0), text_signature = "(a, *, idx_s_start=0)")]
+    fn exceed_topp2(&self, a: &Bound<'_, PyAny>, idx_s_start: usize) -> PyResult<(f64, f64)> {
+        let a = array_like_to_vec_f64("a", a)?;
+        Ok(lock_robot(&self.inner)?
+            .constraints
+            .exceed_topp2(idx_s_start, &a))
+    }
+
+    /// Evaluate maximum TOPP3 constraint violations of an ``(a, b)`` profile.
+    ///
+    /// The third-order term uses the original nonlinear ``sqrt(a)`` form, not
+    /// the linearized rows, so it audits the profile that is actually
+    /// delivered. Run it after post-processing such as
+    /// ``Profile3rd.force_positive_a``. The third-order term skips the two
+    /// stationary boundary blocks described by ``num_stationary``.
+    ///
+    /// Parameters
+    /// ----------
+    /// a : ArrayLike | Profile3rd
+    ///     One-dimensional node profile ``a = (ds/dt)^2`` convertible to
+    ///     float64, or a ``Profile3rd`` supplying ``a``, ``b``, and
+    ///     ``num_stationary`` together.
+    /// b : ArrayLike | None, default=None
+    ///     Node profile ``b = dds/dt`` with the same length as ``a``. Required
+    ///     unless ``a`` is a ``Profile3rd``.
+    /// num_stationary : tuple[int, int] | None, default=None
+    ///     Stationary boundary interval counts ``(start, end)``. ``None``
+    ///     means ``(0, 0)`` for array input. Must be omitted when ``a`` is a
+    ///     ``Profile3rd``, whose own counts are used.
+    /// idx_s_start : int, default=0
+    ///     Global station index of ``a[0]``.
+    ///
+    /// Returns
+    /// -------
+    /// tuple[float, float, float]
+    ///     ``(exceed_1st, exceed_2nd, exceed_3rd)``. Each value is ``<= 0``
+    ///     when the profile is feasible and positive when violated. All values
+    ///     are NaN if fewer than two stations are given, the station range is
+    ///     unavailable, the station grid is not strictly increasing, ``a``
+    ///     and ``b`` disagree in length, or ``a`` or ``b`` contains non-finite
+    ///     values.
+    ///
+    /// Raises
+    /// ------
+    /// ValueError
+    ///     If an array cannot be converted to a one-dimensional float64 array,
+    ///     if ``b`` is missing for array input, or if ``b`` or
+    ///     ``num_stationary`` is combined with a ``Profile3rd``.
+    #[pyo3(
+        signature = (a, b = None, *, num_stationary = None, idx_s_start = 0),
+        text_signature = "(a, b=None, *, num_stationary=None, idx_s_start=0)"
+    )]
+    fn exceed_topp3(
+        &self,
+        a: &Bound<'_, PyAny>,
+        b: Option<&Bound<'_, PyAny>>,
+        num_stationary: Option<(usize, usize)>,
+        idx_s_start: usize,
+    ) -> PyResult<(f64, f64, f64)> {
+        if let Ok(profile) = a.cast::<PyProfile3rd>() {
+            if b.is_some() || num_stationary.is_some() {
+                return Err(PyValueError::new_err(
+                    "pass either a `Profile3rd` or `a`, `b`, and `num_stationary`, not both",
+                ));
+            }
+            let profile = profile.borrow();
+            let (a, b, num_stationary) = profile.as_parts();
+            return Ok(lock_robot(&self.inner)?.constraints.exceed_topp3(
+                idx_s_start,
+                a,
+                b,
+                num_stationary,
+            ));
+        }
+
+        let b =
+            b.ok_or_else(|| PyValueError::new_err("`b` is required unless `a` is a `Profile3rd`"))?;
+        let a = array_like_to_vec_f64("a", a)?;
+        let b = array_like_to_vec_f64("b", b)?;
+        Ok(lock_robot(&self.inner)?.constraints.exceed_topp3(
+            idx_s_start,
+            &a,
+            &b,
+            num_stationary.unwrap_or((0, 0)),
+        ))
     }
 }
 

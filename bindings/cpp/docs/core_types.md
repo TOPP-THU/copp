@@ -32,7 +32,8 @@ copp::Span<const double> from_array{raw};
 ```
 
 Input spans must remain alive only for the call that consumes them, unless a
-type explicitly documents longer borrowing.
+type explicitly documents longer borrowing.  Problem classes copy the arrays
+they need, so temporary vectors are safe at construction sites.
 
 ## Matrices
 
@@ -64,7 +65,7 @@ std::vector<double> row_major{
 };
 
 auto view = copp::MatrixView::row_major(row_major.data(), 3, 2);
-auto path = copp::Path::from_waypoints(view);
+auto path = copp::Path::from_waypoints_interpolating(view);
 ```
 
 `copp::MatrixRef` is a writable borrowed matrix used by C++ callbacks:
@@ -123,22 +124,19 @@ This keeps the public ABI stable whether Eigen is present or disabled.
 
 The primary C++ API throws `copp::Error`:
 
-{% raw %}
 ```cpp
 try {
-    auto path = copp::Path::from_waypoints({{0.0}, {1.0}});
+    auto path = copp::Path::from_waypoints_interpolating({{0.0}, {1.0}});
 } catch (const copp::Error& error) {
     std::cerr << error.what() << "\n";
 }
 ```
-{% endraw %}
 
 Selected APIs also provide a no-throw overload with `copp::no_throw` as the
 final argument:
 
-{% raw %}
 ```cpp
-auto result = copp::Path::from_waypoints({{0.0}, {1.0}}, copp::no_throw);
+auto result = copp::Path::from_waypoints_interpolating({{0.0}, {1.0}}, copp::no_throw);
 if (!result) {
     std::cerr << result.error().message << "\n";
     return;
@@ -146,7 +144,6 @@ if (!result) {
 
 auto path = std::move(result).value();
 ```
-{% endraw %}
 
 The no-throw form uses `copp::Expected<T>`, a small C++17 expected-like type.
 

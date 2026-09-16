@@ -322,6 +322,59 @@ int main(void)
         return 1;
     }
 
+    double exceed_1order = NAN;
+    double exceed_2order = NAN;
+    status = copp_robot_exceed_topp2(robot, 0, a_slice, &exceed_1order, &exceed_2order);
+    if (expect_ok(status, "copp_robot_exceed_topp2"))
+    {
+        copp_vec_f64_free(t_s);
+        copp_vec_f64_free(a);
+        copp_robot_free(robot);
+        return 1;
+    }
+    if (!(exceed_1order <= 1e-6) || !(exceed_2order <= 1e-6))
+    {
+        fprintf(stderr,
+                "TOPP2-RA profile exceeds raw constraints: %.17g, %.17g\n",
+                exceed_1order,
+                exceed_2order);
+        copp_vec_f64_free(t_s);
+        copp_vec_f64_free(a);
+        copp_robot_free(robot);
+        return 1;
+    }
+
+    /* Tripling `a` exceeds amax = 4 and triples the reconstructed `b`. */
+    double a_infeasible[NUM_POINTS];
+    for (size_t j = 0; j < NUM_POINTS; ++j)
+    {
+        a_infeasible[j] = 3.0 * a.data[j];
+    }
+    status = copp_robot_exceed_topp2(
+        robot, 0, (struct CoppSliceF64){a_infeasible, NUM_POINTS}, &exceed_1order, &exceed_2order);
+    if (expect_ok(status, "copp_robot_exceed_topp2 infeasible"))
+    {
+        copp_vec_f64_free(t_s);
+        copp_vec_f64_free(a);
+        copp_robot_free(robot);
+        return 1;
+    }
+    assert(exceed_1order > 0.0);
+    assert(exceed_2order > 0.0);
+
+    /* Unavailable station ranges report NaN with an OK status. */
+    status = copp_robot_exceed_topp2(robot, NUM_POINTS, a_slice, &exceed_1order, &exceed_2order);
+    if (expect_ok(status, "copp_robot_exceed_topp2 unavailable range"))
+    {
+        copp_vec_f64_free(t_s);
+        copp_vec_f64_free(a);
+        copp_robot_free(robot);
+        return 1;
+    }
+    assert(isnan(exceed_1order) && isnan(exceed_2order));
+    assert(copp_robot_exceed_topp2(robot, 0, a_slice, NULL, &exceed_2order) ==
+           COPP_STATUS_NULL_POINTER);
+
     printf("Raw constraint C smoke test passed: t_final=%.17g, a.len=%zu\n",
            t_final,
            a.len);

@@ -72,6 +72,15 @@ class Profile3rd:
         """Number of stationary intervals at the end boundary."""
         ...
 
+    def force_positive_a(self, s: ArrayLike, a_min: float = 1e-12) -> bool:
+        """Adjust ``(a, b)`` in place so interpolated ``a(s)`` stays positive.
+
+        Numerical safety pass for profiles whose ``a`` values may touch zero
+        due to finite precision; apply before ``s_to_t_topp3``. Returns
+        ``True`` when the in-place adjustment succeeds.
+        """
+        ...
+
     @property
     def len(self) -> int:
         """Number of station nodes in the profile."""

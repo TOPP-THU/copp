@@ -1,18 +1,24 @@
 function info = install_copp(opts)
 %INSTALL_COPP Download and install a prebuilt COPP MATLAB toolbox.
 %
-% install_copp() detects the current MATLAB platform, downloads the matching
-% .mltbx asset from the latest COPP GitHub Release, installs it, and verifies
-% that the installed MATLAB package can report its version.
+% install_copp() downloads the .mltbx asset from the latest COPP GitHub
+% Release, installs it, and verifies that the installed MATLAB package can
+% report its version. One toolbox covers every supported platform, so the
+% detected platform only narrows down diagnostics.
 %
 % install_copp(Version="v0.1.0") installs a specific release tag.
 % install_copp(DryRun=true) prints the candidate toolbox locations without
 % downloading or installing anything.
+%
+% Run this from a folder that does not itself contain a +copp package. The
+% post-install check resolves copp.version() from the current folder first, so
+% running it inside a clone of TOPP-THU/copp-matlab (which ships +copp without
+% a MEX gateway) reports a failure even though the toolbox installed fine.
 arguments
     opts.Version (1,1) string = "latest"
     opts.Repository (1,1) string = "TOPP-THU/copp"
     opts.AssetRoot (1,1) string = ""
-    opts.Package (1,1) string {mustBeMember(opts.Package, ["auto", "copp", "copp"])} = "auto"
+    opts.Package (1,1) string {mustBeMember(opts.Package, ["auto", "copp"])} = "auto"
     opts.AgreeToLicense (1,1) logical = true
     opts.KeepDownload (1,1) logical = false
     opts.DryRun (1,1) logical = false
@@ -20,7 +26,7 @@ arguments
 end
 
 platform = coppMatlabPlatform();
-locations = candidateToolboxLocations(opts.Repository, opts.AssetRoot, opts.Version, platform);
+locations = candidateToolboxLocations(opts.Repository, opts.AssetRoot, opts.Version);
 
 fprintf("COPP MATLAB platform: %s\n", platform);
 fprintf("COPP MATLAB release: %s\n", opts.Version);
@@ -97,8 +103,12 @@ switch arch
 end
 end
 
-function locations = candidateToolboxLocations(repository, assetRoot, version, platform)
-assetStable = "copp-matlab-" + platform + ".mltbx";
+function locations = candidateToolboxLocations(repository, assetRoot, version)
+% One universal toolbox ships every platform's MEX gateway, so the asset name
+% carries no platform suffix. Releases publish two copies of the same file: the
+% immutable tagged name, and the stable name that /releases/latest/download/
+% resolves without a GitHub API call.
+assetStable = "copp-matlab.mltbx";
 locations = strings(0, 1);
 
 if strlength(assetRoot) > 0
@@ -106,18 +116,18 @@ if strlength(assetRoot) > 0
         locations(end + 1, 1) = fullfile(assetRoot, assetStable);
         if version ~= "latest"
             tag = normalizeReleaseTag(version);
-            locations(end + 1, 1) = fullfile(assetRoot, "copp-matlab-" + tag + "-" + platform + ".mltbx");
+            locations(end + 1, 1) = fullfile(assetRoot, "copp-matlab-" + tag + ".mltbx");
         end
-        platformAssets = dir(fullfile(assetRoot, "copp-matlab-*" + platform + ".mltbx"));
-        for i = 1:numel(platformAssets)
-            locations(end + 1, 1) = fullfile(platformAssets(i).folder, platformAssets(i).name);
+        localAssets = dir(fullfile(assetRoot, "copp-matlab*.mltbx"));
+        for i = 1:numel(localAssets)
+            locations(end + 1, 1) = fullfile(localAssets(i).folder, localAssets(i).name); %#ok<AGROW>
         end
         locations = unique(locations, "stable");
     else
         locations(end + 1, 1) = joinUrl(assetRoot, assetStable);
         if version ~= "latest"
             tag = normalizeReleaseTag(version);
-            locations(end + 1, 1) = joinUrl(assetRoot, "copp-matlab-" + tag + "-" + platform + ".mltbx");
+            locations(end + 1, 1) = joinUrl(assetRoot, "copp-matlab-" + tag + ".mltbx");
         end
     end
     return
@@ -129,12 +139,12 @@ if version == "latest"
     tag = latestReleaseTag(repository);
     if strlength(tag) > 0
         locations(end + 1, 1) = repoBase + "/releases/download/" + tag + "/" + assetStable;
-        locations(end + 1, 1) = repoBase + "/releases/download/" + tag + "/copp-matlab-" + tag + "-" + platform + ".mltbx";
+        locations(end + 1, 1) = repoBase + "/releases/download/" + tag + "/copp-matlab-" + tag + ".mltbx";
     end
 else
     tag = normalizeReleaseTag(version);
     locations(end + 1, 1) = repoBase + "/releases/download/" + tag + "/" + assetStable;
-    locations(end + 1, 1) = repoBase + "/releases/download/" + tag + "/copp-matlab-" + tag + "-" + platform + ".mltbx";
+    locations(end + 1, 1) = repoBase + "/releases/download/" + tag + "/copp-matlab-" + tag + ".mltbx";
 end
 end
 
@@ -176,7 +186,7 @@ end
 
 function versionText = verifyInstalledPackage(packageName)
 if packageName == "auto"
-    packages = ["copp", "copp"];
+    packages = "copp";
 else
     packages = packageName;
 end

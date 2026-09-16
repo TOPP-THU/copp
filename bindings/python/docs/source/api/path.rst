@@ -19,7 +19,20 @@ Use the fields explicitly:
    out = path.evaluate_up_to_2nd(s)
    q, dq, ddq = out.q, out.dq, out.ddq
 
+Waypoint paths are built with ``Path.from_waypoints_interpolating``, which
+passes through every waypoint (``Path.from_waypoints`` is an equivalent
+alias), or with ``Path.from_waypoints_fitting``, a tolerance-bounded C4
+quintic fit whose diagnostics are available from ``Path.smoothing_report``.
+Both constructor families are unstable: names, signatures, and configuration
+types may change as more waypoint algorithms are added.
+
 .. autoclass:: SplineConfig
+   :members:
+
+.. autoclass:: SmoothingConfig
+   :members:
+
+.. autoclass:: SmoothingReport
    :members:
 
 .. autoclass:: PathDerivatives

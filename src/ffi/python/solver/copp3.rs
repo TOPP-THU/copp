@@ -1,7 +1,7 @@
 //! Python wrappers for COPP3 problem descriptors and solvers.
 
 use super::clarabel::{PyClarabelOptions, PyCopp3ClarabelResult, clarabel_options_or_default};
-use super::topp3::NumStationaryMaxArg;
+use super::topp3::{NumStationaryMaxArg, b_linearization_to_vec, linearization_mode};
 use crate::copp::copp3::opt3::copp3_socp::objective_value_copp3_opt;
 use crate::copp::objectives::validate_copp3_objectives;
 use crate::diag::CoppError;
@@ -53,6 +53,8 @@ pub(crate) struct PyCopp3Problem {
     num_stationary_max: (usize, usize),
     /// Denominator floor for stable third-order linearization.
     a_linearization_floor: f64,
+    /// Optional feasible `b` profile selecting adaptive linearization.
+    b_linearization: Option<Vec<f64>>,
 }
 
 #[pymethods]
@@ -62,12 +64,16 @@ impl PyCopp3Problem {
     /// The descriptor stores a reference to a Python robot, Python-owned
     /// objective data, and an owned copy of `a_linearization`. Construction
     /// calls `build_with_linearization()`, so it may update cached third-order
-    /// linearization rows inside `robot.constraints`.
+    /// linearization rows inside `robot.constraints`. Passing
+    /// `b_linearization` anchors each third-order row adaptively at the
+    /// feasible third-order state `(a_linearization, b_linearization)`;
+    /// `None` or an empty array keeps direct linearization.
     #[new]
     #[pyo3(
-        signature = (robot, objectives, a_linearization, *, idx_s_start = 0, a_boundary = (0.0, 0.0), b_boundary = (0.0, 0.0), num_stationary_max = NumStationaryMaxArg((1, 1)), a_linearization_floor = 1.0e-10),
-        text_signature = "(robot, objectives, a_linearization, *, idx_s_start=0, a_boundary=(0.0, 0.0), b_boundary=(0.0, 0.0), num_stationary_max=1, a_linearization_floor=1e-10)"
+        signature = (robot, objectives, a_linearization, *, idx_s_start = 0, a_boundary = (0.0, 0.0), b_boundary = (0.0, 0.0), num_stationary_max = NumStationaryMaxArg((1, 1)), a_linearization_floor = 1.0e-10, b_linearization = None),
+        text_signature = "(robot, objectives, a_linearization, *, idx_s_start=0, a_boundary=(0.0, 0.0), b_boundary=(0.0, 0.0), num_stationary_max=1, a_linearization_floor=1e-10, b_linearization=None)"
     )]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
         robot: Py<PyRobot>,
@@ -78,8 +84,10 @@ impl PyCopp3Problem {
         b_boundary: (f64, f64),
         num_stationary_max: NumStationaryMaxArg,
         a_linearization_floor: f64,
+        b_linearization: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let a_linearization = array_like_to_vec_f64("a_linearization", a_linearization)?;
+        let b_linearization = b_linearization_to_vec(b_linearization)?;
         let shared = robot.bind(py).borrow().shared_robot();
         let problem = Self {
             robot,
@@ -91,6 +99,7 @@ impl PyCopp3Problem {
             b_boundary,
             num_stationary_max: num_stationary_max.0,
             a_linearization_floor,
+            b_linearization,
         };
         problem.validate(py)?;
         Ok(problem)
@@ -151,6 +160,14 @@ impl PyCopp3Problem {
         self.a_linearization_floor
     }
 
+    /// Return a copy of the adaptive-linearization `b` profile, if present.
+    #[getter]
+    fn b_linearization<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray1<f64>>> {
+        self.b_linearization
+            .as_deref()
+            .map(|values| PyArray1::from_slice(py, values))
+    }
+
     /// Return the number of station samples in this COPP3 interval.
     #[getter]
     fn s_len(&self) -> usize {
@@ -196,6 +213,7 @@ impl PyCopp3Problem {
             self.b_boundary,
             self.num_stationary_max,
             self.a_linearization_floor,
+            self.b_linearization.as_deref(),
             f,
         )
     }
@@ -211,6 +229,7 @@ impl PyCopp3Problem {
         b_boundary: (f64, f64),
         num_stationary_max: (usize, usize),
         a_linearization_floor: f64,
+        b_linearization: Option<&[f64]>,
         f: impl for<'a> FnOnce(&RustCopp3Problem<'a, PyRobotModel>) -> Result<R, CoppError>,
     ) -> PyResult<R> {
         with_shared_robot_mut_result(shared, |robot| {
@@ -228,6 +247,7 @@ impl PyCopp3Problem {
             )
             .with_num_stationary_max_pair(num_stationary_max)
             .with_a_linearization_floor(a_linearization_floor)
+            .with_linearization_mode(linearization_mode(b_linearization))
             .build_with_linearization()?;
             validate_copp3_objectives(
                 "Copp3Problem",
@@ -253,6 +273,7 @@ impl PyCopp3Problem {
         let b_boundary = self.b_boundary;
         let num_stationary_max = self.num_stationary_max;
         let a_linearization_floor = self.a_linearization_floor;
+        let b_linearization = self.b_linearization.clone();
         if shared_has_inverse_dynamics(&shared)? {
             Self::with_shared_problem(
                 &shared,
@@ -263,6 +284,7 @@ impl PyCopp3Problem {
                 b_boundary,
                 num_stationary_max,
                 a_linearization_floor,
+                b_linearization.as_deref(),
                 |problem| rust_copp3_socp(problem, options),
             )
             .map(PyProfile3rd::from_rust)
@@ -277,6 +299,7 @@ impl PyCopp3Problem {
                     b_boundary,
                     num_stationary_max,
                     a_linearization_floor,
+                    b_linearization.as_deref(),
                     |problem| rust_copp3_socp(problem, options),
                 )
                 .map(PyProfile3rd::from_rust)
@@ -298,6 +321,7 @@ impl PyCopp3Problem {
         let b_boundary = self.b_boundary;
         let num_stationary_max = self.num_stationary_max;
         let a_linearization_floor = self.a_linearization_floor;
+        let b_linearization = self.b_linearization.clone();
         if shared_has_inverse_dynamics(&shared)? {
             Self::with_shared_problem(
                 &shared,
@@ -308,6 +332,7 @@ impl PyCopp3Problem {
                 b_boundary,
                 num_stationary_max,
                 a_linearization_floor,
+                b_linearization.as_deref(),
                 |problem| {
                     let expert = rust_copp3_socp_expert(problem, options)?;
                     let objective_breakdown = expert
@@ -333,6 +358,7 @@ impl PyCopp3Problem {
                     b_boundary,
                     num_stationary_max,
                     a_linearization_floor,
+                    b_linearization.as_deref(),
                     |problem| {
                         let expert = rust_copp3_socp_expert(problem, options)?;
                         let objective_breakdown = expert

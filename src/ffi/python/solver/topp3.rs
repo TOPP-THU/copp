@@ -7,7 +7,7 @@ use crate::ffi::python::interpolation::PyProfile3rd;
 use crate::ffi::python::robot::{PyConstraints, SharedRobot, with_shared_constraints_mut_result};
 use crate::solver::copp2_socp::ClarabelOptions as RustClarabelOptions;
 use crate::solver::topp3_lp::{
-    Topp3ProblemBuilder as Topp3ProblemBuilder3, topp3_lp as rust_topp3_lp,
+    LinearizationModeTopp3, Topp3ProblemBuilder as Topp3ProblemBuilder3, topp3_lp as rust_topp3_lp,
     topp3_lp_expert_with_info as rust_topp3_lp_expert,
 };
 use crate::solver::topp3_socp::{
@@ -18,7 +18,7 @@ use pyo3::Borrowed;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-/// Register TOPP3 problem and solver APIs.
+/// Register TOPP3 problem, reach-set, and solver APIs.
 pub(super) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTopp3Problem>()?;
     m.add_function(wrap_pyfunction!(topp3_lp, m)?)?;
@@ -55,6 +55,31 @@ impl FromPyObject<'_, '_> for NumStationaryMaxArg {
     }
 }
 
+/// Copy an optional `b_linearization` profile.
+///
+/// `None` and an empty profile both select direct linearization. The length
+/// match against `a_linearization` is checked by the Rust problem builder.
+pub(super) fn b_linearization_to_vec(
+    b_linearization: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Option<Vec<f64>>> {
+    let Some(b_linearization) = b_linearization else {
+        return Ok(None);
+    };
+    let b_linearization = array_like_to_vec_f64("b_linearization", b_linearization)?;
+    if b_linearization.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(b_linearization))
+}
+
+/// Select the third-order linearization mode implied by `b_linearization`.
+pub(super) fn linearization_mode(b_linearization: Option<&[f64]>) -> LinearizationModeTopp3<'_> {
+    b_linearization.map_or(
+        LinearizationModeTopp3::Direct,
+        LinearizationModeTopp3::GivenFeasibleAdaptive,
+    )
+}
+
 /// Python descriptor for a TOPP3 problem.
 ///
 /// Construction copies the linearization reference profile and immediately
@@ -78,6 +103,8 @@ pub(crate) struct PyTopp3Problem {
     num_stationary_max: (usize, usize),
     /// Denominator floor for stable third-order linearization.
     a_linearization_floor: f64,
+    /// Optional feasible `b` profile selecting adaptive linearization.
+    b_linearization: Option<Vec<f64>>,
 }
 
 #[pymethods]
@@ -87,12 +114,16 @@ impl PyTopp3Problem {
     /// The descriptor stores a reference to a Python constraints proxy and an
     /// owned copy of `a_linearization`. The constructor calls
     /// `build_with_linearization()` once, so it may update cached third-order
-    /// linearization rows inside `constraints`.
+    /// linearization rows inside `constraints`. Passing `b_linearization`
+    /// anchors each third-order row adaptively at the feasible third-order
+    /// state `(a_linearization, b_linearization)`; `None` or an empty array
+    /// keeps direct linearization.
     #[new]
     #[pyo3(
-        signature = (constraints, a_linearization, *, idx_s_start = 0, a_boundary = (0.0, 0.0), b_boundary = (0.0, 0.0), num_stationary_max = NumStationaryMaxArg((1, 1)), a_linearization_floor = 1.0e-10),
-        text_signature = "(constraints, a_linearization, *, idx_s_start=0, a_boundary=(0.0, 0.0), b_boundary=(0.0, 0.0), num_stationary_max=1, a_linearization_floor=1e-10)"
+        signature = (constraints, a_linearization, *, idx_s_start = 0, a_boundary = (0.0, 0.0), b_boundary = (0.0, 0.0), num_stationary_max = NumStationaryMaxArg((1, 1)), a_linearization_floor = 1.0e-10, b_linearization = None),
+        text_signature = "(constraints, a_linearization, *, idx_s_start=0, a_boundary=(0.0, 0.0), b_boundary=(0.0, 0.0), num_stationary_max=1, a_linearization_floor=1e-10, b_linearization=None)"
     )]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
         constraints: Py<PyConstraints>,
@@ -102,8 +133,10 @@ impl PyTopp3Problem {
         b_boundary: (f64, f64),
         num_stationary_max: NumStationaryMaxArg,
         a_linearization_floor: f64,
+        b_linearization: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let a_linearization = array_like_to_vec_f64("a_linearization", a_linearization)?;
+        let b_linearization = b_linearization_to_vec(b_linearization)?;
         let shared = constraints.bind(py).borrow().shared_robot();
         let problem = Self {
             constraints,
@@ -114,6 +147,7 @@ impl PyTopp3Problem {
             b_boundary,
             num_stationary_max: num_stationary_max.0,
             a_linearization_floor,
+            b_linearization,
         };
         problem.validate(py)?;
         Ok(problem)
@@ -168,6 +202,14 @@ impl PyTopp3Problem {
         self.a_linearization_floor
     }
 
+    /// Return a copy of the adaptive-linearization `b` profile, if present.
+    #[getter]
+    fn b_linearization<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray1<f64>>> {
+        self.b_linearization
+            .as_deref()
+            .map(|values| PyArray1::from_slice(py, values))
+    }
+
     /// Return the number of station samples in this TOPP3 interval.
     #[getter]
     fn s_len(&self) -> usize {
@@ -212,6 +254,7 @@ impl PyTopp3Problem {
             self.b_boundary,
             self.num_stationary_max,
             self.a_linearization_floor,
+            self.b_linearization.as_deref(),
             f,
         )
     }
@@ -226,6 +269,7 @@ impl PyTopp3Problem {
         b_boundary: (f64, f64),
         num_stationary_max: (usize, usize),
         a_linearization_floor: f64,
+        b_linearization: Option<&[f64]>,
         f: impl FnOnce(&crate::solver::topp3_lp::Topp3Problem<'_>) -> Result<R, crate::diag::CoppError>,
     ) -> PyResult<R> {
         with_shared_constraints_mut_result(shared, |constraints| {
@@ -238,6 +282,7 @@ impl PyTopp3Problem {
             )
             .with_num_stationary_max_pair(num_stationary_max)
             .with_a_linearization_floor(a_linearization_floor)
+            .with_linearization_mode(linearization_mode(b_linearization))
             .build_with_linearization()
             .map_err(to_py_err)?;
             f(&problem).map_err(to_py_err)
@@ -257,6 +302,7 @@ impl PyTopp3Problem {
         let b_boundary = self.b_boundary;
         let num_stationary_max = self.num_stationary_max;
         let a_linearization_floor = self.a_linearization_floor;
+        let b_linearization = self.b_linearization.clone();
         py.detach(move || {
             Self::with_shared_problem(
                 &shared,
@@ -266,6 +312,7 @@ impl PyTopp3Problem {
                 b_boundary,
                 num_stationary_max,
                 a_linearization_floor,
+                b_linearization.as_deref(),
                 |problem| rust_topp3_lp(problem, options),
             )
             .map(PyProfile3rd::from_rust)
@@ -285,6 +332,7 @@ impl PyTopp3Problem {
         let b_boundary = self.b_boundary;
         let num_stationary_max = self.num_stationary_max;
         let a_linearization_floor = self.a_linearization_floor;
+        let b_linearization = self.b_linearization.clone();
         py.detach(move || {
             Self::with_shared_problem(
                 &shared,
@@ -294,6 +342,7 @@ impl PyTopp3Problem {
                 b_boundary,
                 num_stationary_max,
                 a_linearization_floor,
+                b_linearization.as_deref(),
                 |problem| {
                     let expert = rust_topp3_lp_expert(problem, options)?;
                     Ok(PyCopp3ClarabelResult::from_solution(
@@ -320,6 +369,7 @@ impl PyTopp3Problem {
         let b_boundary = self.b_boundary;
         let num_stationary_max = self.num_stationary_max;
         let a_linearization_floor = self.a_linearization_floor;
+        let b_linearization = self.b_linearization.clone();
         py.detach(move || {
             Self::with_shared_problem(
                 &shared,
@@ -329,6 +379,7 @@ impl PyTopp3Problem {
                 b_boundary,
                 num_stationary_max,
                 a_linearization_floor,
+                b_linearization.as_deref(),
                 |problem| rust_topp3_socp(problem, options),
             )
             .map(PyProfile3rd::from_rust)
@@ -348,6 +399,7 @@ impl PyTopp3Problem {
         let b_boundary = self.b_boundary;
         let num_stationary_max = self.num_stationary_max;
         let a_linearization_floor = self.a_linearization_floor;
+        let b_linearization = self.b_linearization.clone();
         py.detach(move || {
             Self::with_shared_problem(
                 &shared,
@@ -357,6 +409,7 @@ impl PyTopp3Problem {
                 b_boundary,
                 num_stationary_max,
                 a_linearization_floor,
+                b_linearization.as_deref(),
                 |problem| {
                     let expert = rust_topp3_socp_expert(problem, options)?;
                     Ok(PyCopp3ClarabelResult::from_solution(

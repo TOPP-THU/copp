@@ -1,10 +1,10 @@
 # COPP Python Bindings
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](../../LICENSE) [![Website](https://img.shields.io/badge/website-copp.pro-2ff0d8)](https://copp.pro/) [![Docs](https://img.shields.io/badge/docs-docs.copp.pro-1f6feb)](https://docs.copp.pro/) [![PyPI](https://img.shields.io/pypi/v/copp-py.svg?color=3A6DA8)](https://pypi.org/project/copp-py/) [![Python](https://img.shields.io/badge/Python-bindings-3776ab)](#copp-python-bindings)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](https://github.com/TOPP-THU/copp/blob/main/LICENSE) [![Website](https://img.shields.io/badge/website-copp.pro-2ff0d8)](https://copp.pro/) [![Docs](https://img.shields.io/badge/docs-docs.copp.pro-1f6feb)](https://docs.copp.pro/) [![PyPI](https://img.shields.io/pypi/v/copp-py.svg?color=3A6DA8)](https://pypi.org/project/copp-py/) [![Python](https://img.shields.io/badge/Python-bindings-3776ab)](#copp-python-bindings)
 
 ## Convex-Objective Path Parameterization
 
-This directory contains the Python package for COPP. Install the open-source distribution as `copp-py` and import the Python package with `import copp_py as copp`. It wraps the Rust solver core through PyO3 while presenting a NumPy-friendly interface for paths, robot constraints, solver options, and post-processing helpers.
+This directory contains the Python package for COPP. The open-source package is imported as `copp_py`, conventionally aliased with `import copp_py as copp`. It wraps the Rust solver core through PyO3 while presenting a NumPy-friendly interface for paths, robot constraints, solver options, and post-processing helpers.
 
 COPP solves optimal path-parameterization problems. A geometric path
 
@@ -30,13 +30,13 @@ $$
 a(s) = \dot{s}^2,\qquad b(s) = \ddot{s}.
 $$
 
-The Python API follows the Rust crate layout: core modeling namespaces live under `copp_py.path`, `copp_py.robot`, `copp_py.constraints`, `copp_py.objective`, `copp_py.interpolation`, and `copp_py.clarabel`, while algorithms live under `copp_py.solver.<algorithm>`. Examples import `copp_py as copp`, so user code can use the short `copp.Path` and `copp.solver.*` aliases. This README focuses on installing, building, running examples, and using the Python interface. For the full project overview, benchmark tables, citation information, and collaboration contact details, see the [COPP GitHub README](https://github.com/TOPP-THU/copp#readme).
+The Python API follows the Rust crate layout: core modeling namespaces live at `copp_py.path`, `copp_py.robot`, `copp_py.constraints`, `copp_py.objective`, `copp_py.interpolation`, and `copp_py.clarabel`, while algorithms live under `copp_py.solver.<algorithm>`. Examples import `copp_py as copp`, so user code can use the short `copp.Path` and `copp.solver.*` aliases. This README focuses on installing, building, running examples, and using the Python interface. For the full project overview, benchmark tables, citation information, and collaboration contact details, see the [COPP GitHub README](https://github.com/TOPP-THU/copp#readme).
 
-> **Open-source / PRO note:** this README documents the open-source Python package distributed as `copp-py` and imported as `copp_py`. COPP PRO provides additional licensed solvers and support options; see the repository-level PRO section or contact [hello@copp.pro](mailto:hello@copp.pro) if those capabilities are relevant to your application.
+> **Open-source / PRO note:** this README documents the open-source Python package, imported as `copp_py`. COPP PRO provides additional licensed solvers and support options; see the repository-level PRO section or contact [hello@copp.pro](mailto:hello@copp.pro) if those capabilities are relevant to your application.
 
 The Python bindings follow a deliberately small set of rules:
 
-- install the distribution as `copp-py` and import the Python module with `import copp_py as copp`;
+- import the package with `import copp_py as copp`;
 - pass numerical data as NumPy-compatible arrays or ordinary Python sequences;
 - use `float64` data for predictable behavior and fewer copies;
 - build paths with `copp.Path`, constraints with `copp.Robot`, and solver inputs with solver-specific `Problem` classes;
@@ -48,8 +48,8 @@ The Python bindings follow a deliberately small set of rules:
 | Problem class  | Python API                                                                                                                                  |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | Core utilities | `copp.core`, root aliases for `version`, `__version__`, errors, and common enums                                                            |
-| Path           | `copp.path.Path`, spline paths, evaluator paths, path derivative evaluation                                                                 |
-| Robot          | `copp.robot.Robot`, station grids, sampled path derivatives, velocity/acceleration/jerk limits, raw constraints, inverse-dynamics callbacks |
+| Path           | `copp.path.Path`, interpolating and tolerance-fitted waypoint paths, evaluator paths, path derivative evaluation                           |
+| Robot          | `copp.robot.Robot`, station grids, sampled path derivatives, velocity/acceleration/jerk/torque limits, raw constraints, inverse-dynamics callbacks |
 | TOPP2          | `copp.solver.topp2_ra.solve`, `copp.solver.reach_set2.backward`, `copp.solver.reach_set2.bidirectional`                                     |
 | COPP2          | `copp.solver.copp2_socp.solve`, `copp.solver.copp2_socp.solve_expert`                                                                       |
 | TOPP3          | `copp.solver.topp3_lp.solve`, `copp.solver.topp3_lp.solve_expert`, `copp.solver.topp3_socp.solve`, `copp.solver.topp3_socp.solve_expert`    |
@@ -122,6 +122,7 @@ Run examples from the repository root after installing the package:
 ```sh
 python bindings/python/examples/topp2_ra.py
 python bindings/python/examples/copp2_socp.py
+python bindings/python/examples/topp3_lp.py
 python bindings/python/examples/topp3_socp.py
 python bindings/python/examples/copp3_socp.py
 python bindings/python/examples/reach_set2.py
@@ -264,7 +265,7 @@ Use `copp.solver.copp2_socp.solve` for the Clarabel SOCP formulation. Use `copp.
 
 ### `copp.solver.topp3_lp` and `copp.solver.topp3_socp`
 
-TOPP3 is the third-order time-optimal family. It uses the `(a,b)` state and supports jerk-aware constraints. Use `copp.solver.topp3_lp.solve` for the linear-objective approximation or `copp.solver.topp3_socp.solve` for the Clarabel conic formulation. A common pattern is to generate an initial `a` profile with TOPP2-RA, substitute it into the constraints, then solve the third-order problem with LP or SOCP.
+TOPP3 is the third-order time-optimal family. It uses the `(a,b)` state and supports jerk-aware constraints. Use `copp.solver.topp3_lp.solve` for the linear-objective approximation or `copp.solver.topp3_socp.solve` for the Clarabel conic formulation. A common pattern is to generate an initial `a` profile with TOPP2-RA, substitute it into the constraints, then solve the third-order problem with LP or SOCP. When refining with a previous third-order profile, pass `b_linearization=profile.b` together with `profile.a`; this adaptive linearization is recommended when `a` can approach zero.
 
 ### `copp.solver.copp3_socp`
 
@@ -280,6 +281,13 @@ Path-sampled matrices commonly use sample-major layout, where each row is one st
 all return `PathDerivatives`. `evaluate_q` fills only `out.q`; derivative
 fields are `None`. This keeps path evaluation calls structurally consistent
 while making the requested derivative order explicit in the method name.
+
+Waypoint paths come in two families: `Path.from_waypoints_interpolating` (alias
+`Path.from_waypoints`) passes through every waypoint, while
+`Path.from_waypoints_fitting` follows noisy or dense waypoints within per-axis
+tolerances and reports its audited error bounds in `path.smoothing_report`.
+Both constructor families are unstable; their names, signatures, and
+configuration types may change as more algorithms are added.
 
 Boundary values are expressed in path-domain variables:
 
@@ -381,7 +389,7 @@ maturin develop --release --features python
 Then verify that the same interpreter can import the package:
 
 ```sh
-python -c "import sys, copp_py as copp; print(sys.executable); print(copp.version())"
+python -c "import sys, copp; print(sys.executable); print(copp.version())"
 ```
 
 ### Sphinx Cannot Import `copp_py`

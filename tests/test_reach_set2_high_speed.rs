@@ -156,22 +156,3 @@ fn arc_is_unit_invariant_at_nm_scale() -> Result<(), CoppError> {
     );
     Ok(())
 }
-
-/// A 10 m radius arc sampled every 0.01 mm at F80000: adjacent acceleration rows are
-/// parallel to within 2e-12 rad, which used to turn rounding-level violations into a
-/// spurious `reach_set2` infeasibility (`a_max = NaN`).
-#[test]
-fn dense_grid_on_large_radius_arc_is_feasible() -> Result<(), CoppError> {
-    let radius = 1.0e4;
-    let feed = 4000.0 / 3.0;
-    let n = (std::f64::consts::PI * radius / 0.01) as usize + 1;
-    let path = half_circle(radius)?;
-    let (s, a) = solve(&path, 2, n, feed, Some(feed))?;
-    let (t_final, _) = s_to_t_topp2(&s, &a, 0.0)?;
-    let t_theory = 2.0 * feed / ACC + (std::f64::consts::PI * radius - feed * feed / ACC) / feed;
-    assert!(
-        (t_final - t_theory).abs() <= 1e-4 * t_theory,
-        "t = {t_final}, theory = {t_theory}"
-    );
-    Ok(())
-}

@@ -429,6 +429,40 @@ namespace copp
         return *this;
     }
 
+    std::array<double, 2> ConstraintsRef::exceed_topp2(Span<const double> a, std::size_t idx_s_start) const
+    {
+        const auto *handle = checked_handle(handle_);
+        const auto exceed = handle->exceed_topp2(idx_s_start, to_rust_slice(a));
+        return {exceed.exceed_1order, exceed.exceed_2order};
+    }
+
+    std::array<double, 3> ConstraintsRef::exceed_topp3(
+        Span<const double> a,
+        Span<const double> b,
+        std::size_t num_stationary_start,
+        std::size_t num_stationary_end,
+        std::size_t idx_s_start) const
+    {
+        const auto *handle = checked_handle(handle_);
+        const auto exceed = handle->exceed_topp3(
+            idx_s_start,
+            to_rust_slice(a),
+            to_rust_slice(b),
+            num_stationary_start,
+            num_stationary_end);
+        return {exceed.exceed_1order, exceed.exceed_2order, exceed.exceed_3order};
+    }
+
+    std::array<double, 3> ConstraintsRef::exceed_topp3(const Profile3rd &profile, std::size_t idx_s_start) const
+    {
+        return exceed_topp3(
+            profile.a,
+            profile.b,
+            profile.num_stationary_start,
+            profile.num_stationary_end,
+            idx_s_start);
+    }
+
     struct Constraints::Impl
     {
         explicit Impl(rust::Box<bridge::RobotHandle> &&robot) : robot(std::move(robot)) {}
@@ -565,6 +599,27 @@ namespace copp
     {
         ref().add_constraint_3rd(jerk_a, jerk_b, jerk_c, jerk_d, jerk_max, idx_s, is_negative);
         return *this;
+    }
+
+    std::array<double, 2> Constraints::exceed_topp2(Span<const double> a, std::size_t idx_s_start) const
+    {
+        return ConstraintsRef(impl_ ? &*impl_->robot : nullptr).exceed_topp2(a, idx_s_start);
+    }
+
+    std::array<double, 3> Constraints::exceed_topp3(
+        Span<const double> a,
+        Span<const double> b,
+        std::size_t num_stationary_start,
+        std::size_t num_stationary_end,
+        std::size_t idx_s_start) const
+    {
+        return ConstraintsRef(impl_ ? &*impl_->robot : nullptr)
+            .exceed_topp3(a, b, num_stationary_start, num_stationary_end, idx_s_start);
+    }
+
+    std::array<double, 3> Constraints::exceed_topp3(const Profile3rd &profile, std::size_t idx_s_start) const
+    {
+        return ConstraintsRef(impl_ ? &*impl_->robot : nullptr).exceed_topp3(profile, idx_s_start);
     }
 
     struct Robot::Impl

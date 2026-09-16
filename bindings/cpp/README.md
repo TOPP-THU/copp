@@ -32,17 +32,17 @@ The algorithmic background, open-source algorithm availability, benchmark tables
 
 ## API Availability
 
-| Problem class  | C++ API                                                                                                                                            |
-| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Problem class | C++ API |
+|---|---|
 | Core utilities | `copp::version`, `copp::Error`, `copp::Expected`, `copp::Span`, `copp::Matrix`, `copp::MatrixView`, `copp::MatrixRef`, boundary and interval types |
-| Path           | waypoint splines, scalar-parametric `Jet3` paths, batch 2nd/3rd-order evaluator paths, derivative evaluation                                       |
-| Robot          | station grids, path sampling, velocity/acceleration/jerk/torque limits, raw constraints, inverse-dynamics callbacks                                |
-| TOPP2          | `copp::solver::topp2_ra`, `copp::solver::reach_set2`, TOPP2 interpolation helpers                                                                  |
-| COPP2          | `copp::solver::copp2_socp`, objective descriptors, expert results                                                                                  |
-| TOPP3          | `copp::solver::topp3_lp`, `copp::solver::topp3_socp`, TOPP3 interpolation helpers                                                                  |
-| COPP3          | `copp::solver::copp3_socp`, objective descriptors, expert results                                                                                  |
-| Clarabel       | raw `copp::clarabel::Settings`, `copp::clarabel::Options`, solver status, residuals, linear-solver information                                     |
-| Eigen          | optional adapters in `copp/eigen.hpp` for borrowing Eigen vectors/matrices and mapping returned `copp::Matrix` values                              |
+| Path | waypoint interpolation, tolerance-bounded waypoint fitting, scalar-parametric `Jet3` paths, batch 2nd/3rd-order evaluator paths, derivative evaluation |
+| Robot | station grids, path sampling, velocity/acceleration/jerk/torque limits, raw constraints, inverse-dynamics callbacks |
+| TOPP2 | `copp::solver::topp2_ra`, `copp::solver::reach_set2`, TOPP2 interpolation helpers |
+| COPP2 | `copp::solver::copp2_socp`, objective descriptors, expert results |
+| TOPP3 | `copp::solver::topp3_lp`, `copp::solver::topp3_socp`, TOPP3 interpolation helpers |
+| COPP3 | `copp::solver::copp3_socp`, objective descriptors, expert results |
+| Clarabel | raw `copp::clarabel::Settings`, `copp::clarabel::Options`, solver status, residuals, linear-solver information |
+| Eigen | optional adapters in `copp/eigen.hpp` for borrowing Eigen vectors/matrices and mapping returned `copp::Matrix` values |
 
 Runnable examples are in [examples](examples/). They are built as CMake targets named `example_*`.
 
@@ -271,7 +271,7 @@ The checked-in source is available at [`examples/topp2_ra.cpp`](examples/topp2_r
 Waypoint paths are the shortest route when you already have discrete path points. Each inner initializer list is one waypoint vector; the facade converts it to the `(dim x n_points)` matrix shape expected internally.
 
 ```cpp
-auto path = copp::Path::from_waypoints({
+auto path = copp::Path::from_waypoints_interpolating({
     {0.0, 0.0},
     {0.5, 0.25},
     {1.0, 1.0},
@@ -282,18 +282,42 @@ auto out = path.evaluate_up_to_2nd(s);
 double q0_mid = out.q(0, 1);
 ```
 
+`Path::from_waypoints_interpolating` passes through every waypoint. `Path::from_waypoints` remains available as an equivalent alias.
+
 Use `copp::SplineConfig` when you need a non-default spline range, clamping policy, order, or endpoint derivative states. Boundary derivative matrices use shape `(dim, m)` where `m = (order - 1) / 2`; column `r` stores the `(r + 1)`-th derivative at that endpoint. Leaving `start_state` or `end_state` empty means zero boundary derivatives.
 
-{% raw %}
 ```cpp
 copp::SplineConfig config;
 config.order = 3;
 config.start_state = copp::Matrix::from_columns({{2.0}});
 config.end_state = copp::Matrix::from_columns({{2.0}});
 
-auto path = copp::Path::from_waypoints({{0.0}, {1.0}}, config);
+auto path = copp::Path::from_waypoints_interpolating({{0.0}, {1.0}}, config);
 ```
-{% endraw %}
+
+When the waypoints are noisy samples or a programmed polyline that may be approximated, use `Path::from_waypoints_fitting` instead. It builds an adaptive nonuniform C4 quintic B-spline that does not pass through interior waypoints: each selected axis may deviate from the reference polyline within its absolute tolerance (input units, audited over every complete reference interval), while endpoint positions are retained. `smoothing_report()` returns the achieved per-axis bounds and returns `std::nullopt` for paths that were not fitted.
+
+```cpp
+auto waypoints = copp::Matrix::from_columns({
+    {0.0, 0.0},
+    {0.25, 0.1},
+    {0.5, -0.1},
+    {1.0, 0.0},
+});
+
+copp::SmoothingConfig fit;
+fit.tolerance = 1.0e-3;                          // uniform tolerance, input units
+// fit.axes = std::vector<std::size_t>{1};       // optional axis selection
+// fit.tolerance_per_axis = {1.0e-2};            // follows `axes` order
+
+auto fitted = copp::Path::from_waypoints_fitting(waypoints.view(), fit);
+if (auto report = fitted.smoothing_report())
+{
+    double max_error_axis0 = report->max_errors[0];  // <= fit.tolerance
+}
+```
+
+> **Unstable API:** both waypoint constructor families (`from_waypoints_interpolating`/`from_waypoints` and `from_waypoints_fitting`) are currently unstable. Their names, signatures, and configuration types may change as more algorithms are added.
 
 Scalar-parametric paths use `copp::Jet3` to propagate derivatives up to third order through ordinary arithmetic.
 
@@ -384,20 +408,22 @@ Raw constraints follow the Rust/Python mathematical convention:
 
 ## Solver Namespaces
 
-| Namespace                  | Order | Objective | Backend               | Typical use                                     |
-| -------------------------- | ----: | --------- | --------------------- | ----------------------------------------------- |
-| `copp::solver::topp2_ra`   |     2 | time      | reachability analysis | fast second-order time-optimal planning         |
-| `copp::solver::reach_set2` |     2 | none      | reachable set         | second-order feasibility diagnostics            |
-| `copp::solver::copp2_socp` |     2 | convex    | Clarabel SOCP         | conic optimization and expert diagnostics       |
-| `copp::solver::topp3_lp`   |     3 | time      | Clarabel LP           | linearized third-order baseline                 |
-| `copp::solver::topp3_socp` |     3 | time      | Clarabel SOCP         | iterative third-order convex refinement         |
-| `copp::solver::copp3_socp` |     3 | convex    | Clarabel SOCP         | third-order convex-objective conic optimization |
+| Namespace | Order | Objective | Backend | Typical use |
+|---|---:|---|---|---|
+| `copp::solver::topp2_ra` | 2 | time | reachability analysis | fast second-order time-optimal planning |
+| `copp::solver::reach_set2` | 2 | none | reachable set | second-order feasibility diagnostics |
+| `copp::solver::copp2_socp` | 2 | convex | Clarabel SOCP | conic optimization and expert diagnostics |
+| `copp::solver::topp3_lp` | 3 | time | Clarabel LP | linearized third-order baseline |
+| `copp::solver::topp3_socp` | 3 | time | Clarabel SOCP | iterative third-order convex refinement |
+| `copp::solver::copp3_socp` | 3 | convex | Clarabel SOCP | third-order convex-objective conic optimization |
 
 `topp2_ra` solves second-order time-optimal problems and returns an accepted `std::vector<double>` profile `a`. Use `reach_set2` when reachable intervals themselves are the main output rather than the recovered profile.
 
 `copp2_socp` solves second-order convex-objective problems through Clarabel. Use `solve` for the accepted profile and `solve_expert` when application code needs solver status, residuals, raw vectors, objective value, or per-objective terms.
-`n`topp3_lp` and `topp3_socp` solve third-order time-optimal problems from the shared `copp::solver::topp3::Problem` descriptor. Both return `Profile3rd`; expert variants expose Clarabel diagnostics.
-`n`copp3_socp` solves third-order convex-objective problems through Clarabel and exposes expert diagnostics.
+
+`topp3_lp` and `topp3_socp` solve third-order time-optimal problems from the shared `copp::solver::topp3::Problem` descriptor. Both return `Profile3rd`; expert variants expose Clarabel diagnostics.
+
+`copp3_socp` solves third-order convex-objective problems through Clarabel.
 
 ## Third-Order Workflow
 
@@ -433,8 +459,31 @@ auto profile2 = topp3_socp::solve(second, options);
 auto time = copp::interpolation::s_to_t_topp3(s, profile2, 0.0);
 ```
 
+When the previous round is a third-order profile, you can also pass its `b` as the optional trailing `b_linearization` argument. Each jerk row is then anchored where it is nearly active at `(profile.a, profile.b)` instead of directly at `profile.a`. Prefer this when `a` spans a wide range, and especially when `a` can approach zero (around `1e-10`): direct linearization anchors the upper and lower row of one axis at the same small `a_linearization[k]`, which cancels `b` and `c` and leaves `a[k] <= 3 * a_linearization[k]`. Never pass the `b` of a TOPP2 profile. On profiles well away from zero the default direct linearization is cheaper and nearly identical.
+
+```cpp
+topp3::Problem adaptive{
+    constraints.ref(),
+    profile1.a,
+    0,
+    boundary,
+    topp3::StationaryBounds{},
+    1.0e-10,
+    profile1.b,
+};
+```
+
 `Profile3rd` owns `a`, `b`, and stationary-boundary metadata. Use `Profile3rdRef` or `profile.slice(i, j)` when interpolating or passing only a sub-window without copying profile storage.
-`n## Objectives And Clarabel
+
+A third-order profile whose `a` touches zero can have an interpolated `a(s)` that dips below zero between stations. Post-process it with `Profile3rd::force_positive_a` before converting to time, then re-check the delivered profile against the original nonlinear constraints:
+
+```cpp
+bool repaired = profile1.force_positive_a(s);              // in place; false if some interval failed
+auto exceed = robot.constraints().exceed_topp3(profile1);  // each entry <= 0 when feasible
+auto time1 = copp::interpolation::s_to_t_topp3(s, profile1);
+```
+
+## Objectives And Clarabel
 
 COPP solvers accept objective descriptors:
 
@@ -447,7 +496,12 @@ std::vector<copp::Objective> objectives{
 
 Built-in objective support:
 
-| Objective | COPP2-SOCP | COPP3-SOCP |`n|---|---:|---:|`n| `Time` | yes | yes |`n| `ThermalEnergy` | yes | yes |`n| `Linear` | yes | yes |`n| `TotalVariationTorque` | yes | yes |
+| Objective | COPP2-SOCP | COPP3-SOCP |
+|---|---:|---:|
+| `Time` | yes | yes |
+| `ThermalEnergy` | yes | yes |
+| `Linear` | yes | yes |
+| `TotalVariationTorque` | yes | yes |
 
 Clarabel-backed solvers use `copp::clarabel::Options`:
 
@@ -492,9 +546,7 @@ auto waypoints = copp::Matrix::from_columns({
 });
 ```
 
-{% raw %}
-`Path::from_waypoints({{...}, {...}})` uses waypoint-list notation: each inner list is one waypoint vector. If you pass a `MatrixView` instead, the matrix shape is `(dim x n_points)`, where each column is one waypoint.
-{% endraw %}
+`Path::from_waypoints_interpolating({{...}, {...}})` and `Path::from_waypoints_fitting({{...}, {...}})` use waypoint-list notation: each inner list is one waypoint vector. If you pass a `MatrixView` instead, the matrix shape is `(dim x n_points)`, where each column is one waypoint.
 
 `copp::MatrixView` is a borrowed input view. It accepts column-major, row-major, and strided column-major layouts. Column-major input is the zero-copy fast path. Row-major input may be copied once before entering the Rust core, depending on the operation.
 
@@ -512,7 +564,7 @@ If `COPP_CPP_WITH_EIGEN=ON`, include `copp/eigen.hpp` to borrow Eigen storage or
 #include <copp/eigen.hpp>
 
 Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor> waypoints(2, 3);
-auto path = copp::Path::from_waypoints(copp::eigen::matrix_view(waypoints));
+auto path = copp::Path::from_waypoints_interpolating(copp::eigen::matrix_view(waypoints));
 
 auto out = path.evaluate_q(std::vector<double>{0.0, 1.0});
 auto q_eigen = copp::eigen::map(out.q);
@@ -522,24 +574,21 @@ auto q_eigen = copp::eigen::map(out.q);
 
 The default C++ API throws `copp::Error`. It carries a machine-readable `copp::Status` and an owned diagnostic message.
 
-{% raw %}
 ```cpp
 try
 {
-    auto path = copp::Path::from_waypoints({{0.0}, {1.0}});
+    auto path = copp::Path::from_waypoints_interpolating({{0.0}, {1.0}});
 }
 catch (const copp::Error &error)
 {
     std::cerr << error.what() << "\n";
 }
 ```
-{% endraw %}
 
 Selected APIs provide no-throw overloads with `copp::no_throw` as the final argument. The function name remains the same, but the return type becomes `copp::Expected<T>`. This is a status-return convenience API implemented by catching exceptions from the normal throwing API; it is not a promise that the C++ binding can be compiled with C++ exceptions disabled.
 
-{% raw %}
 ```cpp
-auto result = copp::Path::from_waypoints({{0.0}, {1.0}}, copp::no_throw);
+auto result = copp::Path::from_waypoints_interpolating({{0.0}, {1.0}}, copp::no_throw);
 if (!result)
 {
     std::cerr << result.error().message << "\n";
@@ -548,7 +597,6 @@ if (!result)
 
 auto path = std::move(result).value();
 ```
-{% endraw %}
 
 Callbacks may throw `copp::Error` or another `std::exception`. The facade converts callback failures into COPP diagnostics when they cross back into Rust. For predictable diagnostics, prefer throwing `copp::Error` with a specific status when the callback detects invalid user data.
 
@@ -562,17 +610,17 @@ Use the umbrella header for application code:
 
 Public headers are hand-written and live under `bindings/cpp/include/copp/`. Generated Rust-C++ bridge headers are private implementation details and are not part of the installed user-facing API.
 
-| Header                   | Purpose                                                                                 |
-| ------------------------ | --------------------------------------------------------------------------------------- |
-| `copp/copp.hpp`          | umbrella header                                                                         |
-| `copp/core.hpp`          | `Span`, `Matrix`, `MatrixView`, `MatrixRef`, `Expected`, `Error`, boundaries, intervals |
-| `copp/path.hpp`          | waypoint paths, Jet3 parametric paths, batch evaluator paths                            |
-| `copp/robot.hpp`         | `Robot`, `Constraints`, `ConstraintsRef`, inverse dynamics callbacks                    |
-| `copp/interpolation.hpp` | TOPP2/TOPP3 `s_to_t`, `t_to_s`, `Profile3rd`, `Profile3rdRef`                           |
-| `copp/objective.hpp`     | `Objective` and `copp::objective::*` factories                                          |
-| `copp/clarabel.hpp`      | raw Clarabel settings, options, statuses, solver diagnostics                            |
-| `copp/eigen.hpp`         | optional Eigen adapters                                                                 |
-| `copp/solver/*.hpp`      | TOPP/COPP solver namespaces                                                             |
+| Header | Purpose |
+|---|---|
+| `copp/copp.hpp` | umbrella header |
+| `copp/core.hpp` | `Span`, `Matrix`, `MatrixView`, `MatrixRef`, `Expected`, `Error`, boundaries, intervals |
+| `copp/path.hpp` | waypoint paths, Jet3 parametric paths, batch evaluator paths |
+| `copp/robot.hpp` | `Robot`, `Constraints`, `ConstraintsRef`, inverse dynamics callbacks |
+| `copp/interpolation.hpp` | TOPP2/TOPP3 `s_to_t`, `t_to_s`, `Profile3rd`, `Profile3rdRef` |
+| `copp/objective.hpp` | `Objective` and `copp::objective::*` factories |
+| `copp/clarabel.hpp` | raw Clarabel settings, options, statuses, solver diagnostics |
+| `copp/eigen.hpp` | optional Eigen adapters |
+| `copp/solver/*.hpp` | TOPP/COPP solver namespaces |
 
 ## Package Layout
 
@@ -667,7 +715,7 @@ Make sure the downstream project sees the install prefix:
 cmake -S app -B app/build -DCMAKE_PREFIX_PATH=<install-prefix>
 ```
 
-During this private-branch stage the package name is `copp`, so downstream code should call `find_package(copp CONFIG REQUIRED)`.
+The CMake package is named `copp`, so downstream code should call `find_package(copp CONFIG REQUIRED)`.
 
 ### Runtime DLL Is Missing On Windows
 

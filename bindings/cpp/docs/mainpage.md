@@ -80,7 +80,7 @@ int main()
 {
     // Each inner list is one waypoint vector.  COPP stores waypoints internally
     // as a (dim x n_points) column-major matrix.
-    auto path = copp::Path::from_waypoints({
+    auto path = copp::Path::from_waypoints_interpolating({
         {0.0, 0.0},
         {0.5, 0.25},
         {1.0, 1.0},

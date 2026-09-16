@@ -58,7 +58,7 @@ def test_topp3_problem_constructs_and_copies_linearization():
 
 
 def test_topp3_problem_accepts_stationary_pair():
-    robot = _build_robot_with_jerk_constraints()
+    robot = _build_robot_with_jerk_constraints(n_samples=7)
     a_linearization = np.ones(len(robot), dtype=np.float64)
 
     problem = copp.solver.topp3_lp.Problem(
@@ -97,4 +97,35 @@ def test_topp3_problem_rejects_invalid_core_arguments():
             robot.constraints,
             a_linearization,
             a_linearization_floor=0.0,
+        )
+
+
+def test_topp3_problem_b_linearization_is_copied_and_length_checked():
+    robot = _build_robot_with_jerk_constraints()
+    a_linearization = np.ones(len(robot), dtype=np.float64)
+    b_linearization = np.zeros(len(robot), dtype=np.float64)
+
+    problem = copp.solver.topp3_lp.Problem(
+        robot.constraints,
+        a_linearization,
+        b_linearization=b_linearization,
+    )
+    assert np.allclose(problem.b_linearization, 0.0)
+    b_linearization[0] = 5.0
+    assert np.allclose(problem.b_linearization, 0.0)
+    problem.validate()
+
+    direct = copp.solver.topp3_lp.Problem(
+        robot.constraints,
+        a_linearization,
+        b_linearization=np.array([], dtype=np.float64),
+    )
+    assert direct.b_linearization is None
+    direct.validate()
+
+    with pytest.raises(copp.CoppError, match="b_linearization"):
+        copp.solver.topp3_lp.Problem(
+            robot.constraints,
+            a_linearization,
+            b_linearization=np.zeros(len(robot) - 1, dtype=np.float64),
         )

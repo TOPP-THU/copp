@@ -190,15 +190,15 @@ mod copp2_basic {
 
 mod topp3_basic {
     pub use crate::copp::copp3::stable::basic::{
-        Topp3Problem, Topp3ProblemBuilder, Topp3Profile, Topp3ProfileMut, Topp3ProfileRef,
-        s_to_t_topp3, t_to_s_topp3,
+        LinearizationModeTopp3, Topp3Problem, Topp3ProblemBuilder, Topp3Profile, Topp3ProfileMut,
+        Topp3ProfileRef, s_to_t_topp3, t_to_s_topp3,
     };
 }
 
 mod copp3_basic {
     pub use crate::copp::copp3::stable::basic::{
-        Copp3Problem, Copp3ProblemBuilder, Topp3Profile, Topp3ProfileMut, Topp3ProfileRef,
-        s_to_t_topp3, t_to_s_topp3,
+        Copp3Problem, Copp3ProblemBuilder, LinearizationModeTopp3, Topp3Profile, Topp3ProfileMut,
+        Topp3ProfileRef, s_to_t_topp3, t_to_s_topp3,
     };
     pub use crate::copp::objectives::CoppObjective;
 }
@@ -228,7 +228,7 @@ pub mod prelude {
     };
     pub use crate::solver::copp3_socp::{Copp3Problem, Copp3ProblemBuilder};
     pub use crate::solver::topp2_ra::{ReachSet2OptionsBuilder, Topp2Problem, Topp2ProblemBuilder};
-    pub use crate::solver::topp3_lp::{Topp3Problem, Topp3ProblemBuilder};
+    pub use crate::solver::topp3_lp::{LinearizationModeTopp3, Topp3Problem, Topp3ProblemBuilder};
 
     // 3. Shared utility types
     pub use crate::InterpolationMode;
@@ -241,7 +241,8 @@ pub mod prelude {
     // 4. Path building and automatic differentiation
     pub use crate::path::{
         Jet3, Parametrization, Path, PathDerivatives, PathEvaluator, PathEvaluator2nd,
-        PathEvaluator3rd, SplineConfig, cos, exp, ln, powi, sin, sqrt,
+        PathEvaluator3rd, SmoothingConfig, SmoothingReport, SmoothingTolerance, SplineConfig, cos,
+        exp, ln, powi, sin, sqrt,
     };
 
     // 5. Solver submodule namespaces (for calling solver entry functions)

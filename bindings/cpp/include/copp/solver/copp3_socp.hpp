@@ -23,6 +23,11 @@ namespace copp::solver::copp3_socp
     /// intentionally independent rather than inheriting from TOPP3, matching
     /// Rust's separate `Copp3Problem`.
     ///
+    /// The optional trailing `b_linearization` selects adaptive anchoring of
+    /// the third-order rows exactly as for `copp::solver::topp3::Problem`:
+    /// pass the `a` and `b` of the same previously solved third-order profile
+    /// (never a TOPP2 profile). Empty keeps the default direct linearization.
+    ///
     /// @code
     /// copp::solver::copp3_socp::Problem problem{
     ///     robot,
@@ -42,7 +47,8 @@ namespace copp::solver::copp3_socp
             std::size_t idx_s_start = 0,
             Boundary3 boundary = {},
             StationaryBounds num_stationary_max = {},
-            double a_linearization_floor = 1.0e-10);
+            double a_linearization_floor = 1.0e-10,
+            Span<const double> b_linearization = {});
 
         Problem(
             Robot &robot,
@@ -51,7 +57,8 @@ namespace copp::solver::copp3_socp
             std::size_t idx_s_start = 0,
             Boundary3 boundary = {},
             StationaryBounds num_stationary_max = {},
-            double a_linearization_floor = 1.0e-10);
+            double a_linearization_floor = 1.0e-10,
+            Span<const double> b_linearization = {});
 
         Problem(
             Robot &robot,
@@ -60,11 +67,14 @@ namespace copp::solver::copp3_socp
             std::size_t idx_s_start,
             Boundary3 boundary,
             std::size_t symmetric_num_stationary_max,
-            double a_linearization_floor = 1.0e-10);
+            double a_linearization_floor = 1.0e-10,
+            Span<const double> b_linearization = {});
 
         Robot &robot() const noexcept { return *robot_; }
         const std::vector<Objective> &objectives() const noexcept { return objectives_; }
         const std::vector<double> &a_linearization() const noexcept { return a_linearization_; }
+        /// Copied `b_linearization`; empty when direct linearization is used.
+        const std::vector<double> &b_linearization() const noexcept { return b_linearization_; }
         std::size_t idx_s_start() const noexcept { return idx_s_start_; }
         std::size_t idx_s_final() const noexcept { return idx_s_final_; }
         Boundary3 boundary() const noexcept { return boundary_; }
@@ -77,6 +87,7 @@ namespace copp::solver::copp3_socp
         Robot *robot_ = nullptr;
         std::vector<Objective> objectives_;
         std::vector<double> a_linearization_;
+        std::vector<double> b_linearization_;
         std::size_t idx_s_start_ = 0;
         std::size_t idx_s_final_ = 0;
         Boundary3 boundary_;

@@ -31,9 +31,9 @@ namespace
 
 int main()
 {
-    const std::vector<double> s{0.0, 0.5, 1.0};
-    const std::vector<double> amax{1.0, 1.0, 1.0};
-    const std::vector<double> a_linearization{0.25, 0.25, 0.25};
+    const std::vector<double> s{0.0, 0.25, 0.5, 0.75, 1.0};
+    const std::vector<double> amax{1.0, 1.0, 1.0, 1.0, 1.0};
+    const std::vector<double> a_linearization{0.25, 0.25, 0.25, 0.25, 0.25};
 
     copp::Constraints constraints(1, s.size());
     constraints.append_s(s)

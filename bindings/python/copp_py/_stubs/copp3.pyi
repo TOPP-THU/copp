@@ -89,6 +89,11 @@ class Copp3Problem:
         ...
 
     @property
+    def b_linearization(self) -> NDArray[np.float64] | None:
+        """Copy of the adaptive-linearization ``b`` profile, or ``None``."""
+        ...
+
+    @property
     def s_len(self) -> int:
         """Number of station samples in this COPP3 interval."""
         ...
@@ -104,13 +109,23 @@ class Copp3Problem:
         b_boundary: tuple[float, float] = (0.0, 0.0),
         num_stationary_max: NumStationaryMaxLike = 1,
         a_linearization_floor: float = 1.0e-10,
+        b_linearization: ArrayLike | None = None,
     ) -> None:
-        """Construct and immediately linearize a COPP3 problem descriptor."""
+        """Construct and immediately linearize a COPP3 problem descriptor.
+
+        ``b_linearization`` optionally selects adaptive third-order
+        linearization, with the same meaning as for ``Topp3Problem``: it must
+        be the ``b`` of the same previously solved third-order profile whose
+        ``a`` is ``a_linearization``, with the same length (construction
+        raises ``CoppError`` otherwise). ``None`` or an empty array selects
+        direct linearization.
+        """
         ...
 
     def validate(self) -> None:
         """Rebuild the Rust COPP3 problem and refresh jerk linearization."""
         ...
+
 
 def copp3_socp(
     problem: Copp3Problem,
@@ -136,3 +151,4 @@ def copp3_socp_expert(
     ``profile``, ``objective_value``, and ``objective_terms`` are ``None``.
     """
     ...
+

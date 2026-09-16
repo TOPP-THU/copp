@@ -20,7 +20,7 @@
  *
  * For ordinary C users this callback path is only one construction option.
  * If your path is tabulated instead of analytic, pass waypoint columns to
- * `copp_path_from_waypoints` instead. COPP builds a spline path, and the same
+ * `copp_path_from_waypoints_interpolating` instead. COPP builds a spline path, and the same
  * `copp_robot_sample_path_2nd` / `copp_robot_sample_path_3rd` calls used by
  * these examples can sample derivatives from that spline.
  */

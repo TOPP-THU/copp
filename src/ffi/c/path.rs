@@ -1,9 +1,13 @@
 //! C ABI wrappers for path construction, evaluation, and robot sampling.
 
 use crate::ffi::c::core::status::{clear_last_error, panic_to_status};
-use crate::ffi::c::{CoppMatrixF64, CoppMatrixViewF64, CoppRobot, CoppSliceF64, CoppStatus};
+use crate::ffi::c::{
+    CoppMatrixF64, CoppMatrixViewF64, CoppRobot, CoppSliceF64, CoppSliceUsize, CoppStatus,
+    CoppVecF64, CoppVecUsize,
+};
 use crate::path::{
-    Jet3, OutOfRangeMode, Parametrization, Path, PathEvaluator2nd, PathEvaluator3rd, SplineConfig,
+    Jet3, OutOfRangeMode, Parametrization, Path, PathEvaluator2nd, PathEvaluator3rd,
+    SmoothingConfig, SmoothingReport, SmoothingTolerance, SplineConfig,
 };
 use nalgebra::DMatrix;
 use std::{
@@ -15,7 +19,8 @@ use std::{
 
 /// Opaque C handle for a library-owned `Path`.
 ///
-/// Create with `copp_path_from_waypoints`, `copp_path_from_parametric`,
+/// Create with `copp_path_from_waypoints_interpolating`,
+/// `copp_path_from_waypoints_fitting`, `copp_path_from_parametric`,
 /// `copp_path_from_evaluator_2nd`, or `copp_path_from_evaluator_3rd` and
 /// release exactly once with `copp_path_free`. C callers must not inspect or
 /// allocate this type directly.
@@ -546,6 +551,15 @@ impl TryFrom<CoppPathOutOfRangeMode> for OutOfRangeMode {
     }
 }
 
+impl From<OutOfRangeMode> for CoppPathOutOfRangeMode {
+    fn from(mode: OutOfRangeMode) -> Self {
+        match mode {
+            OutOfRangeMode::Error => Self::Error,
+            OutOfRangeMode::Clamp => Self::Clamp,
+        }
+    }
+}
+
 /// C ABI waypoint-spline parametrization.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -617,6 +631,206 @@ impl CoppPathOptions {
     }
 }
 
+/// Options for tolerance-bounded waypoint fitting.
+///
+/// Use `copp_smoothing_default_options` first, then override only the fields
+/// you need. Empty borrowed slices (`data = NULL`, `len = 0`) select the
+/// documented defaults. Borrowed slices are read only during
+/// `copp_path_from_waypoints_fitting`; the returned path does not keep them.
+///
+/// This options type is currently unstable: its fields and layout may change
+/// as additional waypoint path-construction algorithms are introduced.
+///
+/// # Example
+/// The example below fits translational rows `0..=2` to `1e-3` input units and
+/// rotary rows `3..=4` to `1e-2` input units. Tolerance entries follow `axes`
+/// order.
+///
+/// ```c
+/// size_t axes[] = {0, 1, 2, 3, 4};
+/// double tolerances[] = {1e-3, 1e-3, 1e-3, 1e-2, 1e-2};
+/// struct CoppSmoothingOptions options;
+/// check(copp_smoothing_default_options(&options));
+/// options.axes = (struct CoppSliceUsize){axes, 5};
+/// options.tolerance_per_axis = (struct CoppSliceF64){tolerances, 5};
+/// ```
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct CoppSmoothingOptions {
+    /// Absolute tolerance broadcast to every selected axis when
+    /// `tolerance_per_axis` is empty.
+    ///
+    /// The value is expressed in each selected row's input units and must be
+    /// finite and strictly positive. The default is `0.001`.
+    pub tolerance: f64,
+    /// Optional per-axis absolute tolerances.
+    ///
+    /// When non-empty, this replaces `tolerance`. Its length must equal the
+    /// number of selected axes, and entry `i` applies to input row `axes[i]`:
+    /// the order follows `axes`, not the row index. When `axes` is empty, the
+    /// order is the natural row order `0..rows`. Every entry must be finite and
+    /// strictly positive, in the corresponding row's input units.
+    pub tolerance_per_axis: CoppSliceF64,
+    /// Optional 0-based input rows allowed to deviate from their reference
+    /// polylines.
+    ///
+    /// Empty selects every row. A non-empty list must contain distinct,
+    /// in-range row indices; its order also defines the order of
+    /// `tolerance_per_axis` and of the report's `axes` and `max_errors`.
+    /// Unselected rows keep quintic `C4` interpolation through all waypoint
+    /// columns, with zero first and second parameter derivatives at both ends.
+    pub axes: CoppSliceUsize,
+    /// Optional common path parameter assigned to each waypoint column.
+    ///
+    /// Empty assigns the columns uniformly on `[0, 1]`. A non-empty list must
+    /// contain one finite, strictly increasing entry per column; its first and
+    /// last entries become the path parameter range. Relative spacing affects
+    /// the fitted geometry, not only the returned parameter range.
+    pub parameters: CoppSliceF64,
+    /// Maximum number of adaptive knot-refinement passes.
+    ///
+    /// The default is 20. Reaching this limit before the whole-interval audit
+    /// passes returns `COPP_STATUS_PATH_SMOOTHING`.
+    pub max_refinements: usize,
+    /// Maximum number of polynomial spans used by the selected axes.
+    ///
+    /// The default is 20000. Spans of the separate unselected-axis
+    /// interpolant do not consume this budget.
+    pub max_segments: usize,
+    /// Behavior for out-of-range evaluation of the returned path.
+    ///
+    /// The default is `COPP_PATH_OUT_OF_RANGE_MODE_ERROR`. Clamping affects
+    /// later queries, not fitting or auditing.
+    pub out_of_range_mode: CoppPathOutOfRangeMode,
+}
+
+impl CoppSmoothingOptions {
+    fn default_options() -> Self {
+        let defaults = SmoothingConfig::default();
+        let tolerance = match defaults.tolerance {
+            SmoothingTolerance::Uniform(tolerance) => tolerance,
+            SmoothingTolerance::PerAxis(_) => {
+                unreachable!("default smoothing tolerance is uniform")
+            }
+        };
+        Self {
+            tolerance,
+            tolerance_per_axis: CoppSliceF64 {
+                data: ptr::null(),
+                len: 0,
+            },
+            axes: CoppSliceUsize {
+                data: ptr::null(),
+                len: 0,
+            },
+            parameters: CoppSliceF64 {
+                data: ptr::null(),
+                len: 0,
+            },
+            max_refinements: defaults.max_refinements,
+            max_segments: defaults.max_segments,
+            out_of_range_mode: defaults.out_of_range_mode.into(),
+        }
+    }
+
+    /// Convert these C options into an owned smoothing configuration.
+    ///
+    /// # Safety
+    /// Non-empty slices must point to valid contiguous arrays for this call.
+    unsafe fn to_smoothing_config(self) -> Result<SmoothingConfig, CoppStatus> {
+        // SAFETY: The C ABI contract requires non-empty slices to point to
+        // valid contiguous arrays for the duration of this call.
+        let tolerance_per_axis = unsafe { self.tolerance_per_axis.as_slice()? };
+        // SAFETY: Same input-slice contract as above.
+        let axes = unsafe { self.axes.as_slice()? };
+        // SAFETY: Same input-slice contract as above.
+        let parameters = unsafe { self.parameters.as_slice()? };
+
+        Ok(SmoothingConfig {
+            tolerance: if tolerance_per_axis.is_empty() {
+                SmoothingTolerance::Uniform(self.tolerance)
+            } else {
+                SmoothingTolerance::PerAxis(tolerance_per_axis.to_vec())
+            },
+            axes: (!axes.is_empty()).then(|| axes.to_vec()),
+            parameters: (!parameters.is_empty()).then(|| parameters.to_vec()),
+            max_refinements: self.max_refinements,
+            max_segments: self.max_segments,
+            out_of_range_mode: self.out_of_range_mode.try_into()?,
+        })
+    }
+}
+
+/// Diagnostics recorded while constructing a tolerance-fitted waypoint path.
+///
+/// Obtain this report with `copp_path_smoothing_report`. `axes`, `segments`,
+/// and `interpolated_segments` describe the final representation, while
+/// `refinements`, `fitting_rows`, and `checked_intervals` are cumulative work
+/// counters. None of these values is an optimality or run-time guarantee.
+/// Both vectors are library-owned and must be released together with
+/// `copp_smoothing_report_free`.
+///
+/// This report type is currently unstable: its fields and layout may change as
+/// additional waypoint path-construction algorithms are introduced.
+#[repr(C)]
+#[derive(Debug)]
+pub struct CoppSmoothingReport {
+    /// Selected 0-based input-row indices, in tolerance/report order.
+    pub axes: CoppVecUsize,
+    /// Number of final polynomial spans shared by the selected axes.
+    pub segments: usize,
+    /// Number of spans in the separate unselected-axis interpolant.
+    ///
+    /// This is zero when every row is selected and is not included in
+    /// `segments` or the `max_segments` budget.
+    pub interpolated_segments: usize,
+    /// Number of completed local knot-refinement passes.
+    pub refinements: usize,
+    /// Number of discrete or quadrature fitting rows assembled, counting rows
+    /// assembled again during local refits.
+    pub fitting_rows: usize,
+    /// Number of reference-polyline intervals visited by numerical audits,
+    /// including revisits and the final full audit.
+    pub checked_intervals: usize,
+    /// Final whole-domain absolute-error bound for each selected axis.
+    ///
+    /// Values are in input units and follow `axes` order. They are
+    /// Bernstein-derived numerical bounds computed with ordinary
+    /// floating-point arithmetic, not sampled maxima or formal certificates.
+    pub max_errors: CoppVecF64,
+}
+
+impl CoppSmoothingReport {
+    const fn empty() -> Self {
+        Self {
+            axes: CoppVecUsize::empty(),
+            segments: 0,
+            interpolated_segments: 0,
+            refinements: 0,
+            fitting_rows: 0,
+            checked_intervals: 0,
+            max_errors: CoppVecF64::empty(),
+        }
+    }
+
+    fn from_report(report: &SmoothingReport) -> Self {
+        Self {
+            axes: CoppVecUsize::from_vec(report.axes.clone()),
+            segments: report.segments,
+            interpolated_segments: report.interpolated_segments,
+            refinements: report.refinements,
+            fitting_rows: report.fitting_rows,
+            checked_intervals: report.checked_intervals,
+            max_errors: CoppVecF64::from_vec(report.max_errors.clone()),
+        }
+    }
+
+    fn free(self) {
+        self.axes.free();
+        self.max_errors.free();
+    }
+}
+
 impl CoppPath {
     /// Borrow the wrapped path.
     pub(crate) unsafe fn path<'a>(path: *const Self) -> Option<&'a Path> {
@@ -662,11 +876,12 @@ pub unsafe extern "C" fn copp_path_default_options(
     }
 }
 
-/// Build a waypoint spline path.
+/// Build an interpolating waypoint spline path.
 ///
 /// `waypoints` must be a matrix view of shape `dim x n_points`, where each
-/// column is one waypoint. `options.start_state` and `options.end_state` may be
-/// empty to use zero boundary derivatives.
+/// column is one waypoint. The spline interpolates every waypoint column.
+/// `options.start_state` and `options.end_state` may be empty to use zero
+/// boundary derivatives.
 ///
 /// Column-major input with `leading_dim >= rows` avoids a temporary layout
 /// copy while building the spline coefficients. Row-major input is accepted
@@ -675,6 +890,12 @@ pub unsafe extern "C" fn copp_path_default_options(
 ///
 /// On success, `*out_path` receives a non-null handle that must be released
 /// with `copp_path_free`.
+///
+/// # API stability
+/// The waypoint path constructors are currently unstable: their names,
+/// signatures, and option types may change as additional waypoint
+/// path-construction algorithms are introduced. `copp_path_from_waypoints` is
+/// an equivalent alias of this function.
 ///
 /// # Example
 /// The example below builds a two-dimensional spline path from column-major
@@ -692,7 +913,7 @@ pub unsafe extern "C" fn copp_path_default_options(
 /// struct CoppPathOptions options;
 /// struct CoppPath *path = NULL;
 /// check(copp_path_default_options(0.0, 1.0, &options));
-/// check(copp_path_from_waypoints(
+/// check(copp_path_from_waypoints_interpolating(
 ///     COPP_MATRIX_VIEW_F64_COLUMN_MAJOR(waypoints, DIM, NUM_WAYPOINTS),
 ///     options,
 ///     &path));
@@ -705,7 +926,7 @@ pub unsafe extern "C" fn copp_path_default_options(
 /// `double` arrays for their declared layouts for the duration of this call.
 /// `out_path` must be valid for one `CoppPath*` write.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn copp_path_from_waypoints(
+pub unsafe extern "C" fn copp_path_from_waypoints_interpolating(
     waypoints: CoppMatrixViewF64,
     options: CoppPathOptions,
     out_path: *mut *mut CoppPath,
@@ -729,7 +950,7 @@ pub unsafe extern "C" fn copp_path_from_waypoints(
         // SAFETY: The C ABI contract requires non-empty matrix views inside
         // `options` to be valid for the duration of this call.
         let cfg = unsafe { options.to_spline_config()? };
-        let path = Path::from_waypoints_view(waypoints.as_view(), cfg)
+        let path = Path::from_waypoints_interpolating_view(waypoints.as_view(), cfg)
             .map_err(|error| CoppStatus::from(&error))?;
         let path = Box::new(CoppPathInner { path });
 
@@ -742,6 +963,238 @@ pub unsafe extern "C" fn copp_path_from_waypoints(
         Ok(Ok(status)) | Ok(Err(status)) => status.into_ffi_status(),
         Err(payload) => panic_to_status(payload).into_ffi_status(),
     }
+}
+
+/// Build an interpolating waypoint spline path.
+///
+/// This is an equivalent alias of `copp_path_from_waypoints_interpolating`
+/// with identical arguments, behavior, and status codes. Both names remain
+/// supported and share the unstable status of the waypoint path constructors.
+///
+/// # Safety
+/// Same requirements as `copp_path_from_waypoints_interpolating`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn copp_path_from_waypoints(
+    waypoints: CoppMatrixViewF64,
+    options: CoppPathOptions,
+    out_path: *mut *mut CoppPath,
+) -> CoppStatus {
+    // SAFETY: This alias forwards the caller's C ABI contract unchanged.
+    unsafe { copp_path_from_waypoints_interpolating(waypoints, options, out_path) }
+}
+
+/// Write default tolerance-bounded fitting options into `out_options`.
+///
+/// Defaults fit every row with absolute tolerance `0.001`, assign waypoint
+/// parameters uniformly on `[0, 1]`, allow 20 refinement passes and 20000
+/// selected-axis spans, and reject out-of-range queries. All borrowed slices
+/// are empty.
+///
+/// # Safety
+/// `out_options` must be valid for one `CoppSmoothingOptions` write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn copp_smoothing_default_options(
+    out_options: *mut CoppSmoothingOptions,
+) -> CoppStatus {
+    crate::ffi::c::core::status::clear_last_error();
+    if out_options.is_null() {
+        return CoppStatus::NullPointer.into_ffi_status();
+    }
+
+    match catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: `out_options` was checked for null above and is expected to
+        // be valid for one write by the C ABI contract.
+        unsafe {
+            out_options.write(CoppSmoothingOptions::default_options());
+        }
+        CoppStatus::Ok
+    })) {
+        Ok(status) => status.into_ffi_status(),
+        Err(payload) => panic_to_status(payload).into_ffi_status(),
+    }
+}
+
+/// Build a tolerance-bounded waypoint-fitting path.
+///
+/// `waypoints` must be a finite matrix view of shape `dim x n_points` with
+/// `dim > 0` and `n_points >= 2`, where each column is one waypoint. Each
+/// column receives a common path parameter (`options.parameters`, or uniform
+/// on `[0, 1]` when empty), and adjacent columns are joined linearly into a
+/// reference polyline. The selected axes (`options.axes`, or every row when
+/// empty) are approximated by one adaptive nonuniform quintic B-spline with
+/// `C4` continuity whose same-parameter absolute deviation from the reference
+/// polyline stays within each axis tolerance. The error is audited over every
+/// complete reference interval, not only at the waypoints.
+///
+/// Unlike `copp_path_from_waypoints_interpolating`, the fitted path does not
+/// pass through interior waypoints: selected axes may deviate within their
+/// tolerances, while the first and last waypoints are retained. Unselected
+/// rows keep quintic `C4` interpolation through every column. Derivatives
+/// returned by path evaluation are with respect to the path parameter `s`,
+/// not time. Use `copp_path_smoothing_report` to inspect the selected axes,
+/// the final per-axis error bounds, and the refinement work.
+///
+/// Column-major input with `leading_dim >= rows` is read without a temporary
+/// layout copy. Row-major input is accepted and copied once into column-major
+/// temporary storage. The returned path owns its fitted representation and
+/// does not borrow `waypoints` or the slices in `options` after the call.
+///
+/// On success, `*out_path` receives a non-null handle that must be released
+/// with `copp_path_free`.
+///
+/// # API stability
+/// The waypoint path constructors and `CoppSmoothingOptions` /
+/// `CoppSmoothingReport` are currently unstable: their names, signatures, and
+/// option types may change as additional waypoint path-construction
+/// algorithms are introduced.
+///
+/// # Errors
+/// Returns `COPP_STATUS_PATH_SMOOTHING` when the waypoint values, dimensions,
+/// axes, tolerances, or parameters violate their contracts, when the
+/// selected-axis span count exceeds `options.max_segments`, when refinement
+/// exhausts `options.max_refinements` or the parameter resolution, when the
+/// banded fit encounters an unusable numerical system, or when the final
+/// whole-interval audit fails. An unchecked or relaxed approximation is never
+/// returned.
+///
+/// # Example
+/// The example below fits a two-dimensional waypoint path within `1e-3` input
+/// units and reads the final error bound of each axis.
+///
+/// ```c
+/// enum { DIM = 2, NUM_WAYPOINTS = 5 };
+/// double waypoints[DIM * NUM_WAYPOINTS] = {
+///     0.0, 0.0,
+///     0.25, 0.4,
+///     0.5, 0.5,
+///     0.75, 0.4,
+///     1.0, 0.0,
+/// };
+///
+/// struct CoppSmoothingOptions options;
+/// struct CoppPath *path = NULL;
+/// check(copp_smoothing_default_options(&options));
+/// options.tolerance = 1e-3;
+/// check(copp_path_from_waypoints_fitting(
+///     COPP_MATRIX_VIEW_F64_COLUMN_MAJOR(waypoints, DIM, NUM_WAYPOINTS),
+///     options,
+///     &path));
+///
+/// bool has_report = false;
+/// struct CoppSmoothingReport report = {0};
+/// check(copp_path_smoothing_report(path, &has_report, &report));
+/// for (size_t i = 0; i < report.axes.len; ++i) {
+///     printf("axis %zu: %.3e\n", report.axes.data[i], report.max_errors.data[i]);
+/// }
+/// copp_smoothing_report_free(report);
+/// copp_path_free(path);
+/// ```
+///
+/// # Safety
+/// Non-empty matrix views and slices in `waypoints` and `options` must point
+/// to valid arrays for their declared layouts for the duration of this call.
+/// `out_path` must be valid for one `CoppPath*` write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn copp_path_from_waypoints_fitting(
+    waypoints: CoppMatrixViewF64,
+    options: CoppSmoothingOptions,
+    out_path: *mut *mut CoppPath,
+) -> CoppStatus {
+    crate::ffi::c::core::status::clear_last_error();
+    if out_path.is_null() {
+        return CoppStatus::NullPointer.into_ffi_status();
+    }
+
+    // SAFETY: `out_path` was checked for null above and is expected to be valid
+    // for one pointer write by the C ABI contract.
+    unsafe {
+        out_path.write(ptr::null_mut());
+    }
+
+    match catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: The C ABI contract requires non-empty matrix views to point
+        // to valid `double` arrays for the declared layout.
+        let waypoints = unsafe { waypoints.as_input_matrix()? };
+
+        // SAFETY: The C ABI contract requires non-empty slices inside
+        // `options` to be valid for the duration of this call.
+        let cfg = unsafe { options.to_smoothing_config()? };
+        let path = Path::from_waypoints_fitting_view(waypoints.as_view(), cfg)
+            .map_err(|error| CoppStatus::from(&error))?;
+        let path = Box::new(CoppPathInner { path });
+
+        // SAFETY: Same checked output location as above.
+        unsafe {
+            out_path.write(Box::into_raw(path).cast::<CoppPath>());
+        }
+        Ok(CoppStatus::Ok)
+    })) {
+        Ok(Ok(status)) | Ok(Err(status)) => status.into_ffi_status(),
+        Err(payload) => panic_to_status(payload).into_ffi_status(),
+    }
+}
+
+/// Return the construction report of a tolerance-fitted waypoint path.
+///
+/// For a path built by `copp_path_from_waypoints_fitting`, `*out_has_report`
+/// receives `true` and `*out_report` receives a library-owned report that must
+/// be released with `copp_smoothing_report_free`. For any other path,
+/// `*out_has_report` receives `false` and `*out_report` receives an empty
+/// report with null vectors and zero counters; releasing it is allowed.
+///
+/// # Safety
+/// `path` must be a non-null handle created by this module.
+/// `out_has_report` must be valid for one `bool` write and `out_report` for
+/// one `CoppSmoothingReport` write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn copp_path_smoothing_report(
+    path: *const CoppPath,
+    out_has_report: *mut bool,
+    out_report: *mut CoppSmoothingReport,
+) -> CoppStatus {
+    crate::ffi::c::core::status::clear_last_error();
+    if out_has_report.is_null() || out_report.is_null() {
+        return CoppStatus::NullPointer.into_ffi_status();
+    }
+    // SAFETY: Output pointers were checked for null above and are expected to
+    // be valid for one write each by the C ABI contract.
+    unsafe {
+        out_has_report.write(false);
+        out_report.write(CoppSmoothingReport::empty());
+    }
+
+    match catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: The C ABI contract requires `path` to be a live handle
+        // created by this module for the duration of this call.
+        let path = unsafe { CoppPath::path(path) }.ok_or(CoppStatus::NullPointer)?;
+        if let Some(report) = path.smoothing_report() {
+            let report = CoppSmoothingReport::from_report(report);
+            // SAFETY: Same checked output locations as above.
+            unsafe {
+                out_report.write(report);
+                out_has_report.write(true);
+            }
+        }
+        Ok(CoppStatus::Ok)
+    })) {
+        Ok(Ok(status)) | Ok(Err(status)) => status.into_ffi_status(),
+        Err(payload) => panic_to_status(payload).into_ffi_status(),
+    }
+}
+
+/// Release memory owned by a `CoppSmoothingReport`.
+///
+/// Passing an empty report is allowed and has no effect. Passing an
+/// already-freed report is invalid.
+///
+/// # Safety
+/// `report` must either be empty/null or have been returned by
+/// `copp_path_smoothing_report`. Passing arbitrary pointers or modified
+/// capacity fields is invalid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn copp_smoothing_report_free(report: CoppSmoothingReport) {
+    report.free();
+    clear_last_error();
 }
 
 /// Build a path from a scalar-parametric C callback.
@@ -1368,7 +1821,161 @@ pub unsafe extern "C" fn copp_path_free(path: *mut CoppPath) {
 mod tests {
     use super::*;
     use crate::path::PathEvaluator2nd;
-    use std::{ffi::c_void, slice};
+    use std::{ffi::c_void, mem::MaybeUninit, slice};
+
+    /// Column-major two-axis polyline with a corner at `s = 0.5`.
+    const FITTING_WAYPOINTS: [f64; 10] = [0.0, 0.0, 0.25, 0.4, 0.5, 0.5, 0.75, 0.4, 1.0, 0.0];
+
+    fn fitting_waypoints_view() -> CoppMatrixViewF64 {
+        CoppMatrixViewF64 {
+            data: FITTING_WAYPOINTS.as_ptr(),
+            rows: 2,
+            cols: FITTING_WAYPOINTS.len() / 2,
+            layout: crate::ffi::c::CoppMatrixLayout::ColumnMajor,
+            leading_dim: 2,
+        }
+    }
+
+    fn fit(options: CoppSmoothingOptions) -> (CoppStatus, *mut CoppPath) {
+        let mut path = ptr::null_mut();
+        let status = unsafe {
+            copp_path_from_waypoints_fitting(fitting_waypoints_view(), options, &mut path)
+        };
+        (status, path)
+    }
+
+    fn smoothing_report(path: *const CoppPath) -> (bool, CoppSmoothingReport) {
+        let mut has_report = true;
+        let mut report = CoppSmoothingReport::empty();
+        let status = unsafe { copp_path_smoothing_report(path, &mut has_report, &mut report) };
+        assert_eq!(status, CoppStatus::Ok);
+        (has_report, report)
+    }
+
+    #[test]
+    fn smoothing_default_options_match_rust_defaults() {
+        let mut out = MaybeUninit::<CoppSmoothingOptions>::uninit();
+        let status = unsafe { copp_smoothing_default_options(out.as_mut_ptr()) };
+        assert_eq!(status, CoppStatus::Ok);
+        let options = unsafe { out.assume_init() };
+
+        let defaults = SmoothingConfig::default();
+        let SmoothingTolerance::Uniform(tolerance) = defaults.tolerance else {
+            panic!("expected a uniform default tolerance");
+        };
+        assert_eq!(options.tolerance, tolerance);
+        assert_eq!(options.tolerance_per_axis.len, 0);
+        assert_eq!(options.axes.len, 0);
+        assert_eq!(options.parameters.len, 0);
+        assert_eq!(options.max_refinements, defaults.max_refinements);
+        assert_eq!(options.max_segments, defaults.max_segments);
+        assert_eq!(options.out_of_range_mode, CoppPathOutOfRangeMode::Error);
+    }
+
+    #[test]
+    fn smoothing_options_map_empty_and_explicit_slices() {
+        let mut options = CoppSmoothingOptions::default_options();
+        options.tolerance = 2.0e-3;
+        let cfg = unsafe { options.to_smoothing_config() }.unwrap();
+        assert!(matches!(cfg.tolerance, SmoothingTolerance::Uniform(value) if value == 2.0e-3));
+        assert!(cfg.axes.is_none());
+        assert!(cfg.parameters.is_none());
+
+        let tolerances = [1.0e-3, 1.0e-2];
+        let axes = [1_usize, 0];
+        let parameters = [2.0, 3.0, 4.0];
+        options.tolerance_per_axis = CoppSliceF64 {
+            data: tolerances.as_ptr(),
+            len: tolerances.len(),
+        };
+        options.axes = CoppSliceUsize {
+            data: axes.as_ptr(),
+            len: axes.len(),
+        };
+        options.parameters = CoppSliceF64 {
+            data: parameters.as_ptr(),
+            len: parameters.len(),
+        };
+        options.max_refinements = 3;
+        options.max_segments = 7;
+        options.out_of_range_mode = CoppPathOutOfRangeMode::Clamp;
+
+        let cfg = unsafe { options.to_smoothing_config() }.unwrap();
+        let SmoothingTolerance::PerAxis(per_axis) = cfg.tolerance else {
+            panic!("expected per-axis tolerances");
+        };
+        assert_eq!(per_axis, tolerances);
+        assert_eq!(cfg.axes.as_deref(), Some(&axes[..]));
+        assert_eq!(cfg.parameters.as_deref(), Some(&parameters[..]));
+        assert_eq!(cfg.max_refinements, 3);
+        assert_eq!(cfg.max_segments, 7);
+        assert!(matches!(cfg.out_of_range_mode, OutOfRangeMode::Clamp));
+    }
+
+    #[test]
+    fn fitted_path_has_report_and_interpolated_path_has_none() {
+        let mut options = CoppSmoothingOptions::default_options();
+        options.tolerance = 1.0e-3;
+        let (status, fitted) = fit(options);
+        assert_eq!(status, CoppStatus::Ok);
+
+        let (has_report, report) = smoothing_report(fitted);
+        assert!(has_report);
+        let axes = unsafe { slice::from_raw_parts(report.axes.data, report.axes.len) };
+        let max_errors =
+            unsafe { slice::from_raw_parts(report.max_errors.data, report.max_errors.len) };
+        assert_eq!(axes, [0, 1]);
+        assert_eq!(max_errors.len(), 2);
+        assert!(max_errors.iter().all(|&error| error <= 1.0e-3));
+        assert!(report.segments > 0);
+        assert_eq!(report.interpolated_segments, 0);
+        unsafe { copp_smoothing_report_free(report) };
+
+        let mut interpolated = ptr::null_mut();
+        let status = unsafe {
+            copp_path_from_waypoints_interpolating(
+                fitting_waypoints_view(),
+                CoppPathOptions::default_for_range(0.0, 1.0),
+                &mut interpolated,
+            )
+        };
+        assert_eq!(status, CoppStatus::Ok);
+        let (has_report, report) = smoothing_report(interpolated);
+        assert!(!has_report);
+        assert!(report.axes.data.is_null() && report.axes.len == 0);
+        assert!(report.max_errors.data.is_null() && report.max_errors.len == 0);
+        unsafe { copp_smoothing_report_free(report) };
+
+        unsafe {
+            copp_path_free(interpolated);
+            copp_path_free(fitted);
+        }
+    }
+
+    #[test]
+    fn fitting_failures_map_to_path_smoothing() {
+        let mut options = CoppSmoothingOptions::default_options();
+        let axes = [2_usize];
+        options.axes = CoppSliceUsize {
+            data: axes.as_ptr(),
+            len: axes.len(),
+        };
+        let (status, path) = fit(options);
+        assert_eq!(status, CoppStatus::PathSmoothing);
+        assert!(path.is_null());
+
+        let mut options = CoppSmoothingOptions::default_options();
+        options.max_segments = 0;
+        let (status, path) = fit(options);
+        assert_eq!(status, CoppStatus::PathSmoothing);
+        assert!(path.is_null());
+
+        let options = CoppSmoothingOptions::default_options();
+        let status = unsafe {
+            copp_path_from_waypoints_fitting(fitting_waypoints_view(), options, ptr::null_mut())
+        };
+        assert_eq!(status, CoppStatus::NullPointer);
+    }
 
     #[derive(Default)]
     struct CallbackState {

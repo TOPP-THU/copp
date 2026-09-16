@@ -8,7 +8,9 @@ than raw solve speed.
 Like other TOPP3/COPP3 wrappers, the problem descriptor requires an
 ``a_linearization`` profile. In practice, a TOPP2-RA seed is usually good enough
 for the first iteration, and the previous TOPP3-SOCP solution is a natural seed
-for the second iteration.
+for the second iteration. When reseeding from a third-order solution, pass its
+``b`` as ``b_linearization`` together with its ``a`` to linearize the jerk rows
+adaptively at that feasible state; see :doc:`../how_to/paths_and_constraints`.
 
 The strict API returns a ``Profile3rd``. Use ``socp_expert`` when you need raw
 Clarabel status, residuals, primal/dual vectors, or accepted-profile checks.

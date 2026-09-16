@@ -2,7 +2,8 @@ classdef Problem
     %PROBLEM Shared TOPP3 problem descriptor.
     %
     % This descriptor is shared by solver.topp3_lp, solver.topp3_socp, and
-    % COPP3 facades that inherit from it. Solver-specific Problem classes are convenience facades for
+    % COPP3 facades that inherit from it.
+    % Solver-specific Problem classes are convenience facades for
     % readability; they are not strict namespace gates. The shared descriptor
     % stores a borrowed Robot reference, an owned a-linearization profile, and
     % boundary/stationary metadata. The constructor only validates and copies
@@ -10,7 +11,9 @@ classdef Problem
     %
     % Shape convention:
     %   a_linearization may be a row or column vector but is stored as an
-    %   s_len-by-1 column. a_boundary and b_boundary are 1-by-2 vectors.
+    %   s_len-by-1 column. The optional b_linearization is stored the same way,
+    %   or as a 0-by-1 column when empty. a_boundary and b_boundary are 1-by-2
+    %   vectors.
     %   num_stationary_max is a scalar or 1-by-2 vector [start, end]. TOPP3 and
     %   COPP3 solve() functions return Profile3rd objects whose a and b fields
     %   are s_len-by-1 double columns.
@@ -56,6 +59,12 @@ classdef Problem
         %A_LINEARIZATION_FLOOR Native floor used while linearizing a.
         a_linearization_floor
 
+        %B_LINEARIZATION Optional owned b profile paired with a_linearization.
+        %
+        % A 0-by-1 column selects direct linearization. An s_len-by-1 column
+        % selects adaptive linearization around (a_linearization, b_linearization).
+        b_linearization
+
         %S_LEN Number of stations covered by a_linearization.
         s_len
     end
@@ -80,6 +89,29 @@ classdef Problem
             %       Scalar or [start, end] nonnegative integer stationary cap.
             %   a_linearization_floor:
             %       Positive finite floor forwarded to the native solver.
+            %   b_linearization:
+            %       Optional path acceleration profile b(k) paired with
+            %       A_LINEARIZATION. Empty (the default) linearizes every
+            %       third-order row of station k at a_linearization(k). A
+            %       non-empty vector selects adaptive linearization: each row
+            %       is anchored where it is nearly active at the feasible state
+            %       (a_linearization, b_linearization), so a slack row is
+            %       anchored high and a tight one stays near the state. It must
+            %       have the same length as A_LINEARIZATION; solving raises
+            %       copp:SolverError otherwise. The pair must
+            %       be the a and b of one previously solved third-order
+            %       Profile3rd; the b of a TOPP2 profile is discretized
+            %       differently and must not be used. Prefer this mode when a
+            %       spans a wide range, and especially when a approaches zero
+            %       (about 1e-10): anchoring both rows of an axis at the same
+            %       small a_linearization(k) leaves a(k) <= 3*a_linearization(k).
+            %       On profiles well away from zero the direct mode is cheaper
+            %       and nearly identical.
+            %
+            % Example (refine around a previously solved third-order profile):
+            %   profile = copp.solver.topp3_lp.solve(problem);
+            %   refined = copp.solver.topp3_lp.Problem(robot, max(profile.a, 0), ...
+            %       b_linearization=profile.b);
             arguments
                 robot (1,1) copp.Robot
                 a_linearization {mustBeNumeric, mustBeReal, mustBeVector, mustBeFinite}
@@ -88,6 +120,7 @@ classdef Problem
                 opts.b_boundary (1,2) {mustBeNumeric, mustBeReal, mustBeFinite} = [0, 0]
                 opts.num_stationary_max = 1
                 opts.a_linearization_floor (1,1) {mustBeNumeric, mustBeReal, mustBeFinite, mustBePositive} = 1.0e-10
+                opts.b_linearization {mustBeNumeric, mustBeReal, mustBeFinite} = []
             end
 
             if ~robot.is_valid()
@@ -102,6 +135,12 @@ classdef Problem
             if any(a_lin < 0)
                 error("copp:InvalidArgument", ...
                     "a_linearization must be nonnegative.");
+            end
+
+            b_lin = reshape(double(opts.b_linearization), [], 1);
+            if ~isempty(b_lin) && ~isvector(opts.b_linearization)
+                error("copp:InvalidArgument", ...
+                    "b_linearization must be empty or a vector.");
             end
 
             num_stationary = double(opts.num_stationary_max);
@@ -135,6 +174,7 @@ classdef Problem
             obj.num_stationary_max_end = num_stationary(2);
             obj.num_stationary_max = num_stationary;
             obj.a_linearization_floor = double(opts.a_linearization_floor);
+            obj.b_linearization = b_lin;
             obj.s_len = numel(a_lin);
         end
     end
@@ -143,8 +183,9 @@ classdef Problem
         function varargout = native_descriptor(obj)
             %NATIVE_DESCRIPTOR Convert this MATLAB descriptor to MEX arguments.
             %
-            % The first returned index is native 0-based. a_linearization is
-            % borrowed by MEX only during the solve call. The solve call is the
+            % The first returned index is native 0-based. a_linearization and
+            % b_linearization (returned last; empty selects direct linearization)
+            % are borrowed by MEX only during the solve call. The solve call is the
             % point where the native Robot's linearized third-order constraint
             % cache may be mutated.
             if ~obj.robot.is_valid()
@@ -162,7 +203,8 @@ classdef Problem
                 double(obj.b_boundary(2)), ...
                 double(obj.num_stationary_max_start), ...
                 double(obj.num_stationary_max_end), ...
-                double(obj.a_linearization_floor)};
+                double(obj.a_linearization_floor), ...
+                double(obj.b_linearization)};
         end
     end
 end

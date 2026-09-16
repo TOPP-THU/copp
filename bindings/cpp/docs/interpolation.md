@@ -96,6 +96,27 @@ auto local_time = copp::interpolation::s_to_t_topp3(local_s, part);
 Stationary counts are clipped to the local slice.  A slice must still contain at
 least one non-stationary segment after that adjustment.
 
+## Positive `a(s)` Between Stations
+
+A third-order profile whose `a` touches zero at or between stations can have an
+interpolated `a(s)` that dips to or below zero inside an interval.
+`Profile3rd::force_positive_a` adjusts `a` and `b` in place so interpolated
+`a(s)` stays strictly positive on every interval.  Call it before
+`s_to_t_topp3` on such profiles:
+
+```cpp
+auto profile = copp::solver::topp3_socp::solve(problem, options);
+bool repaired = profile.force_positive_a(s); // a_min defaults to 1e-12
+auto time = copp::interpolation::s_to_t_topp3(s, profile);
+```
+
+It returns `false` (not an error) when some interval could not be repaired and
+throws `copp::Error` for invalid input, such as fewer than four stations, length
+mismatches, negative or non-finite values, or a non-increasing grid.  The
+adjustment rewrites `a` and `b` without knowing the acceleration and jerk
+limits, so re-check the delivered profile afterwards with
+`ConstraintsRef::exceed_topp3` (see @ref cpp_robot_constraints).
+
 ## Uniform Versus Explicit Time Grids
 
 Uniform sampling is convenient for controllers:

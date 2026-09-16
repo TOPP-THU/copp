@@ -976,6 +976,38 @@ mod tests {
         run_test_copp2_socp_once(&options_socp)
     }
 
+    /// Regression: the first-order rows were shifted by one row, which dropped `a[n-1] >= 0`
+    /// and turned the first finite `amax` row into `a[k] <= amax[k] + a[n-1]`. A Linear
+    /// objective adds no SOC row that would re-impose `a >= 0`.
+    #[test]
+    fn test_copp2_socp_linear_respects_amax() -> Result<(), CoppError> {
+        let n: usize = 6;
+        let s: Vec<f64> = (0..n).map(|k| k as f64).collect();
+        let amax = vec![1.0; n];
+        let mut robot = Robot::with_capacity(1usize, n);
+        robot.with_s(&s)?;
+        robot.constraints.with_constraint_1order(&amax, 0)?;
+
+        // Maximize sum(a) between two boundary states at full speed, a = amax = 1.
+        let alpha = vec![-1.0; n];
+        let beta = vec![0.0; n - 1];
+        let objectives = [CoppObjective::Linear(1.0, &alpha, &beta)];
+        let problem =
+            Copp2ProblemBuilder::new(&robot, (0, n - 1), (1.0, 1.0), &objectives).build()?;
+        let options = ClarabelOptionsBuilder::new()
+            .allow_almost_solved(true)
+            .build()?;
+        let a = copp2_socp(&problem, &options)?;
+
+        for (k, (&a_k, &amax_k)) in a.iter().zip(&amax).enumerate() {
+            assert!(
+                a_k <= amax_k + 1e-6,
+                "a[{k}] = {a_k} exceeds amax[{k}] = {amax_k}"
+            );
+        }
+        Ok(())
+    }
+
     #[test]
     #[ignore = "bindings"]
     fn test_copp2_socp_bindings_parity() -> Result<(), CoppError> {
@@ -993,7 +1025,7 @@ mod tests {
                 _ => unreachable!("dimension is fixed to 3"),
             }
         });
-        let path = Path::from_waypoints(&waypoints, SplineConfig::default())?;
+        let path = Path::from_waypoints_interpolating(&waypoints, SplineConfig::default())?;
         let s = DMatrix::<f64>::from_fn(1, n, |_, j| j as f64 / (n - 1) as f64);
 
         let mut robot = Robot::with_capacity(dim, n);

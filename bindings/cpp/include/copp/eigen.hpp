@@ -30,7 +30,7 @@ namespace copp::eigen
     ///
     /// @code
     /// Eigen::MatrixXd waypoints(2, 3);
-    /// auto path = copp::Path::from_waypoints(copp::eigen::matrix_view(waypoints));
+    /// auto path = copp::Path::from_waypoints_interpolating(copp::eigen::matrix_view(waypoints));
     /// @endcode
     inline MatrixView matrix_view(const Eigen::Ref<const ColMajorMatrix> &matrix)
     {

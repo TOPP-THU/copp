@@ -85,6 +85,10 @@ disp(table(linspace(0, t_final3, 5).', s_samples3, ...
 % * \(s\), \(a\), \(b\), and \(t_s\) must be aligned and finite.
 % * TOPP2 \(b\) is interval-based and has length \(\mathrm{numel}(s)-1\).
 % * TOPP3 \(b\) is node-based and has length \(\mathrm{numel}(s)\).
+% * Third-order profiles whose \(a\) may touch zero can be repaired with
+%   |Profile3rd.force_positive_a(s)|
+%   before |s_to_t_topp3|. Re-check the repaired profile against the robot
+%   limits with |Robot.exceed_topp3|.
 % * Out-of-range target times in inverse interpolation are represented by the
 %   native interpolation policy; prefer sample grids inside \([t_s(1), t_s(\mathrm{end})]\).
 

@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "copp-py"
-version = "0.2.2"
+version = "0.2.3"
 description = "Convex-objective path parameterization for robotic trajectory planning."
 readme = "bindings/python/README.md"
 license = "MIT"
@@ -51,7 +51,12 @@ all-parametric = ["jax", "casadi", "autograd", "sympy"]
 features = ["python"]
 python-source = "bindings/python"
 module-name = "copp_py._native"
-exclude = ["bindings/python/**/*.pdb"]
+exclude = [
+    "bindings/python/**/*.pdb",
+    "bindings/python/**/*.pyd",
+    "bindings/python/**/*.so",
+    "bindings/python/**/*.dylib",
+]
 
 [tool.maturin.target."x86_64-apple-darwin"]
 macos-deployment-target = "10.13"

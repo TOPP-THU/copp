@@ -154,7 +154,7 @@ fn clarabel_1order_constraint_topp2(
 ) {
     let (row, col, val, b, cones) = input;
     // A*x-b = -s = -1*a[k] <= 0
-    row.extend((b.len() + 1)..(b.len() + n));
+    row.extend(b.len()..(b.len() + n - 1));
     col.extend(1..n);
     val.resize(val.len() + n - 1, -1.0);
     b.resize(b.len() + n - 1, 0.0);
@@ -242,5 +242,75 @@ fn clarabel_2order_constraint_topp2(
     }
     if modify_cones {
         cones.push(NonnegativeConeT(b.len() - n_b_old));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diag::ConstraintError;
+
+    #[test]
+    fn first_order_rows_pair_with_their_b_entries() -> Result<(), ConstraintError> {
+        let n = 4;
+        let s = [0.0, 1.0, 2.0, 3.0, 4.0];
+        // Finite amax at s[2] and s[3], then at no interior station, where the next rows would
+        // belong to the second-order block.
+        let cases: [&[(usize, f64)]; 2] = [&[(2, 2.0), (3, 3.0)], &[]];
+        for amax in cases {
+            let mut constraints = Constraints::with_capacity(1, n + 1);
+            constraints.with_s(s.as_slice())?;
+            for &(k, amax_k) in amax {
+                constraints.with_constraint_1order([amax_k].as_slice(), k)?;
+            }
+            let mut row = Vec::new();
+            let mut col = Vec::new();
+            let mut val = Vec::new();
+            let mut b = Vec::new();
+            let mut cones = Vec::new();
+            // Two boundary rows first, as in the standard assembly, so the block starts at row 2.
+            clarabel_a_point_constraint_topp2(
+                0.0,
+                0,
+                (&mut row, &mut col, &mut val, &mut b, &mut cones),
+            );
+            clarabel_a_point_constraint_topp2(
+                1.0,
+                n,
+                (&mut row, &mut col, &mut val, &mut b, &mut cones),
+            );
+            let n_rows_old = b.len();
+            clarabel_1order_constraint_topp2(
+                &constraints,
+                n,
+                0,
+                (&mut row, &mut col, &mut val, &mut b, &mut cones),
+                true,
+            );
+
+            assert_eq!(b.len(), n_rows_old + n - 1 + amax.len());
+            assert!(row.iter().all(|&row_id| row_id < b.len()));
+            let mut entries = vec![Vec::new(); b.len()];
+            for ((&row_id, &col_id), &value) in row.iter().zip(&col).zip(&val) {
+                entries[row_id].push((col_id, value));
+            }
+            // Lower bounds: one row per interior a[k], holding only -1*a[k] against b = 0.
+            for k in 1..n {
+                let row_id = n_rows_old + k - 1;
+                assert_eq!(entries[row_id], [(k, -1.0)]);
+                assert_eq!(b[row_id], 0.0);
+            }
+            // Upper bounds: one row per finite amax[k], holding only +1*a[k] against b = amax[k].
+            for (i, &(k, amax_k)) in amax.iter().enumerate() {
+                let row_id = n_rows_old + n - 1 + i;
+                assert_eq!(entries[row_id], [(k, 1.0)]);
+                assert_eq!(b[row_id], amax_k);
+            }
+            assert!(matches!(
+                cones.as_slice(),
+                [ZeroConeT(1), ZeroConeT(1), NonnegativeConeT(m)] if *m == n - 1 + amax.len()
+            ));
+        }
+        Ok(())
     }
 }

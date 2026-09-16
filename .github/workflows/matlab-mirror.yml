@@ -1,0 +1,209 @@
+name: Mirror MATLAB Toolbox
+
+# Publishes the MATLAB binding to its own repository, which is what the MATLAB
+# File Exchange submission is linked to. The mirror exists so File Exchange
+# shows the MATLAB README instead of this repository's Rust-facing one.
+#
+# This runs when a release here is *published*, not when the tag is pushed:
+# the tag build only produces a draft, and a draft that is never published must
+# not reach File Exchange. The toolbox stays attached to this repository's
+# release as well; the mirror gets a second copy of the same file.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to mirror, for example v0.2.3"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: matlab-mirror-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: Mirror to the MATLAB toolbox repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    env:
+      MIRROR_REPOSITORY: TOPP-THU/copp-matlab
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      IS_PRERELEASE: ${{ github.event.release.prerelease }}
+
+    steps:
+      - name: Checkout the released tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      # The mirror repository must already have at least one commit: an empty
+      # repository has no default branch for this step to check out.
+      - name: Checkout the mirror repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: TOPP-THU/copp-matlab
+          token: ${{ secrets.MATLAB_MIRROR_TOKEN }}
+          path: mirror
+          # Full history: pushing back from a shallow clone is rejected.
+          fetch-depth: 0
+
+      - name: Download the MATLAB toolbox from this release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          mkdir -p release-assets
+          gh release download "$RELEASE_TAG" \
+            --dir release-assets \
+            --pattern '*.mltbx' \
+            --pattern '*.mltbx.sha256'
+          ls -l release-assets
+
+      # Stage the mirror contents separately so the rsync into the checkout is a
+      # plain "make it look like this". src/ and build.m are deliberately left
+      # out: they build the MEX gateway against the Rust core, which does not
+      # exist in the mirror, so shipping them would only invite build reports
+      # that cannot succeed.
+      - name: Stage the mirror contents
+        run: |
+          mkdir -p staging
+          rsync -a \
+            --exclude='src/' \
+            --exclude='build.m' \
+            --exclude='+copp/+internal/*.mex*' \
+            --exclude='+copp/+internal/*.dll' \
+            --exclude='+copp/+internal/*.so' \
+            --exclude='+copp/+internal/*.dylib' \
+            --exclude='+copp/+internal/*.pdb' \
+            bindings/matlab/ staging/
+          # The repository keeps one LICENSE, at the root. The mirror gets a copy
+          # of it rather than a second tracked file that nothing keeps in step.
+          cp LICENSE staging/LICENSE
+          cp CHANGELOG.md staging/CHANGELOG.md
+
+          # The mirror is the public open-source MATLAB toolbox, so a branch
+          # that still carries PRO material must never reach it: the mirror
+          # repository is public, and reverting the commit afterwards does not
+          # un-publish what was pushed. The pattern excludes copp_pro followed
+          # by a lowercase letter, which is how copp_problem and
+          # copp_profile_3rd_free would otherwise trip it.
+          if [ -d 'staging/+copp_pro' ] || grep -rqE 'copp_pro($|[^a-z])' staging/; then
+            echo "PRO material found in the staged mirror contents; refusing to publish." >&2
+            grep -rlE 'copp_pro($|[^a-z])' staging/ | head -20 >&2
+            exit 1
+          fi
+
+          cat > staging/CONTRIBUTING.md <<'NOTE'
+          # Contributing
+
+          This repository is a one-way mirror of the `bindings/matlab` directory of
+          [TOPP-THU/copp](https://github.com/TOPP-THU/copp), republished on every
+          release so the MATLAB File Exchange submission has a MATLAB-only front page.
+
+          Issues are welcome here. Pull requests cannot be merged here, because the
+          next release overwrites this repository's contents: please open them
+          against [TOPP-THU/copp](https://github.com/TOPP-THU/copp) instead.
+
+          The MEX gateway sources and the build script are not mirrored. They build
+          against the Rust core, which lives in the main repository.
+          NOTE
+
+          echo "Staged contents:"
+          ls -la staging
+
+      # --delete makes the mirror match the staging directory exactly. .github/
+      # is preserved so the mirror can keep workflows of its own; the token used
+      # here is not allowed to write them anyway.
+      - name: Sync the mirror working tree
+        run: |
+          rsync -a --delete \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            staging/ mirror/
+
+      # The tag has to exist in the mirror before the release is created there,
+      # so that --verify-tag passes and the release points at the matching code
+      # rather than at whatever the default branch happened to be.
+      - name: Commit and push the mirror
+        working-directory: mirror
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          branch="$(git rev-parse --abbrev-ref HEAD)"
+          if [ "$branch" = "HEAD" ]; then
+            branch="$(git remote show origin | sed -n 's/.*HEAD branch: //p')"
+          fi
+          if [ -z "$branch" ]; then
+            echo "Could not determine the mirror's default branch." >&2
+            exit 1
+          fi
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Mirror contents are already up to date for $RELEASE_TAG."
+          else
+            git commit -m "Sync MATLAB bindings for $RELEASE_TAG"
+          fi
+          git push origin "HEAD:refs/heads/$branch"
+
+          # Forced so that re-running this workflow for the same tag is safe.
+          git tag -f "$RELEASE_TAG"
+          git push -f origin "refs/tags/$RELEASE_TAG"
+
+      - name: Publish the mirrored release
+        env:
+          GH_TOKEN: ${{ secrets.MATLAB_MIRROR_TOKEN }}
+          GH_REPO: ${{ env.MIRROR_REPOSITORY }}
+        run: |
+          # Without nullglob an empty directory leaves the unexpanded pattern in
+          # the array, which would then be passed to gh as a literal filename.
+          shopt -s nullglob
+          assets=(release-assets/*)
+          if [ ${#assets[@]} -eq 0 ]; then
+            echo "No MATLAB toolbox was attached to $RELEASE_TAG." >&2
+            exit 1
+          fi
+
+          cat > release-notes.md <<NOTE
+          MATLAB toolbox for COPP $RELEASE_TAG.
+
+          \`copp-matlab.mltbx\` covers every supported platform: Windows x86-64,
+          Linux x86-64, macOS arm64, and macOS x86-64.
+
+          Source, release notes, and the other language bindings live in
+          https://github.com/${{ github.repository }}/releases/tag/$RELEASE_TAG
+          NOTE
+
+          # A prerelease must not become the mirror's "latest": File Exchange and
+          # install_copp() both resolve the newest release.
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            latest_flag="--prerelease"
+          else
+            latest_flag="--latest"
+          fi
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+            gh release edit "$RELEASE_TAG" \
+              --title "$RELEASE_TAG" \
+              --notes-file release-notes.md \
+              $latest_flag
+          else
+            gh release create "$RELEASE_TAG" "${assets[@]}" \
+              --verify-tag \
+              --title "$RELEASE_TAG" \
+              --notes-file release-notes.md \
+              $latest_flag
+          fi
+
+      - name: Summarize
+        run: |
+          echo "Mirrored $RELEASE_TAG to https://github.com/$MIRROR_REPOSITORY/releases/tag/$RELEASE_TAG" >> "$GITHUB_STEP_SUMMARY"

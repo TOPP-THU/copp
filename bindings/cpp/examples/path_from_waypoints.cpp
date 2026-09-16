@@ -13,7 +13,7 @@ int main()
 {
     // Step 1: Build a two-dimensional quintic spline over the default range
     // `[0, 1]`. The three columns are q(0), q(0.5), and q(1).
-    auto path = copp::Path::from_waypoints({
+    auto path = copp::Path::from_waypoints_interpolating({
         {0.0, 0.0},
         {0.5, 0.25},
         {1.0, 1.0},

@@ -17,6 +17,14 @@ if (Test-Path $docsHtml) {
 
 Push-Location $repoRoot
 try {
+    # Doxyfile reads PROJECT_NUMBER from this, so the docs carry the crate version.
+    $versionLine = Get-Content (Join-Path $repoRoot "Cargo.toml") |
+        Where-Object { $_ -match '^version = "(.+)"$' } |
+        Select-Object -First 1
+    if ($versionLine -match '^version = "(.+)"$') {
+        $env:COPP_VERSION = $Matches[1]
+    }
+
     & doxygen $doxyfile
     if ($LASTEXITCODE -ne 0) {
         throw "doxygen failed with exit code $LASTEXITCODE"

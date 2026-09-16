@@ -10,22 +10,65 @@
 use crate::math::numerical::cross_product_2d;
 use core::f64;
 
-#[cfg(test)]
-use clarabel::algebra::*;
-#[cfg(test)]
-use clarabel::solver::*;
-
 /// Safety multiplier used when propagating tolerance across dimension reductions.
 const EPS_SCALE: f64 = 10.0;
 /// Near-zero threshold for feasibility/normalization branch decisions.
 pub(crate) const EPS_ZERO: f64 = 1e-9;
-/// Relative floating-point tolerance (about 450 ulps) for cancellation-sensitive
-/// comparisons: a quantity computed as a difference of terms is treated as zero when
-/// it is below `EPS_ROUNDING` times the magnitude of those terms. Applied to the
-/// coefficients of unit-normalized rows it is an absolute threshold.
-pub(crate) const EPS_ROUNDING: f64 = 1e-13;
-/// Default box bound used to stabilize unbounded LP directions.
+/// Lower bound for coefficient normalization denominators.
+const EPS_NORMALIZE: f64 = 1e-3;
+/// Initial half-width of the box the incremental LP kernels pose their problems
+/// over, and the sentinel value of a warm start that means "start beyond the
+/// set in the objective direction". The box grows by [`LP_BOX_GROWTH`] whenever
+/// an answer lands on its edge, so this is a starting point, not a limit.
 pub(crate) const LP_BOUND: f64 = 1e6;
+/// Relative floating-point tolerance (about 450 ulps) for cancellation-sensitive
+/// comparisons: a quantity computed as a difference of terms is treated as zero
+/// when it is below `EPS_ROUNDING` times the magnitude of those terms.
+///
+/// This is deliberately not the feasibility tolerance. A violation at the
+/// rounding level of `a*x + b*y - c` carries no information about the row, and
+/// pivoting onto it breaks the incremental invariant when the row is nearly
+/// parallel to the active one; a violation above it is real and must pivot,
+/// however small it is in absolute terms.
+const EPS_ROUNDING: f64 = 1e-13;
+
+/// Growth factor of the implicit box when an answer lands on its edge.
+///
+/// `LP_BOUND` is not a guard against unbounded problems, it is part of the
+/// problem statement, and the incremental solvers start from its edge and can
+/// only move inwards. A problem whose optimum lies beyond it therefore gets the
+/// box edge as its answer: with the path parameter in millimetres `a = sdot^2`
+/// passes `1e6` at 1000 mm/s, and the profile was observed to stick there. An
+/// answer on the box is the signature of that, so the box grows and the solve
+/// repeats; only an unbounded problem keeps growing to the cap.
+const LP_BOX_GROWTH: f64 = 1e3;
+/// How many times the box may grow before the answer is taken as it is; an
+/// unbounded problem is then reported at the edge of a `1e24` box.
+const LP_BOX_GROWTH_STEPS: usize = 6;
+/// Fraction of the box half-width beyond which an answer counts as sitting on
+/// the box. Once the box has grown past the problem, a genuine optimum lies
+/// well inside it (`LP_BOX_GROWTH` is `1e3`, the threshold one half).
+const LP_BOX_SATURATION: f64 = 0.5;
+
+/// Whether a two-dimensional answer sits on the box: a bounded problem whose
+/// answer does was clipped by it, and an unbounded one has nowhere else to go.
+#[inline(always)]
+fn lp_2d_saturated(x: f64, y: f64, bound: f64) -> bool {
+    let edge = LP_BOX_SATURATION * bound;
+    x.is_finite() && y.is_finite() && (y >= edge || x.abs() >= edge)
+}
+
+/// Error bound for the sign of a 2x2 determinant, as a multiple of the sum of
+/// the magnitudes of the two products that cancel into it.
+///
+/// This is Shewchuk's `ccwerrboundA = (3 + 16*eps)*eps` with `eps = 2^-53`, the
+/// bound under which the floating-point sign of `orient2d` is proven reliable
+/// (Shewchuk, *Adaptive Precision Floating-Point Arithmetic and Fast Robust
+/// Geometric Predicates*, DCG 18(3), 1997). Comparing the determinant against a
+/// fixed epsilon instead would make the test depend on how the rows happen to
+/// be scaled: a determinant of `1e-12` is decisive for rows of magnitude
+/// `1e-8` and pure noise for rows of magnitude `1e3`.
+const CCW_ERRBOUND_A: f64 = 3.330_669_073_875_47e-16;
 
 /// LP tolerance bundle for numerical-robustness controls.
 ///
@@ -92,146 +135,463 @@ impl LpToleranceOptions {
     }
 }
 
-/// Linear programming in 2D plane of extreme direction.
-/// max w.0*X+w.1*Y, s.t. Ab[i].0*X+Ab[i].1*Y<=Ab[i].2
-/// Given a x_opt=(x_opt,y_opt), determine the tangent direction v1, v2 on the 2D plane (x, y).
-/// The cone defined by the **anticlockwise** transition from $v_1$ to $v_2$ contains **feasible** directions.
-#[cfg(test)]
-pub(crate) fn lp_2d_extreme_direction(
-    a_b: &[(f64, f64, f64)],
-    x_opt: (f64, f64),
-    w: (f64, f64),
-    tol: &LpToleranceOptions,
-) -> ((f64, f64), (f64, f64)) {
-    let epsilon = tol.feas_tol;
-    let a_b_act = a_b
-        .iter()
-        .filter_map(|&(a, b, c)| {
-            let norm = (a * a + b * b).sqrt();
-            if norm > EPS_ZERO && (a * x_opt.0 + b * x_opt.1 - c).abs() < epsilon * norm {
-                Some((a / norm, b / norm))
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<(f64, f64)>>();
-    if a_b_act.len() < 2 {
-        return ((-w.1, w.0), (w.1, -w.0));
-    }
-    let w_norm = (w.0 * w.0 + w.1 * w.1).sqrt();
-    let v0 = (-w.1 / w_norm, w.0 / w_norm); // 90 degree anticlockwise rotation
-    let mut cos_max: f64 = 1.0;
-    let mut cos_min: f64 = -1.0;
-    let mut v_max = v0;
-    let mut v_min = (-v0.0, -v0.1);
-    let mut func = |v: (f64, f64), upper_bound: bool| {
-        if cross_product_2d(v0, v) > 0.0 {
-            // anticlockwise
-            let cos_now = (v.0 * v0.0 + v.1 * v0.1) / (v.0 * v.0 + v.1 * v.1).sqrt();
-            if upper_bound {
-                if cos_now < cos_max {
-                    cos_max = cos_now;
-                    v_max = v;
-                }
-            } else if cos_now > cos_min {
-                cos_min = cos_now;
-                v_min = v;
-            }
-        }
-    };
-    for &(a1, b1) in a_b_act.iter() {
-        func((-b1, a1), true);
-        func((b1, -a1), false);
-    }
-    let vmax_norm = (v_max.0 * v_max.0 + v_max.1 * v_max.1).sqrt();
-    let vmin_norm = (v_min.0 * v_min.0 + v_min.1 * v_min.1).sqrt();
-
-    (
-        (v_max.0 / vmax_norm, v_max.1 / vmax_norm),
-        (v_min.0 / vmin_norm, v_min.1 / vmin_norm),
-    )
-}
-
-/// Linear programming in 2D plane based on geometric method.
-/// max J:=w_x*X+w_y*Y, s.t. Ab[i].0*X+Ab[i].1*Y<=Ab[i].2
-/// return (X,Y,J)
-#[cfg(test)]
-pub(crate) fn lp_2d_incre<W: WarmStartLp2d, const NORMALIZE: bool>(
-    a_b: &[(f64, f64, f64)],
-    w: (f64, f64),
-    warm_start: &W,
-    tol: &LpToleranceOptions,
-    buffer: &mut Vec<(f64, f64, f64)>,
-) -> (f64, f64, f64) {
-    let (w_x, w_y) = w;
-    if w_x.abs() < EPS_ZERO && w_y.abs() < EPS_ZERO {
-        return (f64::NAN, f64::NAN, 0.0);
-    }
-    let w = (w_x * w_x + w_y * w_y).sqrt();
-    let w_inv = 1.0 / w;
-    let w_x = w_x * w_inv;
-    let w_y = w_y * w_inv;
-
-    buffer.clear();
-    buffer.extend(
-        a_b.iter()
-            .map(|&(ax, ay, b)| (ax * w_y - ay * w_x, ax * w_x + ay * w_y, b)),
-    );
-    let (x, y) = lp_2d_incre_max_y::<_, NORMALIZE>(buffer, &warm_start.rotate((w_x, w_y)), tol);
-
-    (w_y * x + w_x * y, w_y * y - w_x * x, w * y)
-}
-
 #[inline(always)]
-/// Normalize 2D half-space rows to unit normal vectors so that `a*x + b*y - c` is the
-/// signed distance from `(x, y)` to the row, whatever the scale of the input.
+/// Scale each 2D half-space row to a unit normal, so that its right-hand side
+/// becomes the signed distance from the origin to its boundary.
 ///
-/// Rows whose normal vanishes keep their right-hand side (`0 <= c`).
+/// Rows with no normal at all are mapped to zeros; they carry no direction and
+/// no point can violate them.
+///
+/// The divisor is the row's own norm and nothing else. Clamping it from below —
+/// as this did, at `EPS_NORMALIZE` — leaves a row of norm `1e-10` at norm
+/// `1e-7` rather than at 1, so every absolute tolerance downstream is inflated
+/// by `1e-3 / norm` on that row, up to a factor of a million. The consequence
+/// is not a loss of accuracy but a loss of the constraint: multiplying one row
+/// by `1e-10` changes nothing geometrically, yet was observed to move the
+/// objective from `-6.91e2` to `+4.48e4` because the row stopped being seen.
 pub(crate) fn normalize_lp2d(a_b: &mut [(f64, f64, f64)]) {
     for w in a_b.iter_mut() {
         let norm = (w.0 * w.0 + w.1 * w.1).sqrt();
-        if norm >= f64::MIN_POSITIVE {
+        *w = if norm > 0.0 && norm.is_finite() {
             let norm_inv = 1.0 / norm;
-            *w = (w.0 * norm_inv, w.1 * norm_inv, w.2 * norm_inv);
+            (w.0 * norm_inv, w.1 * norm_inv, w.2 * norm_inv)
         } else {
-            *w = (0.0, 0.0, w.2);
-        }
+            (0.0, 0.0, 0.0)
+        };
     }
 }
 
-/// Eliminate one variable from the row `a_*u + b_*v <= c_` along the line `u = p*v - q`
-/// (or symmetrically), returning the 1-D row `coef * v <= rhs`.
+/// Relative tolerance for calling a cancelled coefficient zero.
 ///
-/// Both outputs are differences of terms and are flushed to exactly zero when they are
-/// below the rounding level of those terms, so that a row (nearly) parallel to the
-/// active line is treated as parallel instead of producing an intersection made of
-/// rounding noise.
+/// The coefficient reaching [`lp_1d_core`] from [`incre_step_2d`] is a
+/// difference of two products, so this is the same question `solve_2x2` asks of
+/// its determinant and takes the same bound.
+const LP1D_CANCEL_EPS: f64 = CCW_ERRBOUND_A;
+
+/// How many times a row found violated after the incremental pass may be
+/// reprocessed. Exact arithmetic needs one; the rest is room for rounding to
+/// bounce a pair of rows against each other.
+const MAX_DEFERRED_ROUNDS: usize = 4;
+
+/// Target a smaller residual than the public feasibility tolerance when the
+/// rare degeneracy recovery path has already paid for a full prefix scan.  The
+/// remaining margin lets later reductions accumulate some rounding without
+/// immediately turning the repaired row into another violation.
+const LP2D_REPAIR_TOL_SCALE: f64 = 0.25;
+
+/// One incremental step: pin row `row` as an equality and optimize along it
+/// subject to rows `0..upto`, moving `(x, y)` onto the result.
+///
+/// Returns `false` when that reveals the system to be infeasible.
+///
+/// `upto` is separate from `row` so the same step serves both phases: during
+/// the forward pass a row is optimized against the rows already seen, and
+/// during the deferred correction against all of them.
 #[inline(always)]
-fn reduce_row(a_: f64, b_: f64, c_: f64, p: f64, q: f64) -> (f64, f64) {
-    let coef = a_ * p + b_;
-    if coef.abs() > EPS_ROUNDING * (a_.abs() * p.abs() + b_.abs()) {
-        (coef, c_ + a_ * q)
-    } else {
-        let rhs = c_ + a_ * q;
-        let rhs = if rhs.abs() > EPS_ROUNDING * (c_.abs() + a_.abs() * q.abs()) {
-            rhs
-        } else {
-            0.0
-        };
-        (0.0, rhs)
+#[allow(clippy::too_many_arguments)]
+fn incre_step_2d<C: Lp2dIncCollector>(
+    a_b: &[(f64, f64, f64)],
+    row: usize,
+    upto: usize,
+    x: &mut f64,
+    y: &mut f64,
+    epsilon: f64,
+    tol_1d: &LpToleranceOptions,
+    collector: &mut C,
+    bound: f64,
+) -> bool {
+    let (a, b, c) = a_b[row];
+    let i = row;
+    if a.abs() < EPS_ZERO && b.abs() < EPS_ZERO {
+        // 0 <= c
+        return c >= -epsilon;
     }
+    if a.abs() > b.abs() {
+        // a*x + b*y == c
+        // x == c/a - (b/a)*y == p*y - q
+        let a_inv = 1.0 / a;
+        let p = -b * a_inv;
+        let q = -c * a_inv;
+        // a_*x + b_*y <= c_
+        // a_ * (p*y - q) + b_*y <= c_
+        // (a_*p + b_)*y <= c_ + a_*q
+        let (ymax, _) = lp_1d_core::<_, true, true>(
+            a_b.iter().take(upto).map(|&(a_, b_, c_)| {
+                let term = a_ * p;
+                (term + b_, c_ + a_ * q, term.abs() + b_.abs())
+            }),
+            tol_1d,
+            &mut *collector,
+        );
+        if ymax.is_nan() {
+            return false;
+        }
+        *y = ymax.min(*y);
+        *x = p * *y - q;
+        collector.collect_2d_id1(i);
+        return true;
+    }
+    // a*x + b*y == c
+    // y == c/b - (a/b)*x == p*x - q
+    let b_inv = 1.0 / b;
+    let p = -a * b_inv;
+    let q = -c * b_inv;
+    // a_*x + b_*y <= c_
+    // a_ * x + b_ * (p*x - q) <= c_
+    // (a_ + b_*p)*x <= c_ + b_*q
+    let (mut xmax, mut xmin) = lp_1d_core::<_, false, true>(
+        a_b.iter().take(upto).map(|(a_, b_, c_)| {
+            let term = b_ * p;
+            (a_ + term, c_ + b_ * q, a_.abs() + term.abs())
+        }),
+        tol_1d,
+        &mut *collector,
+    );
+    if xmax < xmin {
+        // `xmax`/`xmin` bound the same variable `x`, so the inconsistency
+        // `xmin - xmax` lives in `x` units and the tolerance must be applied there.
+        // This branch has `|p| <= 1` (it is the `|a| <= |b|` case), so the previous
+        // `p.abs() * (xmin - xmax)` test measured the inconsistency in `y` units and
+        // was looser by the unbounded factor `1 / |p|`.
+        if xmin - xmax > epsilon.max(EPS_ROUNDING * (xmin.abs() + xmax.abs())) {
+            collector.clear();
+            collector.collect_2d_id0(i);
+            return false;
+        }
+        xmax = 0.5 * (xmax + xmin);
+        xmin = xmax;
+    }
+    *x = if p > 0.0 {
+        collector.collect_2d_id1(i);
+        if xmax.is_finite() {
+            xmax
+        } else {
+            xmin.max(bound)
+        }
+    } else if p < 0.0 {
+        collector.collect_2d_id0(i);
+        if xmin.is_finite() {
+            xmin
+        } else {
+            xmax.min(-bound)
+        }
+    } else if xmin > 0.0 {
+        collector.collect_2d_id0(i);
+        xmin
+    } else if xmax < 0.0 {
+        collector.collect_2d_id1(i);
+        xmax
+    } else {
+        collector.clear();
+        collector.collect_2d_id0(i);
+        0.0
+    };
+    *y = p * *x - q;
+    true
+}
+
+/// Project only the non-objective coordinate while keeping the current objective
+/// value.  The returned point satisfies `rows[..upto]` within `epsilon`.
+///
+/// In exact arithmetic, if `(x, y)` is optimal for the old prefix, any feasible
+/// `(x_new, y)` is also optimal after adding rows: the feasible set only shrank,
+/// while its old upper bound `y` is still attained.  Here the same argument is
+/// used with the solver's advertised residual tolerance, so the projection adds
+/// no objective loss and restores the corresponding numerical invariant.
+#[cold]
+#[inline(never)]
+fn project_x_at_fixed_y(
+    a_b: &[(f64, f64, f64)],
+    upto: usize,
+    x: f64,
+    y: f64,
+    epsilon: f64,
+) -> Option<f64> {
+    // The common degeneracy needs no coordinate change at all.  Check this
+    // before constructing the interval so a rounded `c + epsilon` cannot lose
+    // a tolerance that the solver's own residual test can still see.
+    if x.is_finite()
+        && a_b
+            .iter()
+            .take(upto)
+            .all(|&(a, b, c)| a * x + b * y - c <= epsilon)
+    {
+        return Some(x);
+    }
+
+    let mut xmin = f64::NEG_INFINITY;
+    let mut xmax = f64::INFINITY;
+
+    for &(a, b, c) in a_b.iter().take(upto) {
+        if !a.is_finite() || !b.is_finite() || !c.is_finite() {
+            return None;
+        }
+        // At fixed y, a*x + b*y <= c + epsilon is a one-dimensional
+        // interval. `mul_add` is deliberately confined to this rare fallback.
+        let rhs = (-b).mul_add(y, c + epsilon);
+        if !rhs.is_finite() {
+            return None;
+        }
+        if a > 0.0 {
+            xmax = xmax.min(rhs / a);
+        } else if a < 0.0 {
+            xmin = xmin.max(rhs / a);
+        } else if rhs < 0.0 {
+            return None;
+        }
+    }
+    if xmin > xmax {
+        return None;
+    }
+
+    let is_prefix_feasible = |x_test: f64| {
+        x_test.is_finite()
+            && a_b
+                .iter()
+                .take(upto)
+                .all(|&(a, b, c)| a * x_test + b * y - c <= epsilon)
+    };
+
+    // Usually the old x is already in the interval (the motivating case is a
+    // one-ulp disagreement between equivalent evaluation orders).  Trying the
+    // projection and then interior/end-point alternatives also covers a bound
+    // rounded by one operation in the opposite direction from the final check.
+    let projected = x.max(xmin).min(xmax);
+    if is_prefix_feasible(projected) {
+        return Some(projected);
+    }
+    if xmin.is_finite() && xmax.is_finite() {
+        let midpoint = 0.5 * xmin + 0.5 * xmax;
+        if is_prefix_feasible(midpoint) {
+            return Some(midpoint);
+        }
+    }
+    if is_prefix_feasible(xmin) {
+        return Some(xmin);
+    }
+    if is_prefix_feasible(xmax) {
+        return Some(xmax);
+    }
+    None
+}
+
+/// Check that a trial collector describes active rows whose normal cone
+/// supports the `+y` objective.  A lone row is also valid when its positive
+/// y-normal combines with the solver's implicit x box; `y == LP_BOUND` is the
+/// corresponding implicit objective-bound case.
+#[cold]
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn active_basis_supports_max_y(
+    a_b: &[(f64, f64, f64)],
+    upto: usize,
+    selected_row: usize,
+    x: f64,
+    y: f64,
+    epsilon: f64,
+    ids: (usize, usize),
+    bound: f64,
+) -> bool {
+    let valid0 = ids.0 < upto;
+    let valid1 = ids.1 < upto;
+    if (!valid0 && !valid1)
+        || (selected_row != ids.0 && selected_row != ids.1)
+        || (valid0 && (a_b[ids.0].0 * x + a_b[ids.0].1 * y - a_b[ids.0].2).abs() > epsilon)
+        || (valid1 && (a_b[ids.1].0 * x + a_b[ids.1].1 * y - a_b[ids.1].2).abs() > epsilon)
+    {
+        return false;
+    }
+
+    if !valid0 || !valid1 || ids.0 == ids.1 {
+        let id = if valid0 { ids.0 } else { ids.1 };
+        let (a, b, _) = a_b[id];
+        return y == bound
+            || (b > 0.0 && (a == 0.0 || (a > 0.0 && x == -bound) || (a < 0.0 && x == bound)));
+    }
+
+    let (n0, n1) = (a_b[ids.0], a_b[ids.1]);
+    let (p, q) = (n0.0 * n1.1, n0.1 * n1.0);
+    let det = p - q;
+    if !det.is_finite() || det.abs() <= CCW_ERRBOUND_A * (p.abs() + q.abs()) {
+        return false;
+    }
+    // [n0 n1] * lambda = (0, 1).  Nonnegative multipliers are the
+    // two-dimensional KKT/normal-cone certificate for maximizing y.
+    let (lambda0, lambda1) = (-n1.0 / det, n0.0 / det);
+    lambda0.is_finite() && lambda1.is_finite() && lambda0 >= 0.0 && lambda1 >= 0.0
+}
+
+/// Deterministically search a prefix by trying every possible active boundary.
+/// This is quadratic in the slow path, but each returned candidate has passed
+/// the full residual check and an active-basis certificate.  Numerical failure
+/// of every candidate is still reported to the caller rather than described as
+/// a proof that the mathematical LP is infeasible.
+#[cold]
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn rebuild_2d_prefix(
+    a_b: &[(f64, f64, f64)],
+    upto: usize,
+    x_upper: f64,
+    y_upper: f64,
+    y_floor: f64,
+    epsilon: f64,
+    tol_1d: &LpToleranceOptions,
+    bound: f64,
+) -> Option<(f64, f64, (usize, usize))> {
+    let mut best: Option<(f64, f64, (usize, usize))> = None;
+    for row in 0..upto {
+        let (a_row, b_row, c_row) = a_b[row];
+        if a_row.abs() < EPS_ZERO && b_row.abs() < EPS_ZERO {
+            // This row has no boundary that could support an optimum.
+            continue;
+        }
+        let (mut x_trial, mut y_trial) = (x_upper, y_upper);
+        let mut trial_collector = IndexLpIncCollector::new();
+        if !incre_step_2d(
+            a_b,
+            row,
+            upto,
+            &mut x_trial,
+            &mut y_trial,
+            epsilon,
+            tol_1d,
+            &mut trial_collector,
+            bound,
+        ) || !x_trial.is_finite()
+            || !y_trial.is_finite()
+            || y_trial < y_floor
+            || y_trial > y_upper
+            || (a_row * x_trial + b_row * y_trial - c_row).abs() > epsilon
+            || a_b
+                .iter()
+                .take(upto)
+                .any(|&(a, b, c)| a * x_trial + b * y_trial - c > epsilon)
+        {
+            continue;
+        }
+        // Downstream indexed callers require the first id to be the real row
+        // in a one-row basis; preserve both positions for a two-row basis.
+        let ids = if trial_collector.id.0 >= upto && trial_collector.id.1 < upto {
+            (trial_collector.id.1, trial_collector.id.0)
+        } else {
+            (trial_collector.id.0, trial_collector.id.1)
+        };
+        if !active_basis_supports_max_y(a_b, upto, row, x_trial, y_trial, epsilon, ids, bound) {
+            continue;
+        }
+        // `y_upper` came from the optimum of the previous prefix.  Adding a
+        // row cannot improve it, so attaining the same value proves that no
+        // later candidate can win and avoids the quadratic tail in the common
+        // redundant-row recovery.
+        if y_trial == y_upper {
+            return Some((x_trial, y_trial, ids));
+        }
+        if best.is_none_or(|(_, y_best, _)| y_trial > y_best) {
+            best = Some((x_trial, y_trial, ids));
+        }
+    }
+    best
+}
+
+/// Recover a tolerance-verified optimum/basis candidate for `a_b[..upto]` after
+/// the usual pivot failed.  An arbitrary feasible projection is never returned:
+/// either the old objective level remains attainable, or the active-boundary
+/// scan supplies a verified basis that can be committed to the real collector.
+#[cold]
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn recover_2d_prefix<C: Lp2dIncCollector>(
+    a_b: &[(f64, f64, f64)],
+    upto: usize,
+    x: f64,
+    y: f64,
+    epsilon: f64,
+    tol_1d: &LpToleranceOptions,
+    collector: &mut C,
+    bound: f64,
+) -> Option<(f64, f64)> {
+    let fixed_y_repair = project_x_at_fixed_y(a_b, upto, x, y, epsilon);
+    let x_seed = fixed_y_repair.unwrap_or(x);
+    let y_floor = if fixed_y_repair.is_some() {
+        // The old y is still both an upper bound and an attainable lower
+        // bound. Permit only the recovery tolerance of reconstruction drift.
+        y - epsilon
+    } else {
+        f64::NEG_INFINITY
+    };
+
+    if let Some((x_rebuilt, y_rebuilt, ids)) =
+        rebuild_2d_prefix(a_b, upto, x_seed, y, y_floor, epsilon, tol_1d, bound)
+    {
+        // All numeric work above used a private collector. Commit the verified
+        // basis only after a winner exists, so failed recovery is transactional
+        // with respect to the caller's active-set state.
+        collector.clear();
+        if ids.0 < upto {
+            collector.collect_2d_id0(ids.0);
+        }
+        if ids.1 < upto {
+            collector.collect_2d_id1(ids.1);
+        }
+        return Some((x_rebuilt, y_rebuilt));
+    }
+
+    // If no alternate boundary survived numerically but the unchanged point
+    // itself passed the complete prefix check, retaining it is still a valid
+    // tolerance-level certificate and leaves the old collector untouched.
+    if fixed_y_repair == Some(x) {
+        return Some((x, y));
+    }
+    None
 }
 
 /// Linear programming in 2D plane based on incremental method (only maximize Y).
 /// max Y, s.t. Ab[i].0*X+Ab[i].1*Y<=Ab[i].2
 /// return (X,Y)
+///
+/// `bound` is the half-width of the box the problem is posed over, in the
+/// caller's coordinates. An answer on the box is a clipped one when the
+/// problem is bounded, so the box grows and the solve repeats.
 #[inline(always)]
 fn lp_2d_incre_max_y_core<C: Lp2dIncCollector, W: WarmStartLp2d, const NORMALIZE: bool>(
     a_b: &mut [(f64, f64, f64)],
     warm_start: &W,
     tol: &LpToleranceOptions,
     mut collector: C,
+    mut bound: f64,
 ) -> (f64, f64) {
+    let mut saturated = false;
+    for step in 0..=LP_BOX_GROWTH_STEPS {
+        collector.clear();
+        let (x, y) = lp_2d_incre_max_y_once::<_, _, NORMALIZE>(
+            a_b,
+            warm_start,
+            tol,
+            &mut collector,
+            bound,
+            &mut saturated,
+        );
+        if !saturated || step == LP_BOX_GROWTH_STEPS {
+            return (x, y);
+        }
+        bound *= LP_BOX_GROWTH;
+    }
+    unreachable!()
+}
+
+/// One solve of [`lp_2d_incre_max_y_core`] over a fixed box; `saturated`
+/// reports whether the answer sits on that box.
+#[inline(always)]
+fn lp_2d_incre_max_y_once<C: Lp2dIncCollector, W: WarmStartLp2d, const NORMALIZE: bool>(
+    a_b: &mut [(f64, f64, f64)],
+    warm_start: &W,
+    tol: &LpToleranceOptions,
+    mut collector: C,
+    mut bound: f64,
+    saturated: &mut bool,
+) -> (f64, f64) {
+    *saturated = false;
     let epsilon = tol.feas_tol;
     if a_b.len() <= 1 {
         if a_b.len() == 1 {
@@ -250,125 +610,164 @@ fn lp_2d_incre_max_y_core<C: Lp2dIncCollector, W: WarmStartLp2d, const NORMALIZE
     }
 
     let (mut x, mut y) = warm_start.get_initial_point();
+    if x.is_finite() && y.is_finite() && (x.abs() > bound || y.abs() > bound) {
+        // A warm start is the optimum of its prefix over the box that solve
+        // was posed over; this solve must not pose a smaller one.
+        bound = LP_BOX_GROWTH * x.abs().max(y.abs());
+    }
+    if y == LP_BOUND && bound > LP_BOUND {
+        // The sentinel "start beyond the set" has to sit on the box edge that
+        // is actually in use, or it is below the optimum and the solver, which
+        // only ever moves down, returns the sentinel itself.
+        y = bound;
+    }
     let tol_1d = LpToleranceOptions::with_feas_tol(epsilon * tol.reduce_dim_scale);
+    // Reported rather than returned from inside the loop: the loop holds `a_b`
+    // immutably, and restoring the rows needs it back.
+    let mut feasible = true;
     for (i, &(a, b, c)) in warm_start.iter_skip(a_b.iter().enumerate()) {
-        // a*x + b*y <= c, up to the rounding level of the terms. The feasibility
-        // tolerance is deliberately not used here: the returned point must satisfy
-        // every row to rounding, since callers re-derive bounds from it without slack.
+        // a*x + b*y <= c, up to the rounding level of the terms.
         let ax = a * x;
         let by = b * y;
-        if ax + by > c + EPS_ROUNDING * (ax.abs() + by.abs() + c.abs()) {
-            // Infeasible for this constraint
-            // Let a*x + b*y == c
-            // Apply 1-dim LP
-            if a.abs() < EPS_ZERO && b.abs() < EPS_ZERO {
-                // 0 <= c
-                if c < -epsilon {
-                    collector.clear();
-                    return (f64::NAN, f64::NAN); // Infeasible
-                }
-            } else if a.abs() > b.abs() {
-                // a*x + b*y == c
-                // x == c/a - (b/a)*y == p*y - q
-                let a_inv = 1.0 / a;
-                let p = -b * a_inv;
-                let q = -c * a_inv;
-                // a_*x + b_*y <= c_
-                // a_ * (p*y - q) + b_*y <= c_
-                // (a_*p + b_)*y <= c_ + a_*q
-                let (ymax, _) = lp_1d_core::<_, true>(
-                    a_b.iter()
-                        .take(i)
-                        .map(|&(a_, b_, c_)| reduce_row(a_, b_, c_, p, q)),
+        let residual = ax + by - c;
+        if residual > EPS_ROUNDING * (ax.abs() + by.abs() + c.abs()) {
+            // Keep the strict incremental pivot for every genuine violation:
+            // even a small normal residual can move the objective appreciably
+            // when this row is nearly parallel to the objective.  The tolerance
+            // is used only to adjudicate a failed reduction.  In that case the
+            // current point already satisfies the new row to the solver's
+            // advertised accuracy, whereas declaring the whole prefix
+            // infeasible would amplify roundoff between almost coincident rows.
+            //
+            // Trial with a silent collector so a rejected step is transactional;
+            // `lp_1d_core` may update active indices before discovering that its
+            // interval is empty.
+            if residual <= epsilon {
+                let (mut x_trial, mut y_trial) = (x, y);
+                if !incre_step_2d(
+                    a_b,
+                    i,
+                    i,
+                    &mut x_trial,
+                    &mut y_trial,
+                    epsilon,
                     &tol_1d,
-                    &mut collector,
-                );
-                if ymax.is_nan() {
-                    collector.clear();
-                    return (f64::NAN, f64::NAN); // Infeasible
-                }
-                y = ymax.min(y);
-                x = p * y - q;
-                collector.collect_2d_id1(i);
-            } else {
-                // a*x + b*y == c
-                // y == c/b - (a/b)*x == p*x - q
-                let b_inv = 1.0 / b;
-                let p = -a * b_inv;
-                let q = -c * b_inv;
-                // a_*x + b_*y <= c_
-                // a_ * x + b_ * (p*x - q) <= c_
-                // (a_ + b_*p)*x <= c_ + b_*q
-                let (mut xmax, mut xmin) = lp_1d_core::<_, false>(
-                    a_b.iter()
-                        .take(i)
-                        .map(|&(a_, b_, c_)| reduce_row(b_, a_, c_, p, q)),
-                    &tol_1d,
-                    &mut collector,
-                );
-                if xmax < xmin {
-                    if p.abs() * (xmin - xmax)
-                        > epsilon.max(EPS_ROUNDING * (xmin.abs() + xmax.abs()))
+                    &mut SilentLpIncCollector,
+                    bound,
+                ) {
+                    let upto = i + 1;
+                    let repair_epsilon = epsilon * LP2D_REPAIR_TOL_SCALE;
+                    let repair_tol_1d =
+                        LpToleranceOptions::with_feas_tol(repair_epsilon * tol.reduce_dim_scale);
+                    if let Some(recovered) = recover_2d_prefix(
+                        a_b,
+                        upto,
+                        x,
+                        y,
+                        repair_epsilon,
+                        &repair_tol_1d,
+                        &mut collector,
+                        bound,
+                    ) {
+                        (x, y) = recovered;
+                        continue;
+                    }
+
+                    // A narrow feasible slice need not have enough floating-
+                    // point room for the smaller repair tolerance.  Retrying
+                    // with the public tolerance preserves the solver's existing
+                    // contract without charging the normal path for recovery.
+                    if repair_epsilon != epsilon
+                        && let Some(recovered) = recover_2d_prefix(
+                            a_b,
+                            upto,
+                            x,
+                            y,
+                            epsilon,
+                            &tol_1d,
+                            &mut collector,
+                            bound,
+                        )
                     {
-                        collector.clear();
-                        collector.collect_2d_id0(i);
-                        return (f64::NAN, f64::NAN); // Infeasible
-                    } else {
-                        xmax = 0.5 * (xmax + xmin);
-                        xmin = xmax;
+                        (x, y) = recovered;
+                        continue;
                     }
+
+                    feasible = false;
+                    break;
                 }
-                x = if p > 0.0 {
-                    // if debug {
-                    //     println!("\t(LP-2D)7: xmax={}, xmin={}", xmax, xmin);
-                    // }
-                    collector.collect_2d_id1(i);
-                    if xmax.is_finite() {
-                        xmax
-                    } else {
-                        xmin.max(LP_BOUND)
-                    }
-                } else if p < 0.0 {
-                    collector.collect_2d_id0(i);
-                    if xmin.is_finite() {
-                        xmin
-                    } else {
-                        xmax.min(-LP_BOUND)
-                    }
-                } else if xmin > 0.0 {
-                    // if debug {
-                    //     println!("\t(LP-2D)9: xmax={}, xmin={}", xmax, xmin);
-                    // }
-                    collector.collect_2d_id0(i);
-                    xmin
-                } else if xmax < 0.0 {
-                    // if debug {
-                    //     println!("\t(LP-2D)10: xmax={}, xmin={}", xmax, xmin);
-                    // }
-                    collector.collect_2d_id1(i);
-                    xmax
-                } else {
-                    // if debug {
-                    //     println!("\t(LP-2D)11: xmax={}, xmin={}", xmax, xmin);
-                    // }
-                    collector.clear();
-                    collector.collect_2d_id0(i);
-                    0.0
-                };
-                y = p * x - q;
-                // println!("222: x={}, y={}", x, y);
+            }
+            if !incre_step_2d(
+                a_b,
+                i,
+                i,
+                &mut x,
+                &mut y,
+                epsilon,
+                &tol_1d,
+                &mut collector,
+                bound,
+            ) {
+                feasible = false;
+                break;
             }
         }
-        // if debug {
-        //     println!("\t(LP-2D) x_curr={}, y_curr={}", x, y);
-        //     // println!(
-        //     //     "\t(LP-2D) delta={:?}",
-        //     //     a_b.clone()
-        //     //         .take(i + 1)
-        //     //         .map(|(a_, b_, c_)| -(a_ * x + b_ * y - c_))
-        //     //         .collect::<Vec<f64>>()
-        //     // );
-        // }
+    }
+    if !feasible {
+        collector.clear();
+        return (f64::NAN, f64::NAN); // Infeasible
+    }
+
+    // Deferred correction. The pass above is optimal for the rows in the order
+    // it happened to see them, and a row it processed early can be left
+    // violated by a later one when the arithmetic that combined them lost
+    // digits. Rather than tightening a tolerance to prevent that, look at the
+    // answer and ask which row it violates: that is a comparison between two
+    // quantities of the same size, needing no tolerance to interpret, and it is
+    // only available once there is an answer to look at.
+    //
+    // Reprocessing such a row is exact rather than a repair. Seidel's step
+    // pins one row as an equality and optimizes along it subject to the rest,
+    // which yields the optimum of the whole system whenever the optimum lies on
+    // that row -- and it does, precisely because the row is violated at the
+    // current point. Taking `a_b.len()` as the horizon rather than the row's
+    // own index is what makes "the rest" mean every row.
+    //
+    // One round suffices in exact arithmetic; the cap is there because rounding
+    // can send two rows back and forth.
+    for _ in 0..MAX_DEFERRED_ROUNDS {
+        let mut worst = 0.0;
+        let mut worst_row = usize::MAX;
+        for (i, &(a, b, c)) in a_b.iter().enumerate() {
+            let ax = a * x;
+            let by = b * y;
+            let excess = ax + by - c - epsilon.max(EPS_ROUNDING * (ax.abs() + by.abs() + c.abs()));
+            if excess > worst {
+                worst = excess;
+                worst_row = i;
+            }
+        }
+        if worst_row == usize::MAX {
+            break;
+        }
+        crate::verbosity_log!(
+            crate::diag::Verbosity::Debug,
+            "lp_2d deferred correction fired: row {worst_row} violated by {worst:.3e} beyond tolerance"
+        );
+        if !incre_step_2d(
+            a_b,
+            worst_row,
+            a_b.len(),
+            &mut x,
+            &mut y,
+            epsilon,
+            &tol_1d,
+            &mut collector,
+            bound,
+        ) {
+            collector.clear();
+            return (f64::NAN, f64::NAN); // Infeasible
+        }
     }
 
     // y = if (y / BOUND - 1.0).abs() < epsilon {
@@ -376,6 +775,7 @@ fn lp_2d_incre_max_y_core<C: Lp2dIncCollector, W: WarmStartLp2d, const NORMALIZE
     // } else {
     //     y
     // };
+    *saturated = lp_2d_saturated(x, y, bound);
     (x, y)
 }
 
@@ -387,15 +787,15 @@ pub(crate) fn lp_2d_incre_max_y<W: WarmStartLp2d, const NORMALIZE: bool>(
     warm_start: &W,
     tol: &LpToleranceOptions,
 ) -> (f64, f64) {
-    lp_2d_incre_max_y_core::<_, _, NORMALIZE>(a_b, warm_start, tol, SilentLpIncCollector)
+    lp_2d_incre_max_y_core::<_, _, NORMALIZE>(a_b, warm_start, tol, SilentLpIncCollector, LP_BOUND)
 }
 
 /// Linear programming in 1D line.
 /// a_b[i].0 * x <= a_b[i].1
 /// Return (xmax, xmin) if feasible; otherwise (NaN, NaN).
 #[inline(always)]
-fn lp_1d_core<C: Lp1dIncCollector, const AUTONAN: bool>(
-    a_b: impl Iterator<Item = (f64, f64)>,
+fn lp_1d_core<C: Lp1dIncCollector, const AUTONAN: bool, const CANCEL: bool>(
+    a_b: impl Iterator<Item = (f64, f64, f64)>,
     tol: &LpToleranceOptions,
     mut collector: C,
 ) -> (f64, f64) {
@@ -404,9 +804,14 @@ fn lp_1d_core<C: Lp1dIncCollector, const AUTONAN: bool>(
     let mut xmax = f64::INFINITY;
     let mut xmin = -f64::INFINITY;
 
-    for (k, (a, b)) in C::enumerate(a_b) {
+    for (k, (a, b, cancel_scale)) in C::enumerate(a_b) {
         // println!("\t\t(LP-1D) a={}, b={}", a, b);
-        if a.abs() <= EPS_ROUNDING {
+        let coefficient_is_zero = if CANCEL {
+            a.abs() <= LP1D_CANCEL_EPS * cancel_scale
+        } else {
+            a.abs() < b.abs().clamp(EPS_NORMALIZE, 1.0) * EPS_ZERO
+        };
+        if coefficient_is_zero {
             // 0 <= b
             if b < -epsilon {
                 return (f64::NAN, f64::NAN); // Infeasible
@@ -453,7 +858,7 @@ pub(crate) fn lp_1d<const AUTONAN: bool>(
     a_b: impl Iterator<Item = (f64, f64)>,
     tol: &LpToleranceOptions,
 ) -> (f64, f64) {
-    lp_1d_core::<_, AUTONAN>(a_b, tol, SilentLpIncCollector)
+    lp_1d_core::<_, AUTONAN, false>(a_b.map(|(a, b)| (a, b, 0.0)), tol, SilentLpIncCollector)
 }
 
 /// Warm-start interface for 2D incremental LP.
@@ -464,34 +869,8 @@ pub(crate) trait WarmStartLp2d {
     fn iter_skip<I>(&self, a_b: I) -> impl Iterator<Item = I::Item>
     where
         I: Iterator;
-    /// Rotate warm-start state under objective-space rotation.
-    #[cfg(test)]
-    fn rotate(&self, w: (f64, f64)) -> impl WarmStartLp2d;
 }
 
-/// 2D warm-start policy: always start from default point without skipping.
-#[cfg(test)]
-pub(crate) struct Lp2dNoWarmStart;
-#[cfg(test)]
-impl WarmStartLp2d for Lp2dNoWarmStart {
-    #[inline(always)]
-    fn get_initial_point(&self) -> (f64, f64) {
-        (0.0, LP_BOUND)
-    }
-    #[inline(always)]
-    fn iter_skip<I>(&self, a_b: I) -> impl Iterator<Item = I::Item>
-    where
-        I: Iterator,
-    {
-        a_b
-    }
-    #[allow(refining_impl_trait)]
-    #[cfg(test)]
-    #[inline(always)]
-    fn rotate(&self, _w: (f64, f64)) -> Lp2dNoWarmStart {
-        Lp2dNoWarmStart
-    }
-}
 /// 2D warm-start policy with explicit initial point and skip length.
 pub(crate) struct Lp2dWarmStart {
     /// Initial point in transformed 2D LP coordinates.
@@ -511,23 +890,17 @@ impl WarmStartLp2d for Lp2dWarmStart {
     {
         a_b.skip(self.skip)
     }
-    #[allow(refining_impl_trait)]
-    #[cfg(test)]
-    #[inline(always)]
-    fn rotate(&self, w: (f64, f64)) -> Lp2dWarmStart {
-        Lp2dWarmStart {
-            x0: (
-                w.1 * self.x0.0 - w.0 * self.x0.1,
-                w.0 * self.x0.0 + w.1 * self.x0.1,
-            ),
-            skip: self.skip,
-        }
-    }
 }
 
 /// Lightweight key adapter for LP collector implementations.
 trait Lp1dKey: Copy {
     fn get_key(&self) -> usize;
+}
+impl Lp1dKey for usize {
+    #[inline(always)]
+    fn get_key(&self) -> usize {
+        *self
+    }
 }
 impl Lp1dKey for () {
     #[inline(always)]
@@ -607,861 +980,62 @@ impl Lp2dIncCollector for SilentLpIncCollector {
     fn collect_2d_id0(&mut self, _: usize) {}
 }
 
-/// Linear programming in 2D plane based on geometric method.
-/// max J:=w_x*X+w_y*Y, s.t. Ab[i].0*X+Ab[i].1*Y<=Ab[i].2
-/// w=(w_x, w_y)
-/// return (X,Y,J)
-#[cfg(test)]
-fn lp_2d_geo(
-    a_b: impl Iterator<Item = (f64, f64, f64)>,
-    len: usize,
-    w: (f64, f64),
-    tol: &LpToleranceOptions,
-) -> (f64, f64, f64) {
-    let epsilon = tol.feas_tol;
-    let (w_x, w_y) = w;
-    if w_x.abs() < epsilon && w_y.abs() < epsilon {
-        return (f64::NAN, f64::NAN, 0.0);
-    }
-    let w = (w_x * w_x + w_y * w_y).sqrt();
-    let w_x = w_x / w;
-    let w_y = w_y / w;
-    let (x, y) = lp_2d_geo_max_y(
-        a_b.map(|(ax, ay, b)| (ax * w_y - ay * w_x, ax * w_x + ay * w_y, b)),
-        len,
-        tol,
-    );
-
-    (w_y * x + w_x * y, w_y * y - w_x * x, w * y)
+struct IndexLpIncCollector {
+    // for 1d: (max_index, min_index)
+    // for 2d: (index1, index2)
+    pub id: (usize, usize),
 }
-
-/// Linear programming in 2D plane based on geometric method (only maximize Y).
-/// max Y, s.t. Ab[i].0*X+Ab[i].1*Y<=Ab[i].2
-#[cfg(test)]
-fn lp_2d_geo_max_y(
-    mut a_b: impl Iterator<Item = (f64, f64, f64)>,
-    len: usize,
-    tol: &LpToleranceOptions,
-) -> (f64, f64) {
-    let epsilon = tol.feas_tol;
-    if len <= 1 {
-        if len == 1 {
-            let a_b_0 = a_b.next().unwrap();
-            if a_b_0.0.abs() < epsilon && a_b_0.1 > epsilon {
-                // Unbounded
-                return (f64::NAN, a_b_0.2 / a_b_0.1);
-            }
+impl IndexLpIncCollector {
+    /// Construct collector with sentinel indices.
+    pub fn new() -> Self {
+        Self {
+            id: (usize::MAX - 1, usize::MAX - 1),
         }
-        // Infeasible
-        return (f64::NAN, f64::NAN);
-    }
-    // Step 1. Initialize
-    let mut ymax = f64::INFINITY;
-    let mut ymin = -f64::INFINITY;
-    // max Y, s.t. Ab[i].x*X+Ab[i].y*Y<=Ab[i].z
-    let mut kb_plus = Vec::<(f64, f64)>::with_capacity(len); // X <= k_plus[i] * Y + b_plus[i]
-    let mut kb_minus = Vec::<(f64, f64)>::with_capacity(len); // X >= k_minus[i] * Y + b_minus[i]
-    for (x, y, z) in a_b {
-        if x.abs() < epsilon {
-            if y.abs() < epsilon {
-                if z < -epsilon {
-                    // Infeasible
-                    return (f64::NAN, f64::NAN);
-                }
-            } else if y > epsilon {
-                ymax = ymax.min(z / y);
-            } else {
-                ymin = ymin.max(z / y);
-            }
-        } else if x > epsilon {
-            kb_plus.push((-y / x, z / x));
-        } else {
-            kb_minus.push((-y / x, z / x));
-        }
-    }
-
-    if ymin >= ymax {
-        // Infeasible
-        return (f64::NAN, f64::NAN);
-    }
-    if kb_plus.is_empty() && kb_minus.is_empty() {
-        // Unbounded
-        return (f64::NAN, ymax);
-    }
-    if kb_plus.is_empty() {
-        // Only kb_minus
-        let x = kb_minus
-            .iter()
-            .map(|&(k, b)| k * ymax + b)
-            .min_by(|a, b| a.total_cmp(b))
-            .unwrap();
-        return (x, ymax);
-    }
-    if kb_minus.is_empty() {
-        // Only kb_plus
-        let x = kb_plus
-            .iter()
-            .map(|&(k, b)| k * ymax + b)
-            .max_by(|a, b| a.total_cmp(b))
-            .unwrap();
-        return (x, ymax);
-    }
-
-    // Step 2. Get intersections, both right to left
-    let (intersect_plus, (k0_plus, b0_plus), (kf_plus, bf_plus)) = if kb_plus.len() >= 2 {
-        piecewise_linear_2d(&kb_plus, true, tol)
-    } else {
-        (
-            Vec::new(),
-            *kb_plus.first().unwrap(),
-            *kb_plus.last().unwrap(),
-        )
-    };
-    let (intersect_minus, (k0_minus, b0_minus), (kf_minus, bf_minus)) = if kb_minus.len() >= 2 {
-        piecewise_linear_2d(&kb_minus, false, tol)
-    } else {
-        (
-            Vec::new(),
-            *kb_minus.first().unwrap(),
-            *kb_minus.last().unwrap(),
-        )
-    };
-
-    // Step 3. Find the optimal solution
-    if ymax.is_infinite() && k0_plus >= k0_minus - epsilon {
-        // Unbounded
-        return (f64::NAN, ymax);
-    }
-    let mut flag_ymax = true;
-    if ymax.is_infinite() {
-        ymax = (b0_minus - b0_plus) / (k0_plus - k0_minus);
-        flag_ymax = false;
-    }
-
-    let mut xmax_plus = k0_plus * ymax + b0_plus;
-    let mut xmax_minus = k0_minus * ymax + b0_minus;
-    if xmax_plus >= xmax_minus - epsilon
-        && intersect_plus.last().is_none_or(|p| ymax >= p.0)
-        && intersect_minus.last().is_none_or(|p| ymax >= p.0)
-    {
-        return if ymax >= ymin {
-            (0.5 * (xmax_plus + xmax_minus), ymax)
-        } else {
-            (f64::INFINITY, f64::INFINITY)
-        };
-    }
-
-    let mut ymax_plus = ymax;
-    let mut ymax_minus = ymax;
-    let mut it_plus = intersect_plus.iter().rev().peekable();
-    let mut it_minus = intersect_minus.iter().rev().peekable();
-    let mut p_next_minus = (f64::INFINITY, f64::INFINITY);
-    let mut p_next_plus = (f64::INFINITY, f64::INFINITY);
-
-    loop {
-        // !(it_plus.peek().is_none() && it_minus.peek().is_none())
-        // Consider (YMAX_plus, XMAX_plus)--it_plus;
-        // (YMAX_minus, XMAX_minus)--it_minus];
-        let flag_empty = it_plus.peek().is_none() && it_minus.peek().is_none();
-        while let Some(&p_curr) = it_plus.peek()
-            && p_curr.0 >= ymax_plus
-        {
-            p_next_plus = *p_curr;
-            it_plus.next();
-        }
-        while let Some(&p_curr) = it_minus.peek()
-            && p_curr.0 >= ymax_minus
-        {
-            p_next_minus = *p_curr;
-            it_minus.next();
-        }
-
-        if flag_ymax {
-            flag_ymax = false;
-            let (k_plus_, b_plus_) = if let Some(&p_curr) = it_plus.peek() {
-                let k = if p_next_plus.0.is_infinite() {
-                    k0_plus
-                } else {
-                    (p_curr.1 - p_next_plus.1) / (p_curr.0 - p_next_plus.0)
-                };
-                (k, p_curr.1 - k * p_curr.0)
-            } else {
-                (kf_plus, bf_plus)
-            };
-            let (k_minus_, b_minus_) = if let Some(&p_curr) = it_minus.peek() {
-                let k = if p_next_minus.0.is_infinite() {
-                    k0_minus
-                } else {
-                    (p_curr.1 - p_next_minus.1) / (p_curr.0 - p_next_minus.0)
-                };
-                (k, p_curr.1 - k * p_curr.0)
-            } else {
-                (kf_minus, bf_minus)
-            };
-            let xmax_plus_ = k_plus_ * ymax + b_plus_;
-            let xmax_minus_ = k_minus_ * ymax + b_minus_;
-            if xmax_plus_ >= xmax_minus_ - epsilon {
-                return if ymax >= ymin {
-                    (0.5 * (xmax_plus_ + xmax_minus_), ymax)
-                } else {
-                    (f64::INFINITY, f64::INFINITY)
-                };
-            }
-        }
-        if !p_next_plus.0.is_infinite() {
-            ymax_plus = p_next_plus.0;
-            xmax_plus = p_next_plus.1;
-        }
-        if !p_next_minus.0.is_infinite() {
-            ymax_minus = p_next_minus.0;
-            xmax_minus = p_next_minus.1;
-        }
-        let (k_plus, y_min_plus) = if let Some(&p_curr) = it_plus.peek() {
-            ((p_curr.1 - xmax_plus) / (p_curr.0 - ymax_plus), p_curr.0)
-        } else {
-            (kf_plus, -f64::INFINITY)
-        };
-        let (k_minus, y_min_minus) = if let Some(&p_curr) = it_minus.peek() {
-            ((p_curr.1 - xmax_minus) / (p_curr.0 - ymax_minus), p_curr.0)
-        } else {
-            (kf_minus, -f64::INFINITY)
-        };
-
-        if (k_plus - k_minus).abs() > epsilon {
-            let b_plus = if let Some(&p_curr) = it_plus.peek() {
-                p_curr.1 - k_plus * p_curr.0
-            } else {
-                bf_plus
-            };
-            let b_minus = if let Some(&p_curr) = it_minus.peek() {
-                p_curr.1 - k_minus * p_curr.0
-            } else {
-                bf_minus
-            };
-            let (y, x) = solve_2x2(((-k_plus, 1.0), (-k_minus, 1.0)), (b_plus, b_minus)).unwrap();
-            if y >= y_min_plus.max(y_min_minus) && y <= ymax {
-                // Find the intersection
-                return if y >= ymin {
-                    (x, y)
-                } else {
-                    (f64::INFINITY, f64::INFINITY)
-                };
-            }
-        }
-        if y_min_plus < y_min_minus {
-            if let Some(&p_curr) = it_minus.peek() {
-                ymax_minus = y_min_minus;
-                xmax_minus = p_curr.0;
-                p_next_minus = *p_curr;
-                it_minus.next();
-            }
-        } else if let Some(&p_curr) = it_plus.peek() {
-            ymax_plus = y_min_plus;
-            xmax_plus = p_curr.0;
-            p_next_plus = *p_curr;
-            it_plus.next();
-        }
-        if flag_empty {
-            break;
-        }
-    }
-
-    (f64::INFINITY, f64::INFINITY)
-}
-
-/// Workspace buffers for geometric 2D contour extraction.
-///
-/// Stores positive/negative line-intersection sets used by
-/// `lp_2d_geo_contour_bounded`.
-#[cfg(test)]
-type Lp2dGeoContourWorkspace<'a> = (
-    &'a mut Vec<(f64, f64)>, // intersect_plus, with_capacity(a_b.len())
-    &'a mut Vec<(f64, f64)>, // intersect_minus, with_capacity(a_b.len())
-);
-
-/// Contour of linear set in 2D plane based on geometric method.
-/// Ab[i].0*X+Ab[i].1*Y<=Ab[i].2
-/// If infeasible or unbounded, return empty vec.
-/// (x, y) is anticlockwise.
-#[cfg(test)]
-pub(crate) fn lp_2d_geo_contour_bounded<const CLOCKWISE: bool>(
-    a_b: &[(f64, f64, f64)],
-    tol: &LpToleranceOptions,
-    contour: &mut Vec<(f64, f64)>,
-    buffer: Lp2dGeoContourWorkspace,
-) {
-    let epsilon = tol.feas_tol;
-    contour.clear();
-    if a_b.len() < 3 {
-        return;
-    }
-    // let debug = a_b.len() == 24
-    //     && (a_b[0].2 - 995.8861908753399).abs() < 1E-8
-    //     && (a_b[7].2 - 29.51611830471187).abs() < 1E-8;
-    // if debug {
-    //     println!("Debug in lp_2d_geo_contour_bounded");
-    //     println!("a_b={:?}", a_b);
-    // }
-
-    // Step 1. Initialize
-    let mut ymax = f64::INFINITY;
-    let mut ymin = -f64::INFINITY;
-    // max Y, s.t. Ab[i].x*X+Ab[i].y*Y<=Ab[i].z
-    let (kb_plus, kb_minus) = buffer;
-    kb_plus.clear(); // X <= k_plus[i] * Y + b_plus[i]
-    kb_minus.clear(); // X >= k_minus[i] * Y + b_minus[i]
-    for &(x, y, z) in a_b.iter() {
-        if x.abs() < epsilon {
-            if y.abs() < epsilon {
-                if z < -epsilon {
-                    // Infeasible
-                    return;
-                }
-            } else if y > epsilon {
-                ymax = ymax.min(z / y);
-            } else {
-                ymin = ymin.max(z / y);
-            }
-        } else {
-            let x_inv = 1.0 / x;
-            if x > epsilon {
-                kb_plus.push((-y * x_inv, z * x_inv));
-            } else {
-                kb_minus.push((-y / x, z / x));
-            }
-        }
-    }
-
-    if ymin >= ymax || kb_plus.is_empty() || kb_minus.is_empty() {
-        // Infeasible or Unbounded
-        return;
-    }
-
-    // if debug {
-    //     println!("ymin={}, ymax={}", ymin, ymax);
-    //     println!("kb_plus={:?}", kb_plus);
-    //     println!("kb_minus={:?}", kb_minus);
-    // }
-
-    // Step 2. Get intersections, both right to left
-    let (mut intersect_plus, (mut k0_plus, mut b0_plus), (kf_plus, bf_plus)) = if kb_plus.len() >= 2
-    {
-        piecewise_linear_2d(kb_plus, true, tol)
-    } else {
-        (
-            Vec::new(),
-            *kb_plus.first().unwrap(),
-            *kb_plus.last().unwrap(),
-        )
-    };
-    let (mut intersect_minus, (mut k0_minus, mut b0_minus), (kf_minus, bf_minus)) =
-        if kb_minus.len() >= 2 {
-            piecewise_linear_2d(kb_minus, false, tol)
-        } else {
-            (
-                Vec::new(),
-                *kb_minus.first().unwrap(),
-                *kb_minus.last().unwrap(),
-            )
-        };
-
-    // if debug {
-    //     println!("intersect_plus={:?}", intersect_plus);
-    //     println!("intersect_minus={:?}", intersect_minus);
-    // }
-
-    // Step 3. Find the optimal solution
-    if (ymax.is_infinite() && k0_plus >= k0_minus - epsilon)
-        || (ymin.is_infinite() && kf_plus <= kf_minus - epsilon)
-    {
-        // Unbounded
-        return;
-    }
-    // Step 3.1 Max Y
-    let mut flag_ymax_never_initial = true;
-    if ymax.is_infinite() {
-        ymax = (b0_minus - b0_plus) / (k0_plus - k0_minus);
-        flag_ymax_never_initial = false;
-    }
-
-    let mut xmax_plus = k0_plus * ymax + b0_plus;
-    let mut xmax_minus = k0_minus * ymax + b0_minus;
-    let mut flag_ymax_succeed = xmax_plus >= xmax_minus - epsilon
-        && intersect_plus.last().is_none_or(|p| ymax >= p.0)
-        && intersect_minus.last().is_none_or(|p| ymax >= p.0);
-    if flag_ymax_succeed {
-        if ymax < ymin {
-            return;
-        }
-    } else {
-        let mut ymax_plus = ymax;
-        let mut ymax_minus = ymax;
-        let mut it_plus = intersect_plus.iter().rev().peekable();
-        let mut it_minus = intersect_minus.iter().rev().peekable();
-        let mut p_next_minus = (f64::INFINITY, f64::INFINITY);
-        let mut p_next_plus = (f64::INFINITY, f64::INFINITY);
-
-        while !flag_ymax_succeed {
-            // !(it_plus.peek().is_none() && it_minus.peek().is_none())
-            // Consider (YMAX_plus, XMAX_plus)--it_plus;
-            //          (YMAX_minus, XMAX_minus)--it_minus];
-            let flag_empty = it_plus.peek().is_none() && it_minus.peek().is_none();
-
-            while let Some(&p_curr) = it_plus.peek()
-                && p_curr.0 >= ymax_plus
-            {
-                p_next_plus = *p_curr;
-                it_plus.next();
-            }
-            while let Some(&p_curr) = it_minus.peek()
-                && p_curr.0 >= ymax_minus
-            {
-                p_next_minus = *p_curr;
-                it_minus.next();
-            }
-
-            if flag_ymax_never_initial {
-                flag_ymax_never_initial = false;
-                let (k_plus_, b_plus_) = if let Some(&p_curr) = it_plus.peek() {
-                    let k = if p_next_plus.0.is_infinite() {
-                        k0_plus
-                    } else {
-                        (p_curr.1 - p_next_plus.1) / (p_curr.0 - p_next_plus.0)
-                    };
-                    (k, p_curr.1 - k * p_curr.0)
-                } else {
-                    (kf_plus, bf_plus)
-                };
-                let (k_minus_, b_minus_) = if let Some(&p_curr) = it_minus.peek() {
-                    let k = if p_next_minus.0.is_infinite() {
-                        k0_minus
-                    } else {
-                        (p_curr.1 - p_next_minus.1) / (p_curr.0 - p_next_minus.0)
-                    };
-                    (k, p_curr.1 - k * p_curr.0)
-                } else {
-                    (kf_minus, bf_minus)
-                };
-                let xmax_plus_ = k_plus_ * ymax + b_plus_;
-                let xmax_minus_ = k_minus_ * ymax + b_minus_;
-                if xmax_plus_ >= xmax_minus_ - epsilon {
-                    if ymax < ymin {
-                        return;
-                    }
-                    flag_ymax_succeed = true;
-                    xmax_plus = xmax_plus_;
-                    xmax_minus = xmax_minus_;
-                    k0_plus = k_plus_;
-                    b0_plus = b_plus_;
-                    k0_minus = k_minus_;
-                    b0_minus = b_minus_;
-                    break;
-                }
-            }
-            if !p_next_plus.0.is_infinite() {
-                ymax_plus = p_next_plus.0;
-                xmax_plus = p_next_plus.1;
-            }
-            if !p_next_minus.0.is_infinite() {
-                ymax_minus = p_next_minus.0;
-                xmax_minus = p_next_minus.1;
-            }
-            let (k_plus, y_min_plus) = if let Some(&p_curr) = it_plus.peek() {
-                ((p_curr.1 - xmax_plus) / (p_curr.0 - ymax_plus), p_curr.0)
-            } else {
-                (kf_plus, -f64::INFINITY)
-            };
-            let (k_minus, y_min_minus) = if let Some(&p_curr) = it_minus.peek() {
-                ((p_curr.1 - xmax_minus) / (p_curr.0 - ymax_minus), p_curr.0)
-            } else {
-                (kf_minus, -f64::INFINITY)
-            };
-
-            if (k_plus - k_minus).abs() > epsilon {
-                let b_plus = if let Some(&p_curr) = it_plus.peek() {
-                    p_curr.1 - k_plus * p_curr.0
-                } else {
-                    bf_plus
-                };
-                let b_minus = if let Some(&p_curr) = it_minus.peek() {
-                    p_curr.1 - k_minus * p_curr.0
-                } else {
-                    bf_minus
-                };
-                let (y, x) =
-                    solve_2x2(((-k_plus, 1.0), (-k_minus, 1.0)), (b_plus, b_minus)).unwrap();
-                if y >= y_min_plus.max(y_min_minus) && y <= ymax {
-                    // Find the intersection
-                    if y < ymin {
-                        return;
-                    }
-                    flag_ymax_succeed = true;
-                    xmax_plus = x;
-                    xmax_minus = x;
-                    ymax = y;
-                    k0_plus = k_plus;
-                    b0_plus = b_plus;
-                    k0_minus = k_minus;
-                    b0_minus = b_minus;
-                    break;
-                }
-            }
-            if y_min_plus < y_min_minus {
-                if let Some(&p_curr) = it_minus.peek() {
-                    ymax_minus = y_min_minus;
-                    xmax_minus = p_curr.0;
-                    p_next_minus = *p_curr;
-                    it_minus.next();
-                }
-            } else if let Some(&p_curr) = it_plus.peek() {
-                ymax_plus = y_min_plus;
-                xmax_plus = p_curr.0;
-                p_next_plus = *p_curr;
-                it_plus.next();
-            }
-            if flag_empty {
-                break;
-            }
-        }
-    }
-
-    // if debug {
-    //     println!(
-    //         "ymax={}, xmax_plus={}, xmax_minus={}",
-    //         ymax, xmax_plus, xmax_minus
-    //     );
-    // }
-
-    if flag_ymax_succeed {
-        while let Some(p_last) = intersect_plus.last()
-            && p_last.0 > ymax
-        {
-            intersect_plus.pop();
-        }
-        intersect_plus.push((ymax, xmax_plus));
-        while let Some(p_last) = intersect_minus.last()
-            && p_last.0 > ymax
-        {
-            intersect_minus.pop();
-        }
-        intersect_minus.push((ymax, xmax_minus));
-    } else {
-        return;
-    }
-
-    // Step 3.2 Min Y
-    let mut flag_ymin_never_initial = true;
-    if ymin.is_infinite() {
-        ymin = (bf_minus - bf_plus) / (kf_plus - kf_minus);
-        flag_ymin_never_initial = false;
-    }
-
-    let mut xmin_plus = kf_plus * ymin + bf_plus;
-    let mut xmin_minus = kf_minus * ymin + bf_minus;
-
-    let mut flag_ymin_succeed = xmin_plus >= xmin_minus - epsilon
-        && intersect_plus.first().is_none_or(|p| ymin <= p.0)
-        && intersect_minus.first().is_none_or(|p| ymin <= p.0);
-
-    if flag_ymin_succeed {
-        if ymax < ymin {
-            return;
-        }
-    } else {
-        let mut ymin_plus = ymin;
-        let mut ymin_minus = ymin;
-        let mut it_plus = intersect_plus.iter().peekable();
-        let mut it_minus = intersect_minus.iter().peekable();
-        let mut p_prev_minus = (f64::INFINITY, f64::INFINITY);
-        let mut p_prev_plus = (f64::INFINITY, f64::INFINITY);
-
-        while !flag_ymin_succeed {
-            // !(it_plus.peek().is_none() && it_minus.peek().is_none())
-            // Consider (YMAX_plus, XMAX_plus)--it_plus;
-            //          (YMAX_minus, XMAX_minus)--it_minus];
-            let flag_empty = it_plus.peek().is_none() && it_minus.peek().is_none();
-
-            while let Some(&p_curr) = it_plus.peek()
-                && p_curr.0 <= ymin_plus
-            {
-                p_prev_plus = *p_curr;
-                it_plus.next();
-            }
-            while let Some(&p_curr) = it_minus.peek()
-                && p_curr.0 <= ymin_minus
-            {
-                p_prev_minus = *p_curr;
-                it_minus.next();
-            }
-
-            if flag_ymin_never_initial {
-                flag_ymin_never_initial = false;
-                let (k_plus_, b_plus_) = if let Some(&p_curr) = it_plus.peek() {
-                    let k = if p_prev_plus.0.is_infinite() {
-                        kf_plus
-                    } else {
-                        (p_curr.1 - p_prev_plus.1) / (p_curr.0 - p_prev_plus.0)
-                    };
-                    (k, p_curr.1 - k * p_curr.0)
-                } else {
-                    (k0_plus, b0_plus)
-                };
-                let (k_minus_, b_minus_) = if let Some(&p_curr) = it_minus.peek() {
-                    let k = if p_prev_minus.0.is_infinite() {
-                        kf_minus
-                    } else {
-                        (p_curr.1 - p_prev_minus.1) / (p_curr.0 - p_prev_minus.0)
-                    };
-                    (k, p_curr.1 - k * p_curr.0)
-                } else {
-                    (k0_minus, b0_minus)
-                };
-                let xmin_plus_ = k_plus_ * ymin + b_plus_;
-                let xmin_minus_ = k_minus_ * ymin + b_minus_;
-                if xmin_plus_ >= xmin_minus_ - epsilon {
-                    if ymax < ymin {
-                        return;
-                    }
-                    flag_ymin_succeed = true;
-                    xmin_plus = xmin_plus_;
-                    xmin_minus = xmin_minus_;
-                    // kf_plus = k_plus_;
-                    // bf_plus = b_plus_;
-                    // kf_minus = k_minus_;
-                    // bf_minus = b_minus_;
-                    break;
-                }
-            }
-            if !p_prev_plus.0.is_infinite() {
-                ymin_plus = p_prev_plus.0;
-                xmin_plus = p_prev_plus.1;
-            }
-            if !p_prev_minus.0.is_infinite() {
-                ymin_minus = p_prev_minus.0;
-                xmin_minus = p_prev_minus.1;
-            }
-            let (k_plus, y_max_plus) = if let Some(&p_curr) = it_plus.peek() {
-                ((p_curr.1 - xmin_plus) / (p_curr.0 - ymin_plus), p_curr.0)
-            } else {
-                (k0_plus, f64::INFINITY)
-            };
-            let (k_minus, y_max_minus) = if let Some(&p_curr) = it_minus.peek() {
-                ((p_curr.1 - xmin_minus) / (p_curr.0 - ymin_minus), p_curr.0)
-            } else {
-                (k0_minus, f64::INFINITY)
-            };
-
-            if (k_plus - k_minus).abs() > epsilon {
-                let b_plus = if let Some(&p_curr) = it_plus.peek() {
-                    p_curr.1 - k_plus * p_curr.0
-                } else {
-                    b0_plus
-                };
-                let b_minus = if let Some(&p_curr) = it_minus.peek() {
-                    p_curr.1 - k_minus * p_curr.0
-                } else {
-                    b0_minus
-                };
-                let (y, x) =
-                    solve_2x2(((-k_plus, 1.0), (-k_minus, 1.0)), (b_plus, b_minus)).unwrap();
-                if y <= y_max_plus.min(y_max_minus) && y >= ymin {
-                    // Find the intersection
-                    if y > ymax {
-                        return;
-                    }
-                    flag_ymin_succeed = true;
-                    xmin_plus = x;
-                    xmin_minus = x;
-                    ymin = y;
-                    // kf_plus = k_plus;
-                    // bf_plus = b_plus;
-                    // kf_minus = k_minus;
-                    // bf_minus = b_minus;
-                    break;
-                }
-            }
-            if y_max_plus > y_max_minus {
-                if let Some(&p_curr) = it_minus.peek() {
-                    ymin_minus = y_max_minus;
-                    xmin_minus = p_curr.0;
-                    p_prev_minus = *p_curr;
-                    it_minus.next();
-                }
-            } else if let Some(&p_curr) = it_plus.peek() {
-                ymin_plus = y_max_plus;
-                xmin_plus = p_curr.0;
-                p_prev_plus = *p_curr;
-                it_plus.next();
-            }
-            if flag_empty {
-                break;
-            }
-        }
-    }
-
-    if !flag_ymin_succeed {
-        return;
-    }
-
-    contour.push((xmax_plus, ymax));
-    if CLOCKWISE {
-        while let Some(p_curr) = intersect_plus.pop()
-            && p_curr.0 > ymin
-        {
-            if (contour.last().unwrap().0 - p_curr.1).abs() > epsilon
-                || (contour.last().unwrap().1 - p_curr.0).abs() > epsilon
-            {
-                contour.push((p_curr.1, p_curr.0));
-            }
-        }
-        if (contour.last().unwrap().0 - xmin_plus).abs() > epsilon
-            || (contour.last().unwrap().1 - ymin).abs() > epsilon
-        {
-            contour.push((xmin_plus, ymin));
-        }
-        if (contour.last().unwrap().0 - xmin_minus).abs() > epsilon
-            || (contour.last().unwrap().1 - ymin).abs() > epsilon
-        {
-            contour.push((xmin_minus, ymin));
-        }
-        for p_curr in intersect_minus.iter() {
-            if p_curr.0 >= ymin
-                && ((contour.last().unwrap().0 - p_curr.1).abs() > epsilon
-                    || (contour.last().unwrap().1 - p_curr.0).abs() > epsilon)
-            {
-                contour.push((p_curr.1, p_curr.0));
-            }
-        }
-    } else {
-        while let Some(p_curr) = intersect_minus.pop()
-            && p_curr.0 > ymin
-        {
-            if (contour.last().unwrap().0 - p_curr.1).abs() > epsilon
-                || (contour.last().unwrap().1 - p_curr.0).abs() > epsilon
-            {
-                contour.push((p_curr.1, p_curr.0));
-            }
-        }
-        if (contour.last().unwrap().0 - xmin_minus).abs() > epsilon
-            || (contour.last().unwrap().1 - ymin).abs() > epsilon
-        {
-            contour.push((xmin_minus, ymin));
-        }
-        if (contour.last().unwrap().0 - xmin_plus).abs() > epsilon
-            || (contour.last().unwrap().1 - ymin).abs() > epsilon
-        {
-            contour.push((xmin_plus, ymin));
-        }
-        for p_curr in intersect_plus.iter() {
-            if p_curr.0 >= ymin
-                && ((contour.last().unwrap().0 - p_curr.1).abs() > epsilon
-                    || (contour.last().unwrap().1 - p_curr.0).abs() > epsilon)
-            {
-                contour.push((p_curr.1, p_curr.0));
-            }
-        }
-    }
-
-    if contour.len() >= 2
-        && ((contour[0].0 - contour.last().unwrap().0).abs() < epsilon
-            && (contour[0].1 - contour.last().unwrap().1).abs() < epsilon)
-    {
-        contour.pop();
     }
 }
-
-/// Find the piecewise linear representation to the given constraints.
-/// # Arguments
-/// `kb` - A vector of tuples representing the coefficients (k, b) of linear functions.
-/// `maximize` - true if the piecewise linear representation should maximize the functions, false to minimize.
-/// # Returns
-/// A vector of tuples (x, y) representing the piecewise linear representation of the constraints.
-/// The first tuple is the leftmost line's (k, b), and the last tuple is the rightmost line's (k, b).
-/// For maximize==true, 0<=i<size, Y<=k[i]*X+b[i]
-/// For maximize==false, 0<=i<size, Y>=k[i]*X+b[i]
-#[cfg(test)]
-#[allow(clippy::type_complexity)]
-fn piecewise_linear_2d(
-    kb: &[(f64, f64)],
-    maximize: bool,
-    tol: &LpToleranceOptions,
-) -> (Vec<(f64, f64)>, (f64, f64), (f64, f64)) {
-    let epsilon = tol.feas_tol;
-    if kb.len() <= 1 {
-        return (
-            Vec::new(),
-            *kb.first().unwrap_or(&(f64::NAN, f64::NAN)),
-            *kb.last().unwrap_or(&(f64::NAN, f64::NAN)),
-        );
+impl Lp1dIncCollector for IndexLpIncCollector {
+    type Key = usize;
+    #[inline(always)]
+    fn collect_1d_id_max(&mut self, index: usize) {
+        self.id.0 = index;
     }
-    // Reverse the sign of k and b if minimize
-    let mut kb: Vec<(f64, f64)> = if maximize {
-        kb.to_owned()
-    } else {
-        kb.iter().map(|(k, b)| (-k, -b)).collect()
-    };
-    // Now maximize the function
-    // Step 1. sort and remove duplicates
-    kb.sort_by(|a, b| a.0.total_cmp(&b.0)); // ascend: k[i] <= k[i+1]
-    kb.dedup_by(|next, prev| {
-        if (next.0 - prev.0).abs() <= epsilon {
-            prev.1 = prev.1.min(next.1);
-            true
-        } else {
-            false
-        }
-    });
-    // Step 2. find the intersection points. from right to left
-    let n = kb.len();
-    let mut sol = Vec::<(f64, f64)>::with_capacity(n);
-    let mut k_left = kb[n - 1].0;
-    let k_right = k_left;
-
-    for &(ki, bi) in kb.iter().take(n - 1).rev() {
-        // Consider line (ki, bi) and sol.last()
-        while let Some(&last_p) = sol.last()
-            && last_p.0 * ki + bi <= last_p.1
-        {
-            sol.pop();
-            k_left = if let Some(prev_p) = sol.last() {
-                (prev_p.1 - last_p.1) / (prev_p.0 - last_p.0)
-            } else {
-                k_right
-            }
-        }
-        // Consider line (ki, bi) and line (k_left, b_left)
-        let b_left = if sol.is_empty() {
-            kb.last().unwrap().1
-        } else {
-            sol.last().unwrap().1 - k_left * sol.last().unwrap().0
-        };
-        // Solve 2x2 equations: ki * x + bi = k_left * x + b_left
-        if let Some(x) = solve_2x2(((-ki, 1.0), (-k_left, 1.0)), (bi, b_left)) {
-            sol.push(x);
-            k_left = ki;
-        } else {
-            // Lines are parallel, skip
-            continue;
-        }
+    #[inline(always)]
+    fn collect_1d_id_min(&mut self, index: usize) {
+        self.id.1 = index;
     }
-
-    if !maximize {
-        sol.iter_mut().for_each(|p| {
-            p.1 = -p.1;
-        });
-        kb.first_mut().unwrap().0 *= -1.0;
-        kb.last_mut().unwrap().0 *= -1.0;
-        kb.first_mut().unwrap().1 *= -1.0;
-        kb.last_mut().unwrap().1 *= -1.0;
+    #[inline(always)]
+    fn clear(&mut self) {
+        self.id = (usize::MAX - 1, usize::MAX - 1);
     }
-    (sol, *kb.first().unwrap(), *kb.last().unwrap())
+    #[inline(always)]
+    fn enumerate<D, I>(a_b: I) -> impl Iterator<Item = (Self::Key, D)>
+    where
+        I: Iterator<Item = D>,
+    {
+        a_b.enumerate()
+    }
+}
+impl Lp2dIncCollector for IndexLpIncCollector {
+    #[inline(always)]
+    fn collect_2d_id0(&mut self, index: usize) {
+        self.id.0 = index;
+    }
+    #[inline(always)]
+    fn collect_2d_id1(&mut self, index: usize) {
+        self.id.1 = index;
+    }
 }
 
 /// Solve 2*2 linear equations: a*x=b.
 pub(crate) fn solve_2x2(a: ((f64, f64), (f64, f64)), b: (f64, f64)) -> Option<(f64, f64)> {
-    let det = cross_product_2d((a.0.0, a.0.1), (a.1.0, a.1.1));
-    if det.abs() < f64::EPSILON {
-        return None; // Singular matrix
+    let (p, q) = (a.0.0 * a.1.1, a.0.1 * a.1.0);
+    let det = p - q;
+    // The sign of `det` is only meaningful while it stands above the rounding
+    // of the two products that cancel into it; see [`CCW_ERRBOUND_A`]. The
+    // non-finite test is what makes this NaN-safe, since every comparison
+    // against NaN is false.
+    if !det.is_finite() || det.abs() <= CCW_ERRBOUND_A * (p.abs() + q.abs()) {
+        return None; // Singular matrix, or non-finite coefficients
     }
     let det_inv = 1.0 / det;
     let x1 = cross_product_2d((b.0, a.0.1), (b.1, a.1.1)) * det_inv;
@@ -1469,910 +1043,215 @@ pub(crate) fn solve_2x2(a: ((f64, f64), (f64, f64)), b: (f64, f64)) -> Option<(f
     Some((x1, x2))
 }
 
-/// Linear programming in 2D plane, based on clarabel library.
-/// max J:=w_x*X+w_y*Y, s.t. Ab[i].0*X+Ab[i].1*Y<=Ab[i].2
-/// return (X,Y,J)
-#[cfg(test)]
-fn lp_2d_clarabel(
-    a_b: impl Iterator<Item = (f64, f64, f64)> + Clone,
-    len: usize,
-    w: (f64, f64),
-) -> (f64, f64, f64) {
-    if len == 0 {
-        return (f64::NAN, f64::NAN, f64::NAN);
-    }
-
-    let (w_x, w_y) = w;
-    let p_csc = CscMatrix::zeros((2, 2));
-    let q = vec![-w_x, -w_y];
-
-    let mut colptr = vec![0];
-    let mut rowval = Vec::with_capacity(len * 2);
-    let mut nzval = Vec::with_capacity(len * 2);
-
-    for (i, item) in a_b.clone().enumerate().take(len) {
-        rowval.push(i);
-        nzval.push(item.0);
-    }
-    colptr.push(rowval.len());
-
-    for (i, item) in a_b.clone().enumerate().take(len) {
-        rowval.push(i);
-        nzval.push(item.1);
-    }
-    colptr.push(rowval.len());
-
-    let a_csc = CscMatrix::new(len, 2, colptr, rowval, nzval);
-
-    let b_vec: Vec<f64> = a_b.clone().map(|item| item.2).collect();
-
-    let cones = [NonnegativeConeT(len)];
-    let settings = DefaultSettings {
-        verbose: false,
-        ..DefaultSettings::default()
-    };
-
-    let mut solver = DefaultSolver::new(&p_csc, &q, &a_csc, &b_vec, &cones, settings).unwrap();
-
-    solver.solve();
-
-    let solution = &solver.solution;
-    match solution.status {
-        SolverStatus::Solved => {
-            let x = solution.x[0];
-            let y = solution.x[1];
-            let max_val = w_x * x + w_y * y;
-            (x, y, max_val)
-        }
-        _ => (f64::NAN, f64::NAN, f64::NAN),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::panic;
-    use rand::RngExt;
-    use std::fs;
-    use std::io::{BufWriter, Write};
-    use std::path::Path;
-    use std::time::Instant;
 
     #[test]
-    fn test_lp_2d_multi() {
-        run_test_lp_2d_multi_repeated(1, false);
-    }
-
-    /// Conditions: release, --include-ignored, CPU = Intel(R) Core(TM) Ultra 9 285K.
-    /// Average time per constraint: geometric = 51.043 ns, incremental = 18.859 ns, clarabel = 1839.307 ns
-    #[test]
-    #[ignore = "slow"]
-    fn test_lp_2d_multi_robust() {
-        run_test_lp_2d_multi_repeated(100000, true);
+    fn test_project_x_at_fixed_y_keeps_optimal_value() {
+        let rows = [
+            (0.0, 1.0, 1.0),    // y <= 1
+            (-1.0, 0.0, -0.25), // x >= 0.25
+            (1.0, 0.0, 1.0),    // x <= 1
+        ];
+        let x = project_x_at_fixed_y(&rows, rows.len(), 0.0, 1.0, 0.0).unwrap();
+        assert_eq!(x, 0.25);
+        assert!(rows.iter().all(|&(a, b, c)| a * x + b * 1.0 <= c));
     }
 
     #[test]
-    fn test_lp_2d_contour() {
-        run_test_lp_2d_contour_repeated(1, false);
+    fn test_single_active_basis_requires_matching_box_support() {
+        let missing = IndexLpIncCollector::new().id.1;
+        assert!(!active_basis_supports_max_y(
+            &[(1.0, 1.0, 0.0)],
+            1,
+            0,
+            0.0,
+            0.0,
+            0.0,
+            (0, missing),
+            LP_BOUND,
+        ));
+        assert!(active_basis_supports_max_y(
+            &[(1.0, 1.0, -LP_BOUND)],
+            1,
+            0,
+            -LP_BOUND,
+            0.0,
+            0.0,
+            (0, missing),
+            LP_BOUND,
+        ));
     }
 
     #[test]
-    #[ignore = "slow"]
-    fn test_lp_2d_contour_robust() {
-        run_test_lp_2d_contour_repeated(100000, true);
-    }
-
-    #[test]
-    fn test_lp_2d_extreme_direction() {
-        run_test_lp_2d_extreme_direction_repeated(1, false);
-    }
-
-    /// Average ratio over 100000 experiments: 0.4341553260581677
-    #[test]
-    #[ignore = "slow"]
-    fn test_lp_2d_extreme_direction_robust() {
-        run_test_lp_2d_extreme_direction_repeated(100000, true);
-    }
-
-    #[test]
-    fn test_lp_2d_warm_start() {
-        run_test_lp_2d_warm_start_repeated(1, false);
-    }
-
-    #[test]
-    #[ignore = "slow"]
-    fn test_lp_2d_warm_start_robust() {
-        run_test_lp_2d_warm_start_repeated(100000, true);
-    }
-
-    fn run_test_lp_2d_multi_repeated(n_exp: usize, flag_print_step: bool) {
-        let path_str = "data/test/lp_2d_compare.csv";
-        let path = Path::new(path_str);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("Fail to create directory for lp_2d_compare.csv");
-        }
-        let file = fs::File::create(path).expect("Fail to create lp_2d_compare.csv");
-        let mut writer = BufWriter::new(file);
-        writeln!(
-            writer,
-            "n,geometric time (us),incremental time (us),clarabel time (us),geometric objective,incremental objective,clarabel objective"
+    fn test_rebuild_2d_prefix_finds_verified_optimum() {
+        let rows = [
+            (0.0, 1.0, 1.0),  // y <= 1
+            (-1.0, 0.0, 0.0), // x >= 0
+            (1.0, 0.0, 1.0),  // x <= 1
+            (1.0, 1.0, 0.75), // x + y <= 0.75
+        ];
+        let tol = LpToleranceOptions::with_feas_tol(1.0e-9);
+        let (x, y, _) = rebuild_2d_prefix(
+            &rows,
+            rows.len(),
+            0.0,
+            1.0,
+            f64::NEG_INFINITY,
+            tol.feas_tol,
+            &tol,
+            LP_BOUND,
         )
         .unwrap();
-
-        let epsilon = 1E-8;
-
-        let mut time_sum_geo = 0.0_f64;
-        let mut time_sum_incre = 0.0_f64;
-        let mut time_sum_clarabel = 0.0_f64;
-        let mut a_b_buffer = Vec::<(f64, f64, f64)>::with_capacity(100);
-        for i in 0..n_exp {
-            let mut rng = rand::rng();
-            let n = rng.random_range(0..100); // number of constraints
-            let a_b: Vec<(f64, f64, f64)> = (0..n)
-                .map(|_| {
-                    (
-                        rng.random_range(-1.0..1.0),
-                        rng.random_range(-1.0..1.0),
-                        rng.random_range(0.0..2.0),
-                    )
-                })
-                .collect();
-            let w = (rng.random_range(-1.0..1.0), rng.random_range(-1.0..1.0));
-            // let mut a_b: Vec<(f64, f64, f64)> = [
-            //     (0.000589574578666598, 1.3263417562226534, -9.95066925246844),
-            //     (
-            //         0.001768043037305233,
-            //         3.9774972097647265,
-            //         -29.840522176908607,
-            //     ),
-            // ]
-            // .into();
-            // let w = (0.0, 1.0);
-            // let n = a_b.len();
-
-            // for j in 0..n {
-            //     println!(
-            //         "A_b[{}] = Data3d({}, {}, {});",
-            //         j, a_b[j].0, a_b[j].1, a_b[j].2
-            //     );
-            // }
-
-            let start = Instant::now();
-            let (x_geo, y_geo, j_geo) = lp_2d_geo(
-                a_b.iter().copied(),
-                a_b.len(),
-                w,
-                &LpToleranceOptions::with_feas_tol(epsilon),
-            );
-            let time_geo = start.elapsed().as_secs_f64() * 1E9; // ns
-            // println!(
-            //     "Geometric: time = {:?}, x = {}, y = {}, J = {} ({})",
-            //     time_geo,
-            //     x_geo,
-            //     y_geo,
-            //     j_geo,
-            //     w.0 * x_geo + w.1 * y_geo
-            // );
-            assert!(
-                j_geo.is_nan()
-                    || j_geo.is_infinite()
-                    || (w.0 * x_geo + w.1 * y_geo - j_geo).abs() < 1E-6
-            );
-
-            let start = Instant::now();
-            let (x_clarabel, y_clarabel, j_clarabel) =
-                lp_2d_clarabel(a_b.iter().copied(), a_b.len(), w);
-            let time_clarabel = start.elapsed().as_secs_f64() * 1E9; // ns
-            assert!(
-                j_clarabel.is_nan()
-                    || j_clarabel.is_infinite()
-                    || (w.0 * x_clarabel + w.1 * y_clarabel - j_clarabel).abs() < 1E-6
-            );
-            // println!(
-            //     "Clarabel: time = {:?}, x = {}, y = {}, J = {} ({})",
-            //     time_clarabel,
-            //     x_clarabel,
-            //     y_clarabel,
-            //     j_clarabel,
-            //     w.0 * x_clarabel + w.1 * y_clarabel
-            // );
-
-            let start = Instant::now();
-            // a_b.shuffle(&mut rng);
-            let (x_inc, y_inc, j_inc) = lp_2d_incre::<_, true>(
-                &a_b,
-                w,
-                &Lp2dNoWarmStart,
-                &LpToleranceOptions::with_feas_tol(epsilon),
-                &mut a_b_buffer,
-            );
-            let time_incre = start.elapsed().as_secs_f64() * 1E9; // ns
-            assert!(
-                j_inc.is_nan()
-                    || j_inc.is_infinite()
-                    || (w.0 * x_inc + w.1 * y_inc - j_inc).abs() < 1E-6
-            );
-
-            // println!(
-            //     "Clarabel: time = {:?}, x = {}, y = {}, J = {}",
-            //     time_clarabel, x_clarabel, y_clarabel, j_clarabel
-            // );
-
-            writeln!(
-                writer,
-                "{n},{time_geo},{time_incre},{time_clarabel},{j_geo},{j_inc},{j_clarabel}"
-            )
-            .unwrap();
-
-            if flag_print_step && (i + 1) % 1000 == 0 {
-                crate::verbosity_log!(
-                    crate::diag::Verbosity::Summary,
-                    "Exp #{}: time_geo/n: {:.3} ns, time_incre/n: {:.3} ns, time_clarabel/n: {:.3} ns, j_geo: {:.3e}, j_incre: {:.3e}, j_clarabel: {:.3e}",
-                    i + 1,
-                    time_geo / n.max(1) as f64,
-                    time_incre / n.max(1) as f64,
-                    time_clarabel / n.max(1) as f64,
-                    j_geo,
-                    j_inc,
-                    j_clarabel
-                );
-            }
-            time_sum_geo += time_geo / n.max(1) as f64;
-            time_sum_incre += time_incre / n.max(1) as f64;
-            time_sum_clarabel += time_clarabel / n.max(1) as f64;
-
-            let clarabel_failed = j_clarabel.is_nan()
-                || j_clarabel.is_infinite()
-                || x_clarabel.abs() > 1E8
-                || y_clarabel.abs() > 1E8;
-            let geo_failed =
-                j_geo.is_nan() || j_geo.is_infinite() || x_geo.abs() > 1E8 || y_geo.abs() > 1E8;
-            let inc_failed =
-                j_inc.is_nan() || j_inc.is_infinite() || x_inc.abs() > 1E8 || y_inc.abs() > 1E8;
-            let flag_assert = (clarabel_failed != geo_failed)
-                || (clarabel_failed != inc_failed)
-                || (!clarabel_failed
-                    && ((j_geo - j_clarabel).abs() >= 1E-3 || (j_inc - j_clarabel).abs() >= 1E-3));
-            let flag_assert = if flag_assert {
-                // println!("a_b = {a_b:?}");
-                // for j in 0..n {
-                //     println!(
-                //         "A_b[{}] = Data3d({}, {}, {});",
-                //         j, a_b[j].0, a_b[j].1, a_b[j].2
-                //     );
-                // }
-                // println!("w: {w:?}");
-                // println!(
-                //     "j_geo-clarabel: {}, j_inc-clarabel: {}",
-                //     j_geo - j_clarabel,
-                //     j_inc - j_clarabel
-                // );
-                // println!(
-                //     "x_geo = {:?}, x_inc = {:?}, x_clarabel = {:?}",
-                //     (x_geo, y_geo),
-                //     (x_inc, y_inc),
-                //     (x_clarabel, y_clarabel)
-                // );
-                if !inc_failed {
-                    let delta = a_b.iter().map(|(a, b, c)| c - a * x_inc - b * y_inc);
-                    let delta_min = delta.clone().fold(f64::INFINITY, |a, b| a.min(b));
-                    // println!("Minimum slackness at incremental solution: {delta_min}");
-                    if delta_min < -epsilon {
-                        crate::verbosity_log!(
-                            crate::diag::Verbosity::Debug,
-                            "Incremental solution is infeasible!"
-                        );
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    true
-                }
-            } else {
-                false
-            };
-            assert!(!flag_assert);
-        }
-        crate::verbosity_log!(
-            crate::diag::Verbosity::Summary,
-            "Average time per constraint: geometric = {:.3} ns, incremental = {:.3} ns, clarabel = {:.3} ns",
-            time_sum_geo / n_exp as f64,
-            time_sum_incre / n_exp as f64,
-            time_sum_clarabel / n_exp as f64
+        assert!(x.abs() <= tol.feas_tol);
+        assert!((y - 0.75).abs() <= tol.feas_tol);
+        assert!(
+            rows.iter()
+                .all(|&(a, b, c)| a * x + b * y - c <= tol.feas_tol)
         );
     }
 
-    fn run_test_lp_2d_contour_repeated(n_exp: usize, flag_print_step: bool) {
-        let mut buffer_intersection_plus = Vec::<(f64, f64)>::with_capacity(106);
-        let mut buffer_intersection_minus = Vec::<(f64, f64)>::with_capacity(106);
+    /// Reproduces a TOPP2-RA backward step that reports an empty reachable set on a
+    /// problem that is feasible with a wide margin.  The rows are those
+    /// `reach_set2`'s backward pass builds at one station of a real 3-axis toolpath:
+    /// two box rows on `a[k+1]`, then the axial-acceleration rows of station `k` and
+    /// of station `k + 1` as `fill_acc_topp2::<true>` emits them.  The variables are
+    /// `(x, y) = (a[k+1], a[k])` and the objective is `max y`.
+    ///
+    /// That stretch of path is straight, so `q''` sits at the `1e-12` level and `q'`
+    /// is nearly identical at both stations.  The station-`k` and station-`k + 1`
+    /// rows of one axis therefore collapse onto the same half-plane: rows 2/3 and
+    /// 8/9 are bit-identical, and rows 6/7 and 12/13 differ in the eleventh
+    /// significant digit.
+    ///
+    /// In exact arithmetic the optimum is `(x, y) = (277.777777777777828,
+    /// 282.287152777735628)`, lying on rows 0 and 6, with row 12 slack by `1.4e-12`.
+    /// The floating-point vertex misses row 12 by about `1e-14`, while one ulp at
+    /// `282` is `5.7e-14`, so the two rows are not distinguishable at all; the
+    /// old zero-tolerance test at the top of the incremental loop pinned the
+    /// iterate to row 12 anyway, and the problem reduced onto that row appeared
+    /// empty after the near-parallel cancellation was amplified.
+    #[test]
+    #[allow(clippy::excessive_precision)]
+    fn test_lp_2d_incre_max_y_twin_acceleration_rows() {
+        // a * a[k+1] + b * a[k] <= c
+        let mut a_b: Vec<(f64, f64, f64)> = [
+            // Box rows on a[k+1], skipped by the warm start.
+            (1.0, 0.0, 2.77777777777777828e2),
+            (-1.0, 0.0, 0.0),
+            // Axial acceleration at station k: X, Y, Z, each upper then lower.
+            (-6.23700623703079060e1, 6.23700623703079060e1, 3.0e2),
+            (6.23700623703079060e1, -6.23700623703079060e1, 3.0e2),
+            (0.0, 0.0, 3.0e2),
+            (0.0, 0.0, 3.0e2),
+            (-6.65280665283281110e1, 6.65280665283338806e1, 3.0e2),
+            (6.65280665283281110e1, -6.65280665283338806e1, 3.0e2),
+            // Axial acceleration at station k + 1, same order.
+            (-6.23700623703079060e1, 6.23700623703079060e1, 3.0e2),
+            (6.23700623703079060e1, -6.23700623703079060e1, 3.0e2),
+            (0.0, 0.0, 3.0e2),
+            (0.0, 0.0, 3.0e2),
+            (-6.65280665283189023e1, 6.65280665283248140e1, 3.0e2),
+            (6.65280665283189023e1, -6.65280665283248140e1, 3.0e2),
+        ]
+        .into();
 
-        let mut a_b_buffer = Vec::<(f64, f64, f64)>::with_capacity(106);
+        // `backward_bound_a_next` normalizes the rows, then solves with
+        // `NORMALIZE = false`; `reach_set2` runs it with `lp_feas_tol = 1e-8` and
+        // starts from the midpoint of the successor interval.
+        let tol = LpToleranceOptions::with_feas_tol(1.0e-8);
+        normalize_lp2d(&mut a_b);
+        let warm_start = Lp2dWarmStart {
+            x0: (0.5 * 2.77777777777777828e2, LP_BOUND),
+            skip: 2,
+        };
 
-        let epsilon = 1E-9;
-        for i in 0..n_exp {
-            let mut rng = rand::rng();
-            let n = rng.random_range(0..100); // number of constraints
+        // The optimum the rows actually admit, confirmed independently in exact
+        // rational arithmetic.
+        let y_true = 2.82287152777735628e2;
 
-            let mut a_b: Vec<(f64, f64, f64)> = (0..n)
-                .map(|_| {
-                    (
-                        rng.random_range(-1.0..1.0),
-                        rng.random_range(-1.0..1.0),
-                        rng.random_range(0.0..2.0),
-                    )
-                })
-                .collect();
-            a_b.extend([
-                (1.0, 0.0, LP_BOUND),
-                (-1.0, 0.0, LP_BOUND),
-                (0.0, 1.0, LP_BOUND),
-                (0.0, -1.0, LP_BOUND),
-            ]);
-            // let a_b: Vec<(f64, f64, f64)> = [
-            //     (1.0, 0.0, 995.8861908753399),
-            //     (-1.0, 0.0, -697.1203336127378),
-            //     (0.1331968505664206, 0.9910896019024651, 129.69547412483433),
-            //     (-0.1331968505664206, -0.9910896019024651, -129.6954741248343),
-            //     (4.0512058517625615e-5, 0.9999999991793865, 26.27558522984379),
-            //     (0.0, 0.0, 0.0),
-            //     (-0.0002148857862811844, 0.999999976912049, 60.48528350326356),
-            //     (-3.365994633223831e-8, 0.9999999999999993, 29.51611830471187),
-            //     (4.0512058517625615e-5, 0.9999999991793865, 26.27558522984379),
-            //     (0.0, 0.0, 0.0),
-            //     (-0.0002148857862811844, 0.999999976912049, 60.48528350326356),
-            //     (-3.365994633223831e-8, 0.9999999999999993, 29.51611830471187),
-            //     (
-            //         -0.042685922007249515,
-            //         -0.999088540652124,
-            //         -39.37634909168048,
-            //     ),
-            //     (
-            //         0.015909459988051884,
-            //         5.163472720887478e-14,
-            //         47.53203451914932,
-            //     ),
-            //     (
-            //         -0.039990724634325785,
-            //         -0.9992000510124194,
-            //         -31.318622868363203,
-            //     ),
-            //     (0.046820810258963015, 0.9989033044928294, 51.746327742644965),
-            //     (
-            //         0.015909459988047263,
-            //         -5.163472720887478e-14,
-            //         47.53203451914462,
-            //     ),
-            //     (0.04950825533983154, 0.9987737144384637, 59.79137099766719),
-            //     (
-            //         -0.0440595097383263,
-            //         -0.9990289082912559,
-            //         -40.744391349690204,
-            //     ),
-            //     (0.007954729994139207, 0.05918946393692667, 39.43364517828572),
-            //     (-0.04313208344058018, -0.999069378660999, -34.33229069734884),
-            //     (0.04543742551563322, 0.9989671868297332, 50.30540896403363),
-            //     (0.007954729994159242, 0.05918946393737094, 39.43364517830605),
-            //     (0.0463113429889185, 0.9989270541488816, 56.391565689431246),
-            // ]
-            // .into();
+        let (x_incre, y_incre) = lp_2d_incre_max_y::<_, false>(&mut a_b, &warm_start, &tol);
+        assert!(
+            x_incre.is_finite() && y_incre.is_finite(),
+            "the incremental solver reported a feasible problem as infeasible"
+        );
+        assert!(
+            (x_incre - 2.77777777777777828e2).abs() < 1.0e-9 && (y_incre - y_true).abs() < 1.0e-9,
+            "incremental ({x_incre}, {y_incre}) should match the true optimum y={y_true}"
+        );
+        assert!(
+            a_b.iter()
+                .all(|&(a, b, c)| a * x_incre + b * y_incre - c <= tol.feas_tol),
+            "the returned point must satisfy every normalized row within feas_tol"
+        );
 
-            let mut contour_geo = Vec::<(f64, f64)>::with_capacity(a_b.len());
-            let start = Instant::now();
-            lp_2d_geo_contour_bounded::<false>(
-                &a_b,
-                &LpToleranceOptions::with_feas_tol(epsilon),
-                &mut contour_geo,
-                (
-                    &mut buffer_intersection_plus,
-                    &mut buffer_intersection_minus,
-                ),
-            );
-            let time_geo = start.elapsed().as_secs_f64() * 1E6; // us
-
-            if contour_geo.is_empty() {
-                let (_, _, xmax) = lp_2d_incre::<_, true>(
-                    &a_b,
-                    (1.0, 0.0),
-                    &Lp2dNoWarmStart,
-                    &LpToleranceOptions::with_feas_tol(epsilon),
-                    &mut a_b_buffer,
-                );
-                let (_, _, ymax) = lp_2d_incre::<_, false>(
-                    &a_b,
-                    (0.0, 1.0),
-                    &Lp2dNoWarmStart,
-                    &LpToleranceOptions::with_feas_tol(epsilon),
-                    &mut a_b_buffer,
-                );
-                let (_, _, xmin) = lp_2d_incre::<_, false>(
-                    &a_b,
-                    (-1.0, 0.0),
-                    &Lp2dNoWarmStart,
-                    &LpToleranceOptions::with_feas_tol(epsilon),
-                    &mut a_b_buffer,
-                );
-                let (_, _, ymin) = lp_2d_incre::<_, false>(
-                    &a_b,
-                    (0.0, -1.0),
-                    &Lp2dNoWarmStart,
-                    &LpToleranceOptions::with_feas_tol(epsilon),
-                    &mut a_b_buffer,
-                );
-                let infeasible = xmax.is_nan() || ymax.is_nan() || xmin.is_nan() || ymin.is_nan();
-                let unbounded = xmax.is_infinite()
-                    || ymax.is_infinite()
-                    || xmin.is_infinite()
-                    || ymin.is_infinite();
-
-                assert!(
-                    infeasible || unbounded,
-                    "Failed ({}) at exp {}: xmax={}, ymax={}, xmin={}, ymin={}\na_b={:?}",
-                    if infeasible {
-                        "infeasible"
-                    } else {
-                        "unbounded"
-                    },
-                    i + 1,
-                    xmax,
-                    ymax,
-                    xmin,
-                    ymin,
-                    a_b,
-                );
-                if flag_print_step && infeasible {
-                    crate::verbosity_log!(
-                        crate::diag::Verbosity::Debug,
-                        "Exp {}: Infeasible region.",
-                        i + 1
-                    );
-                } else if flag_print_step && unbounded {
-                    crate::verbosity_log!(
-                        crate::diag::Verbosity::Debug,
-                        "Exp {}: Unbounded region.",
-                        i + 1
-                    );
-                }
-                continue;
-            }
-
-            for j in 0..contour_geo.len() {
-                let feasibility = a_b
-                    .iter()
-                    .all(|(a, b, c)| a * contour_geo[j].0 + b * contour_geo[j].1 <= *c + 1E-6);
-                assert!(
-                    feasibility,
-                    "Failed (infeasibility) at exp {}, point {}: point=({},{})\ncontour = [{:?};{:?}];\n\na_b={:?}",
-                    i + 1,
-                    j,
-                    contour_geo[j].0,
-                    contour_geo[j].1,
-                    contour_geo.iter().map(|p| p.0).collect::<Vec<f64>>(),
-                    contour_geo.iter().map(|p| p.1).collect::<Vec<f64>>(),
-                    a_b,
-                );
-                let next_j = (j + 1) % contour_geo.len();
-                let w_test = (
-                    contour_geo[next_j].1 - contour_geo[j].1,
-                    contour_geo[j].0 - contour_geo[next_j].0,
-                );
-                let (_, _, j_opt) = lp_2d_incre::<_, false>(
-                    &a_b,
-                    w_test,
-                    &Lp2dNoWarmStart,
-                    &LpToleranceOptions::with_feas_tol(epsilon),
-                    &mut a_b_buffer,
-                );
-                let j_contour = w_test.0 * contour_geo[j].0 + w_test.1 * contour_geo[j].1;
-                assert!(
-                    (j_opt - j_contour).abs() <= 1E-6 * j_opt.abs(),
-                    "Failed (optimality) at exp {}, edge {}: j_opt = {}, j_contour = {}\nw=[{},{}]\ncontour = [{:?};{:?}];\n\na_b = {:?}\n",
-                    i + 1,
-                    j,
-                    j_opt,
-                    j_contour,
-                    w_test.0,
-                    w_test.1,
-                    contour_geo.iter().map(|p| p.0).collect::<Vec<f64>>(),
-                    contour_geo.iter().map(|p| p.1).collect::<Vec<f64>>(),
-                    a_b,
-                );
-            }
-
-            if flag_print_step && (i + 1) % 1000 == 0 {
-                crate::verbosity_log!(
-                    crate::diag::Verbosity::Summary,
-                    "Exp {}: time_cal = {} us, contour.len = {}",
-                    i + 1,
-                    time_geo,
-                    contour_geo.len()
-                );
-            }
-
-            // Test the reverse direction, which should give the same contour in reverse order
-            let mut contour_geo_rev = Vec::<(f64, f64)>::with_capacity(a_b.len());
-            lp_2d_geo_contour_bounded::<true>(
-                &a_b,
-                &LpToleranceOptions::with_feas_tol(epsilon),
-                &mut contour_geo_rev,
-                (
-                    &mut buffer_intersection_plus,
-                    &mut buffer_intersection_minus,
-                ),
-            );
-            assert!(contour_geo.len() == contour_geo_rev.len());
-            let contour_len = contour_geo.len();
-            for i in 0..contour_len {
-                let p = contour_geo[i];
-                let p_new = contour_geo_rev[(contour_len - i) % contour_len];
-                assert!((p.0 - p_new.0).abs() < epsilon);
-                assert!((p.1 - p_new.1).abs() < epsilon);
-            }
-        }
-    }
-
-    fn run_test_lp_2d_extreme_direction_repeated(n_exp: usize, flag_print_step: bool) {
-        let mut rng = rand::rng();
-
-        let mut ratio_sum = 0.0_f64;
-        let mut a_b_buffer = Vec::<(f64, f64, f64)>::with_capacity(106);
-
-        for i_exp in 0..n_exp {
-            // 1. Generate a_b, ensure (0,0,0) is feasible and bounded
-            let n = rng.random_range(0..100);
-            let mut time_sum_direction = 0.0;
-            let mut time_sum_lp2d = 0.0;
-            let mut n_w = 0;
-            let mut a_b: Vec<(f64, f64, f64)> = (0..n)
-                .map(|_| {
-                    (
-                        rng.random_range(-1.0..1.0),
-                        rng.random_range(-1.0..1.0),
-                        rng.random_range(0.1..2.0),
-                    )
-                })
-                .collect();
-            let bound = 1.0;
-            a_b.push((1.0, 0.0, bound));
-            a_b.push((-1.0, 0.0, bound));
-            a_b.push((0.0, 1.0, bound));
-            a_b.push((0.0, -1.0, bound));
-
-            // let a_b: Vec<(f64, f64, f64)> = [
-            //     (-0.8101855338504307, -0.636376960199049, 0.4481497935390153),
-            //     (
-            //         -0.5834796271826281,
-            //         -0.5765578558113358,
-            //         0.36766865821476524,
-            //     ),
-            //     (0.5987445035089243, -0.8241312626215276, 0.16051253942952126),
-            // ]
-            // .into();
-
-            if flag_print_step && (i_exp + 1) % 1000 == 0 {
-                crate::verbosity_log!(
-                    crate::diag::Verbosity::Summary,
-                    "Experiment #{}, num_constraints = {}",
-                    i_exp + 1,
-                    a_b.len()
-                );
-            }
-
-            // 2. Generate w in 18 directions
-            for i in 0..18 {
-                let angle =
-                    (i as f64) * std::f64::consts::PI * 2.0 / 18.0 + rng.random_range(-0.01..0.01);
-                let w_2d = (angle.cos(), angle.sin());
-                // let w_2d = (-0.4970776426704771, -0.8677060661060065);
-
-                // Solve LP
-                let epsilon = 1e-9;
-                let start = std::time::Instant::now();
-                let (x, y, j_opt) = if i == 0 {
-                    lp_2d_incre::<_, true>(
-                        &a_b,
-                        w_2d,
-                        &Lp2dNoWarmStart,
-                        &LpToleranceOptions::with_feas_tol(epsilon),
-                        &mut a_b_buffer,
-                    )
-                } else {
-                    lp_2d_incre::<_, false>(
-                        &a_b,
-                        w_2d,
-                        &Lp2dNoWarmStart,
-                        &LpToleranceOptions::with_feas_tol(epsilon),
-                        &mut a_b_buffer,
-                    )
-                };
-                time_sum_lp2d += start.elapsed().as_secs_f64() * 1e9;
-                if j_opt.is_nan() || j_opt.is_infinite() {
-                    panic!("LP failed at exp {}, angle {}", i_exp, i);
-                }
-                let x_opt = (x, y);
-
-                // 3. Project Extremes
-                let start = std::time::Instant::now();
-                let (v1, v2) = lp_2d_extreme_direction(
-                    &a_b,
-                    x_opt,
-                    w_2d,
-                    &LpToleranceOptions::with_feas_tol(1e-6),
-                );
-                time_sum_direction += start.elapsed().as_secs_f64() * 1e9;
-                n_w += 1;
-
-                if v1.0.is_nan() || v2.0.is_nan() || v1.1.is_nan() || v2.1.is_nan() {
-                    crate::verbosity_log!(crate::diag::Verbosity::Summary, "a_b = {a_b:?}");
-                    crate::verbosity_log!(crate::diag::Verbosity::Summary, "w_2d = {w_2d:?}");
-                    crate::verbosity_log!(
-                        crate::diag::Verbosity::Summary,
-                        "v1 = {v1:?}, v2 = {v2:?}"
-                    );
-                    panic!(
-                        "Extreme direction NAN at exp {}, angle {}. x_opt={:?}",
-                        i_exp, i, x_opt
-                    );
-                }
-
-                // 4. Verification
-                for (k, &v) in [v1, v2].iter().enumerate() {
-                    // (1) Rotate 90 degree as optimization target direction, determine optimal value is same as x_opt
-                    let n1 = if k == 0 { (v.1, -v.0) } else { (-v.1, v.0) };
-                    let (_, _, j1) = lp_2d_incre::<_, false>(
-                        &a_b,
-                        n1,
-                        &Lp2dNoWarmStart,
-                        &LpToleranceOptions::with_feas_tol(epsilon),
-                        &mut a_b_buffer,
-                    );
-                    let val1 = n1.0 * x + n1.1 * y;
-
-                    // Ideally one of them matches exactly. Due to precision, check closeness.
-                    let diff = (j1 - val1).abs();
-                    if diff > 1e-5 {
-                        crate::verbosity_log!(crate::diag::Verbosity::Summary, "a_b = {a_b:?}");
-                        crate::verbosity_log!(crate::diag::Verbosity::Summary, "w_2d = {w_2d:?}");
-                        crate::verbosity_log!(
-                            crate::diag::Verbosity::Summary,
-                            "v1 = {v1:?}, v2 = {v2:?}"
-                        );
-                        crate::verbosity_log!(crate::diag::Verbosity::Summary, "x_opt = {x_opt:?}");
-                        panic!(
-                            "Rotation check failed for v{}: diff={}\nExp {}, angle {}, w={:?}, v={:?}",
-                            k, diff, i_exp, i, w_2d, v
-                        );
-                    }
-
-                    // (2) Use lp_1d to determine this direction is feasible
-                    // i.e. not NAN and v3max > 0.0
-                    let delta_max = a_b
-                        .iter()
-                        .map(|&(a, b, c)| c - a * x_opt.0 - b * x_opt.1)
-                        .fold(f64::INFINITY, f64::min)
-                        .abs();
-                    // if delta_max > 1e-5 {
-                    // println!("delta_max = {}", delta_max);
-                    // }
-                    let iter = a_b.iter().map(|&(a, b, c)| {
-                        (a * v.0 + b * v.1, (c - a * x_opt.0 - b * x_opt.1).max(0.0))
-                    });
-                    // println!(
-                    //     "============Checking feasibility of direction v{} = {:?}, delta_max = {}=============",
-                    //     k, v, delta_max
-                    // );
-                    let (tmax, _tmin) = lp_1d::<true>(
-                        iter,
-                        &LpToleranceOptions::with_feas_tol((1.1 * delta_max).max(1e-6)),
-                    );
-                    if !tmax.is_nan() && tmax <= 0.0 {
-                        crate::verbosity_log!(crate::diag::Verbosity::Summary, "a_b = {a_b:?}");
-                        crate::verbosity_log!(crate::diag::Verbosity::Summary, "w_2d = {w_2d:?}");
-                        let a_b_t12 = a_b
-                            .iter()
-                            .map(|&(a, b, c)| {
-                                (a * v.0 + b * v.1, (c - a * x_opt.0 - b * x_opt.1).max(0.0))
-                            })
-                            .collect::<Vec<(f64, f64)>>();
-                        crate::verbosity_log!(
-                            crate::diag::Verbosity::Summary,
-                            "a_b for t12 = {a_b_t12:?}"
-                        );
-                        crate::verbosity_log!(
-                            crate::diag::Verbosity::Summary,
-                            "delta for t12 constraints = {:?}",
-                            a_b_t12.iter().map(|(_, b)| *b).collect::<Vec<f64>>()
-                        );
-                        crate::verbosity_log!(crate::diag::Verbosity::Summary, "x_opt = {x_opt:?}");
-                        crate::verbosity_log!(
-                            crate::diag::Verbosity::Summary,
-                            "k = {k}, v1 = {v1:?}, v2 = {v2:?}"
-                        );
-                        crate::verbosity_log!(
-                            crate::diag::Verbosity::Summary,
-                            "tmin = {_tmin}, tmax = {tmax}"
-                        );
-                        panic!(
-                            "Direction v{} not feasible (lp_2d returned NAN). Exp {}, angle {}",
-                            k, i_exp, i
-                        )
-                    }
-                }
-            }
-            if flag_print_step && (i_exp + 1) % 1000 == 0 {
-                crate::verbosity_log!(
-                    crate::diag::Verbosity::Summary,
-                    "Exp {}: cal_time_lp2d: {} ns, cal_time_direction: {} ns, ratio: {}",
-                    i_exp + 1,
-                    time_sum_lp2d / n_w as f64,
-                    time_sum_direction / n_w as f64,
-                    time_sum_direction / time_sum_lp2d
-                );
-            }
-            ratio_sum += time_sum_direction / time_sum_lp2d;
-        }
-        crate::verbosity_log!(
-            crate::diag::Verbosity::Summary,
-            "Average ratio over {} experiments: {}",
-            n_exp,
-            ratio_sum / n_exp as f64
+        // The slow recovery must also reconstruct a real supporting basis,
+        // which is what the indexed API reports to its callers.
+        let repair_epsilon = tol.feas_tol * LP2D_REPAIR_TOL_SCALE;
+        let repair_tol_1d =
+            LpToleranceOptions::with_feas_tol(repair_epsilon * tol.reduce_dim_scale);
+        let mut active = IndexLpIncCollector::new();
+        let (x_recovered, y_recovered) = recover_2d_prefix(
+            &a_b,
+            a_b.len(),
+            x_incre,
+            y_incre,
+            repair_epsilon,
+            &repair_tol_1d,
+            &mut active,
+            LP_BOUND,
+        )
+        .expect("the alternate active-boundary scan should recover this prefix");
+        assert!((x_recovered - x_incre).abs() <= repair_epsilon);
+        assert!((y_recovered - y_incre).abs() <= repair_epsilon);
+        let (id0, id1) = (active.id.0, active.id.1);
+        assert!(id0 < a_b.len() && id1 < a_b.len());
+        let (n0, n1) = (a_b[id0], a_b[id1]);
+        assert!((n0.0 * x_recovered + n0.1 * y_recovered - n0.2).abs() <= repair_epsilon);
+        assert!((n1.0 * x_recovered + n1.1 * y_recovered - n1.2).abs() <= repair_epsilon);
+        let det = n0.0 * n1.1 - n0.1 * n1.0;
+        let (lambda0, lambda1) = (-n1.0 / det, n0.0 / det);
+        assert!(
+            det.abs() > CCW_ERRBOUND_A && lambda0 >= -repair_epsilon && lambda1 >= -repair_epsilon,
+            "the recovered active normals must support the +y objective"
         );
     }
 
-    fn run_test_lp_2d_warm_start_repeated(n_exp: usize, flag_print_step: bool) {
-        let mut time_sum_warm = 0.0_f64;
-        let mut time_sum_cold = 0.0_f64;
+    /// The box the kernel poses its problem over is a starting point, not a
+    /// limit: an answer on its edge is a clipped one, so the box grows and the
+    /// solve repeats.
+    ///
+    /// The rows below admit `max y = 1e8` at `x = 0`, two orders of magnitude
+    /// above [`LP_BOUND`]. The first solve can only reach the edge of the
+    /// starting box and reports saturation; without the growth loop the answer
+    /// would stay at `LP_BOUND`.
+    #[test]
+    fn test_lp_2d_incre_max_y_grows_the_box_past_its_start() {
+        // x + y <= 1e8, -x + y <= 1e8, y >= 0.
+        let mut a_b = vec![(1.0, 1.0, 1.0e8), (-1.0, 1.0, 1.0e8), (0.0, -1.0, 0.0)];
+        normalize_lp2d(&mut a_b);
+        let tol = LpToleranceOptions::with_feas_tol(1.0e-8);
+        let warm_start = Lp2dWarmStart {
+            x0: (0.0, LP_BOUND),
+            skip: 0,
+        };
 
-        let mut a_b_buffer = Vec::<(f64, f64, f64)>::with_capacity(106);
-
-        let epsilon = 1E-8;
-        for i in 0..n_exp {
-            let mut rng = rand::rng();
-            let n = rng.random_range(0..10); // number of constraints
-            let n_warm = rng.random_range(0..=n);
-            let a_b: Vec<(f64, f64, f64)> = (0..n)
-                .map(|_| {
-                    (
-                        rng.random_range(-1.0..1.0),
-                        rng.random_range(-1.0..1.0),
-                        rng.random_range(0.0..2.0),
-                    )
-                })
-                .collect();
-            let w = (rng.random_range(-1.0..1.0), rng.random_range(-1.0..1.0));
-
-            // let mut a_b: Vec<(f64, f64, f64)> = [
-            //     (0.6826148498882487, 0.15950363408897372, 1.9528195977566853),
-            //     (-0.6294516510574168, -0.45007860910959874, 1.53466195227118),
-            //     (-0.2644639261220636, 0.6401234871975734, 0.9503190109568345),
-            // ]
-            // .into();
-            // let w = (-0.7671173976232137, 0.45694048421237765);
-            // let n_warm = 0;
-            // let n = a_b.len();
-
-            let start = Instant::now();
-            // a_b.shuffle(&mut rng);
-            let (x_cold, y_cold, j_cold) = lp_2d_incre::<_, true>(
-                &a_b,
-                w,
-                &Lp2dNoWarmStart,
-                &LpToleranceOptions::with_feas_tol(epsilon),
-                &mut a_b_buffer,
-            );
-            let time_cold = start.elapsed().as_secs_f64() * 1E9; // ns
-            assert!(
-                j_cold.is_nan()
-                    || j_cold.is_infinite()
-                    || (w.0 * x_cold + w.1 * y_cold - j_cold).abs() < 1E-6
-            );
-
-            let start = Instant::now();
-            // a_b.shuffle(&mut rng);
-            let (x_mid, y_mid, _j_mid) = lp_2d_incre::<_, false>(
-                &a_b[0..n_warm],
-                w,
-                &Lp2dNoWarmStart,
-                &LpToleranceOptions::with_feas_tol(epsilon),
-                &mut a_b_buffer,
-            );
-            let (x_warm, y_warm, j_warm) = if x_mid.is_nan() || y_mid.is_nan() {
-                lp_2d_incre::<_, false>(
-                    &a_b,
-                    w,
-                    &Lp2dNoWarmStart,
-                    &LpToleranceOptions::with_feas_tol(epsilon),
-                    &mut a_b_buffer,
-                )
-            } else {
-                lp_2d_incre::<_, false>(
-                    &a_b,
-                    w,
-                    &Lp2dWarmStart {
-                        x0: (x_mid, y_mid),
-                        skip: n_warm,
-                    },
-                    &LpToleranceOptions::with_feas_tol(epsilon),
-                    &mut a_b_buffer,
-                )
-            };
-            let time_warm = start.elapsed().as_secs_f64() * 1E9; // ns
-            assert!(
-                j_warm.is_nan()
-                    || j_warm.is_infinite()
-                    || (w.0 * x_warm + w.1 * y_warm - j_warm).abs() < 1E-6
-            );
-
-            // println!(
-            //     "Clarabel: time = {:?}, x = {}, y = {}, J = {}",
-            //     time_clarabel, x_clarabel, y_clarabel, j_clarabel
-            // );
-            if flag_print_step && (i + 1) % 1000 == 0 {
-                crate::verbosity_log!(
-                    crate::diag::Verbosity::Summary,
-                    "Exp #{}: time_cold/n: {:.3} ns, time_warm/n: {:.3} ns, j_cold: {:.3e}, j_warm: {:.3e}",
-                    i + 1,
-                    time_cold / n.max(1) as f64,
-                    time_warm / n.max(1) as f64,
-                    j_cold,
-                    j_warm,
-                );
-            }
-            time_sum_cold += time_cold / n.max(1) as f64;
-            time_sum_warm += time_warm / n.max(1) as f64;
-
-            let cold_failed =
-                j_cold.is_nan() || j_cold.is_infinite() || x_cold.abs() > 1E8 || y_cold.abs() > 1E8;
-            let warm_failed =
-                j_warm.is_nan() || j_warm.is_infinite() || x_warm.abs() > 1E8 || y_warm.abs() > 1E8;
-            let flag_assert =
-                (warm_failed != cold_failed) || (!warm_failed && ((j_warm - j_cold).abs() >= 1E-3));
-            let flag_assert = if flag_assert {
-                crate::verbosity_log!(crate::diag::Verbosity::Summary, "a_b = {a_b:?}");
-                crate::verbosity_log!(crate::diag::Verbosity::Summary, "w: {w:?}");
-                crate::verbosity_log!(crate::diag::Verbosity::Summary, "n_warm: {n_warm}");
-                crate::verbosity_log!(
-                    crate::diag::Verbosity::Summary,
-                    "j_warm-j_cold: {}",
-                    j_warm - j_cold,
-                );
-                crate::verbosity_log!(
-                    crate::diag::Verbosity::Summary,
-                    "x_warm = {x_warm:<10.3e}, x_inc = {x_cold:<10.3e}"
-                );
-                crate::verbosity_log!(
-                    crate::diag::Verbosity::Summary,
-                    "y_warm = {y_warm:<10.3e}, y_inc = {y_cold:<10.3e}"
-                );
-                if !warm_failed {
-                    let delta = a_b.iter().map(|(a, b, c)| c - a * x_cold - b * y_cold);
-                    let delta_min = delta.clone().fold(f64::INFINITY, |a, b| a.min(b));
-                    crate::verbosity_log!(
-                        crate::diag::Verbosity::Summary,
-                        "Minimum slackness at incremental solution: {delta_min}"
-                    );
-                    if delta_min < -epsilon {
-                        crate::verbosity_log!(
-                            crate::diag::Verbosity::Debug,
-                            "Incremental solution is infeasible!"
-                        );
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    true
-                }
-            } else {
-                false
-            };
-            assert!(!flag_assert);
-        }
-        crate::verbosity_log!(
-            crate::diag::Verbosity::Summary,
-            "Average time per constraint: warm = {:.3} ns, cold = {:.3} ns",
-            time_sum_warm / n_exp as f64,
-            time_sum_cold / n_exp as f64,
+        let (x, y) = lp_2d_incre_max_y::<_, false>(&mut a_b, &warm_start, &tol);
+        assert!(
+            y > LP_BOUND,
+            "the box never grew: y={y} is still the edge of the starting box"
+        );
+        assert!(
+            x.abs() < 1.0 && (y - 1.0e8).abs() < 1.0,
+            "expected the apex (0, 1e8), got ({x}, {y})"
+        );
+        // The rows carry unit normals but sit at a right-hand side of `1e8`, so
+        // a residual is only meaningful against that scale, not against the
+        // feasibility tolerance the solver was given.
+        assert!(
+            a_b.iter().all(|&(a, b, c)| a * x + b * y - c <= 1.0e-3),
+            "the returned point must satisfy every row at the scale of its rows"
         );
     }
 }

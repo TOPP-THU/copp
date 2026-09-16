@@ -36,6 +36,9 @@
 //! mutex on the C++ side. Rust traits require `Send + Sync`, so this module
 //! marks the bridge wrappers as `Send`/`Sync` with that serialization contract.
 
+// The bridge and facade signatures mirror the flat C++ API argument lists.
+#![allow(clippy::too_many_arguments)]
+
 #[cxx::bridge(namespace = "copp::bridge")]
 pub mod ffi {
     /// Internal matrix-view descriptor passed by the C++ facade.
@@ -151,6 +154,35 @@ pub mod ffi {
         num_stationary_end: usize,
     }
 
+    /// Internal scalar part of a waypoint-fitting configuration.
+    ///
+    /// Fields mirror Rust `SmoothingConfig` and public C++
+    /// `copp::SmoothingConfig`. Vector payloads (`tolerance_per_axis`, `axes`,
+    /// `parameters`) travel as separate borrowed slices; `has_axes` and
+    /// `has_parameters` distinguish `None` from an explicit empty vector.
+    /// `out_of_range_mode` uses `0 = Error`, `1 = Clamp`.
+    struct SmoothingConfigBridge {
+        tolerance: f64,
+        has_axes: bool,
+        has_parameters: bool,
+        max_refinements: usize,
+        max_segments: usize,
+        out_of_range_mode: u8,
+    }
+
+    /// Internal TOPP2 violation magnitudes returned by `exceed_topp2`.
+    struct ExceedTopp2Bridge {
+        exceed_1order: f64,
+        exceed_2order: f64,
+    }
+
+    /// Internal TOPP3 violation magnitudes returned by `exceed_topp3`.
+    struct ExceedTopp3Bridge {
+        exceed_1order: f64,
+        exceed_2order: f64,
+        exceed_3order: f64,
+    }
+
     // C++ callback objects owned by Rust-side path/robot wrappers.
     //
     // These are declared as opaque generated bridge types. Their concrete
@@ -235,6 +267,7 @@ pub mod ffi {
         type Profile3rdResult;
         type ReachSet2Result;
         type RobotHandle;
+        type SmoothingReportResult;
         type Copp2SocpResult;
         type Topp3SolverResult;
         type TimeProfile2Result;
@@ -281,6 +314,16 @@ pub mod ffi {
             num_stationary_end: usize,
             t0: f64,
         ) -> Box<TimeProfile2Result>;
+        // Adjust `a`/`b` in place so interpolated `a(s)` stays strictly
+        // positive per interval. Returns `false` when the adjustment fails.
+        fn force_positive_a_3rd(
+            s: &[f64],
+            a: &mut [f64],
+            b: &mut [f64],
+            num_stationary_start: usize,
+            num_stationary_end: usize,
+            a_min: f64,
+        ) -> Result<bool>;
         fn t_to_s_topp3_uniform(
             s: &[f64],
             a: &[f64],
@@ -336,6 +379,14 @@ pub mod ffi {
             end_state_cols: usize,
             end_state_leading_dim: usize,
         ) -> Result<Box<PathHandle>>;
+        fn path_from_waypoints_fitting(
+            data: &[f64],
+            desc: MatrixDescriptor,
+            config: SmoothingConfigBridge,
+            tolerance_per_axis: &[f64],
+            axes: &[usize],
+            parameters: &[f64],
+        ) -> Result<Box<PathHandle>>;
         fn path_from_evaluator_2nd(
             evaluator: UniquePtr<CppPathEvaluator2nd>,
             s_min: f64,
@@ -357,6 +408,18 @@ pub mod ffi {
         fn evaluate_q(self: &PathHandle, s: &[f64]) -> Result<Box<PathEvalQResult>>;
         fn evaluate_up_to_2nd(self: &PathHandle, s: &[f64]) -> Result<Box<PathEval2Result>>;
         fn evaluate_up_to_3rd(self: &PathHandle, s: &[f64]) -> Result<Box<PathEval3Result>>;
+        // Copy fitting diagnostics; `has_report()` is false for non-fitted paths.
+        fn smoothing_report(self: &PathHandle) -> Box<SmoothingReportResult>;
+
+        // Borrow waypoint-fitting diagnostics for immediate C++ copying.
+        fn has_report(self: &SmoothingReportResult) -> bool;
+        fn axes(self: &SmoothingReportResult) -> &[usize];
+        fn segments(self: &SmoothingReportResult) -> usize;
+        fn interpolated_segments(self: &SmoothingReportResult) -> usize;
+        fn refinements(self: &SmoothingReportResult) -> usize;
+        fn fitting_rows(self: &SmoothingReportResult) -> usize;
+        fn checked_intervals(self: &SmoothingReportResult) -> usize;
+        fn max_errors(self: &SmoothingReportResult) -> &[f64];
 
         // Borrow position-only evaluation output as a flat column-major slice.
         fn q(self: &PathEvalQResult) -> &[f64];
@@ -421,6 +484,16 @@ pub mod ffi {
             objectives: &[ObjectiveDescriptor],
             objective_data: &[f64],
         ) -> Result<usize>;
+        // Maximum TOPP2/TOPP3 violation magnitudes; NaNs when unavailable.
+        fn exceed_topp2(self: &RobotHandle, idx_s_start: usize, a: &[f64]) -> ExceedTopp2Bridge;
+        fn exceed_topp3(
+            self: &RobotHandle,
+            idx_s_start: usize,
+            a: &[f64],
+            b: &[f64],
+            num_stationary_start: usize,
+            num_stationary_end: usize,
+        ) -> ExceedTopp3Bridge;
 
         // -----------------------------------------------------------------
         // TOPP2 / COPP2 solver entry points.
@@ -487,14 +560,14 @@ pub mod ffi {
         // TOPP3 / COPP3 solver entry points.
         //
         // Problem preparation immediately linearizes third-order constraints at
-        // `a_linearization` and returns inferred stationary counts. RA/reach-set
-        // calls optionally receive borrowed `a_given`/`b_given` profiles; the
-        // C++ facade owns those buffers when long-lived options are copied.
+        // `a_linearization` and returns inferred stationary counts. Solver
+        // functions then borrow the same linearized constraint window.
         // -----------------------------------------------------------------
         fn topp3_problem_prepare(
             self: &mut RobotHandle,
             idx_s_start: usize,
             a_linearization: &[f64],
+            b_linearization: &[f64],
             a_start: f64,
             a_final: f64,
             b_start: f64,
@@ -507,6 +580,7 @@ pub mod ffi {
             self: &mut RobotHandle,
             idx_s_start: usize,
             a_linearization: &[f64],
+            b_linearization: &[f64],
             a_start: f64,
             a_final: f64,
             b_start: f64,
@@ -520,6 +594,7 @@ pub mod ffi {
             self: &mut RobotHandle,
             idx_s_start: usize,
             a_linearization: &[f64],
+            b_linearization: &[f64],
             a_start: f64,
             a_final: f64,
             b_start: f64,
@@ -533,6 +608,7 @@ pub mod ffi {
             self: &mut RobotHandle,
             idx_s_start: usize,
             a_linearization: &[f64],
+            b_linearization: &[f64],
             a_start: f64,
             a_final: f64,
             b_start: f64,
@@ -546,6 +622,7 @@ pub mod ffi {
             self: &mut RobotHandle,
             idx_s_start: usize,
             a_linearization: &[f64],
+            b_linearization: &[f64],
             a_start: f64,
             a_final: f64,
             b_start: f64,
@@ -559,6 +636,7 @@ pub mod ffi {
             self: &mut RobotHandle,
             idx_s_start: usize,
             a_linearization: &[f64],
+            b_linearization: &[f64],
             a_start: f64,
             a_final: f64,
             b_start: f64,
@@ -573,6 +651,7 @@ pub mod ffi {
             self: &mut RobotHandle,
             idx_s_start: usize,
             a_linearization: &[f64],
+            b_linearization: &[f64],
             a_start: f64,
             a_final: f64,
             b_start: f64,
@@ -588,6 +667,7 @@ pub mod ffi {
             self: &mut RobotHandle,
             idx_s_start: usize,
             a_linearization: &[f64],
+            b_linearization: &[f64],
             a_start: f64,
             a_final: f64,
             b_start: f64,
@@ -745,7 +825,9 @@ use crate::copp::constraints::ModePopConstraints;
 use crate::copp::copp2::opt2::copp2_socp::objective_value_copp2_opt;
 use crate::copp::copp3::opt3::copp3_socp::objective_value_copp3_opt;
 use crate::copp::{ClarabelOptionsBuilder, CoppObjective, InterpolationMode};
-use crate::path::{OutOfRangeMode, Path, SplineConfig};
+use crate::path::{
+    OutOfRangeMode, Path, SmoothingConfig, SmoothingReport, SmoothingTolerance, SplineConfig,
+};
 use crate::{
     diag::{PathError, RobotDynamicsError, Verbosity},
     path::{PathEvaluator2nd, PathEvaluator3rd},
@@ -915,6 +997,14 @@ pub struct PathEval3Result {
     dq: Vec<f64>,
     ddq: Vec<f64>,
     dddq: Vec<f64>,
+}
+
+/// Owned waypoint-fitting diagnostics copied from Rust [`SmoothingReport`].
+///
+/// `report` is `None` for paths that were not built by waypoint fitting; the
+/// C++ facade then returns `std::nullopt` from `Path::smoothing_report()`.
+pub struct SmoothingReportResult {
+    report: Option<SmoothingReport>,
 }
 
 /// Time-interpolation result used by TOPP2 and TOPP3 interpolation.
@@ -1205,7 +1295,66 @@ fn path_from_waypoints(
         end_state,
         ..SplineConfig::default()
     };
-    let inner = Path::from_waypoints_view(waypoints, config).map_err(|error| error.to_string())?;
+    let inner = Path::from_waypoints_interpolating_view(waypoints, config)
+        .map_err(|error| error.to_string())?;
+
+    Ok(Box::new(PathHandle { inner }))
+}
+
+/// Build a tolerance-fitted Rust path from a C++ waypoint matrix.
+///
+/// # Inputs
+/// - `data`, `desc`: waypoint matrix view described by [`MatrixDescriptor`];
+///   it is copied into an owned column-major matrix before fitting.
+/// - `config`: scalar [`SmoothingConfig`] fields.
+/// - `tolerance_per_axis`: empty selects `SmoothingTolerance::Uniform(config.tolerance)`;
+///   otherwise `SmoothingTolerance::PerAxis` in selected-axis order.
+/// - `axes`, `parameters`: forwarded as `Some(..)` only when
+///   `config.has_axes` / `config.has_parameters` is true.
+///
+/// # Output
+/// Returns an opaque [`PathHandle`] whose path keeps its [`SmoothingReport`].
+fn path_from_waypoints_fitting(
+    data: &[f64],
+    desc: ffi::MatrixDescriptor,
+    config: ffi::SmoothingConfigBridge,
+    tolerance_per_axis: &[f64],
+    axes: &[usize],
+    parameters: &[f64],
+) -> Result<Box<PathHandle>, String> {
+    let waypoints = matrix_from_bridge("path_from_waypoints_fitting: waypoints", data, desc)?;
+    if waypoints.nrows() == 0 {
+        return Err("path_from_waypoints_fitting: `rows` must be positive".into());
+    }
+    if waypoints.ncols() < 2 {
+        return Err("path_from_waypoints_fitting: `cols` must be at least 2".into());
+    }
+
+    let out_of_range_mode = match config.out_of_range_mode {
+        0 => OutOfRangeMode::Error,
+        1 => OutOfRangeMode::Clamp,
+        other => {
+            return Err(format!(
+                "path_from_waypoints_fitting: unsupported out_of_range_mode {other}"
+            ));
+        }
+    };
+    let tolerance = if tolerance_per_axis.is_empty() {
+        SmoothingTolerance::Uniform(config.tolerance)
+    } else {
+        SmoothingTolerance::PerAxis(tolerance_per_axis.to_vec())
+    };
+
+    let smoothing = SmoothingConfig {
+        tolerance,
+        axes: config.has_axes.then(|| axes.to_vec()),
+        parameters: config.has_parameters.then(|| parameters.to_vec()),
+        max_refinements: config.max_refinements,
+        max_segments: config.max_segments,
+        out_of_range_mode,
+    };
+    let inner = Path::from_waypoints_fitting_view(waypoints.as_view(), smoothing)
+        .map_err(|error| error.to_string())?;
 
     Ok(Box::new(PathHandle { inner }))
 }
@@ -1368,6 +1517,26 @@ fn s_to_t_topp3(
     }
 }
 
+/// Adjust a TOPP3/COPP3 profile in place so interpolated `a(s)` stays positive.
+///
+/// Returns `Ok(false)` when the Rust post-processing could not repair every
+/// interval; invalid input (lengths, finiteness, ordering) is an error.
+fn force_positive_a_3rd(
+    s: &[f64],
+    a: &mut [f64],
+    b: &mut [f64],
+    num_stationary_start: usize,
+    num_stationary_end: usize,
+    a_min: f64,
+) -> Result<bool, String> {
+    crate::solver::topp3_socp::force_positive_a(
+        (a, b, (num_stationary_start, num_stationary_end)),
+        s,
+        a_min,
+    )
+    .map_err(|error| error.to_string())
+}
+
 /// Sample `s(t)` on a generated uniform time grid for a TOPP3/COPP3 profile.
 fn t_to_s_topp3_uniform(
     s: &[f64],
@@ -1527,6 +1696,20 @@ fn reach_set2_options_from_bridge(
         .verbosity(verbosity_from_bridge(verbosity)?)
         .build()
         .map_err(|error| error.to_string())
+}
+
+/// Select the third-order linearization mode from the C++ `b_linearization`.
+///
+/// An empty slice keeps `LinearizationModeTopp3::Direct`. A non-empty slice
+/// selects `GivenFeasibleAdaptive`; the Rust problem builders reject a
+/// `b_linearization` whose length differs from `a_linearization`.
+fn linearization_mode_from_bridge(
+    b_linearization: &[f64],
+) -> crate::solver::topp3_lp::LinearizationModeTopp3<'_> {
+    if b_linearization.is_empty() {
+        return crate::solver::topp3_lp::LinearizationModeTopp3::Direct;
+    }
+    crate::solver::topp3_lp::LinearizationModeTopp3::GivenFeasibleAdaptive(b_linearization)
 }
 
 fn direct_solve_method_to_bridge(settings: &DefaultSettings<f64>) -> u8 {
@@ -2026,6 +2209,12 @@ impl PathHandle {
             dddq: dddq.as_slice().to_vec(),
         }))
     }
+
+    fn smoothing_report(&self) -> Box<SmoothingReportResult> {
+        Box::new(SmoothingReportResult {
+            report: self.inner.smoothing_report().cloned(),
+        })
+    }
 }
 
 impl RobotHandle {
@@ -2178,6 +2367,37 @@ impl RobotHandle {
         Ok(problem.s_len())
     }
 
+    /// Evaluate maximum TOPP2 violation magnitudes for node profile `a`.
+    fn exceed_topp2(&self, idx_s_start: usize, a: &[f64]) -> ffi::ExceedTopp2Bridge {
+        let (exceed_1order, exceed_2order) = self.inner.constraints.exceed_topp2(idx_s_start, a);
+        ffi::ExceedTopp2Bridge {
+            exceed_1order,
+            exceed_2order,
+        }
+    }
+
+    /// Evaluate maximum TOPP3 violation magnitudes for node profile `(a, b)`.
+    fn exceed_topp3(
+        &self,
+        idx_s_start: usize,
+        a: &[f64],
+        b: &[f64],
+        num_stationary_start: usize,
+        num_stationary_end: usize,
+    ) -> ffi::ExceedTopp3Bridge {
+        let (exceed_1order, exceed_2order, exceed_3order) = self.inner.constraints.exceed_topp3(
+            idx_s_start,
+            a,
+            b,
+            (num_stationary_start, num_stationary_end),
+        );
+        ffi::ExceedTopp3Bridge {
+            exceed_1order,
+            exceed_2order,
+            exceed_3order,
+        }
+    }
+
     /// Compute backward-only TOPP2 reachable intervals.
     #[allow(clippy::too_many_arguments)]
     fn reach_set2_backward(
@@ -2319,6 +2539,7 @@ impl RobotHandle {
         &mut self,
         idx_s_start: usize,
         a_linearization: &[f64],
+        b_linearization: &[f64],
         a_start: f64,
         a_final: f64,
         b_start: f64,
@@ -2330,6 +2551,7 @@ impl RobotHandle {
             &crate::copp::copp3::stable::basic::Topp3Problem<'_>,
         ) -> Result<R, crate::diag::CoppError>,
     ) -> Result<R, String> {
+        let linearization_mode = linearization_mode_from_bridge(b_linearization);
         let problem = crate::solver::topp3_lp::Topp3ProblemBuilder::with_constraint(
             &mut self.inner.constraints,
             idx_s_start,
@@ -2339,6 +2561,7 @@ impl RobotHandle {
         )
         .with_num_stationary_max_pair((num_stationary_max_start, num_stationary_max_end))
         .with_a_linearization_floor(a_linearization_floor)
+        .with_linearization_mode(linearization_mode)
         .build_with_linearization()
         .map_err(|error| error.to_string())?;
         f(&problem).map_err(|error| error.to_string())
@@ -2350,6 +2573,7 @@ impl RobotHandle {
         &mut self,
         idx_s_start: usize,
         a_linearization: &[f64],
+        b_linearization: &[f64],
         a_start: f64,
         a_final: f64,
         b_start: f64,
@@ -2361,6 +2585,7 @@ impl RobotHandle {
         self.with_topp3_problem(
             idx_s_start,
             a_linearization,
+            b_linearization,
             a_start,
             a_final,
             b_start,
@@ -2387,6 +2612,7 @@ impl RobotHandle {
         &mut self,
         idx_s_start: usize,
         a_linearization: &[f64],
+        b_linearization: &[f64],
         a_start: f64,
         a_final: f64,
         b_start: f64,
@@ -2400,6 +2626,7 @@ impl RobotHandle {
         self.with_topp3_problem(
             idx_s_start,
             a_linearization,
+            b_linearization,
             a_start,
             a_final,
             b_start,
@@ -2418,6 +2645,7 @@ impl RobotHandle {
         &mut self,
         idx_s_start: usize,
         a_linearization: &[f64],
+        b_linearization: &[f64],
         a_start: f64,
         a_final: f64,
         b_start: f64,
@@ -2431,6 +2659,7 @@ impl RobotHandle {
         self.with_topp3_problem(
             idx_s_start,
             a_linearization,
+            b_linearization,
             a_start,
             a_final,
             b_start,
@@ -2456,6 +2685,7 @@ impl RobotHandle {
         &mut self,
         idx_s_start: usize,
         a_linearization: &[f64],
+        b_linearization: &[f64],
         a_start: f64,
         a_final: f64,
         b_start: f64,
@@ -2469,6 +2699,7 @@ impl RobotHandle {
         self.with_topp3_problem(
             idx_s_start,
             a_linearization,
+            b_linearization,
             a_start,
             a_final,
             b_start,
@@ -2487,6 +2718,7 @@ impl RobotHandle {
         &mut self,
         idx_s_start: usize,
         a_linearization: &[f64],
+        b_linearization: &[f64],
         a_start: f64,
         a_final: f64,
         b_start: f64,
@@ -2500,6 +2732,7 @@ impl RobotHandle {
         self.with_topp3_problem(
             idx_s_start,
             a_linearization,
+            b_linearization,
             a_start,
             a_final,
             b_start,
@@ -2524,6 +2757,7 @@ impl RobotHandle {
         &mut self,
         idx_s_start: usize,
         a_linearization: &[f64],
+        b_linearization: &[f64],
         a_start: f64,
         a_final: f64,
         b_start: f64,
@@ -2546,6 +2780,7 @@ impl RobotHandle {
             a_linearization.len(),
         )
         .map_err(|error| error.to_string())?;
+        let linearization_mode = linearization_mode_from_bridge(b_linearization);
         let problem = crate::solver::copp3_socp::Copp3ProblemBuilder::new(
             &mut self.inner,
             &objectives,
@@ -2556,6 +2791,7 @@ impl RobotHandle {
         )
         .with_num_stationary_max_pair((num_stationary_max_start, num_stationary_max_end))
         .with_a_linearization_floor(a_linearization_floor)
+        .with_linearization_mode(linearization_mode)
         .build_with_linearization()
         .map_err(|error| error.to_string())?;
         f(&problem, &objectives).map_err(|error| error.to_string())
@@ -2567,6 +2803,7 @@ impl RobotHandle {
         &mut self,
         idx_s_start: usize,
         a_linearization: &[f64],
+        b_linearization: &[f64],
         a_start: f64,
         a_final: f64,
         b_start: f64,
@@ -2580,6 +2817,7 @@ impl RobotHandle {
         self.with_copp3_problem(
             idx_s_start,
             a_linearization,
+            b_linearization,
             a_start,
             a_final,
             b_start,
@@ -2608,6 +2846,7 @@ impl RobotHandle {
         &mut self,
         idx_s_start: usize,
         a_linearization: &[f64],
+        b_linearization: &[f64],
         a_start: f64,
         a_final: f64,
         b_start: f64,
@@ -2623,6 +2862,7 @@ impl RobotHandle {
         self.with_copp3_problem(
             idx_s_start,
             a_linearization,
+            b_linearization,
             a_start,
             a_final,
             b_start,
@@ -2643,6 +2883,7 @@ impl RobotHandle {
         &mut self,
         idx_s_start: usize,
         a_linearization: &[f64],
+        b_linearization: &[f64],
         a_start: f64,
         a_final: f64,
         b_start: f64,
@@ -2658,6 +2899,7 @@ impl RobotHandle {
         self.with_copp3_problem(
             idx_s_start,
             a_linearization,
+            b_linearization,
             a_start,
             a_final,
             b_start,
@@ -3253,6 +3495,50 @@ impl PathEval3Result {
     }
 }
 
+impl SmoothingReportResult {
+    fn has_report(&self) -> bool {
+        self.report.is_some()
+    }
+
+    fn axes(&self) -> &[usize] {
+        self.report
+            .as_ref()
+            .map(|report| report.axes.as_slice())
+            .unwrap_or(&[])
+    }
+
+    fn segments(&self) -> usize {
+        self.report.as_ref().map_or(0, |report| report.segments)
+    }
+
+    fn interpolated_segments(&self) -> usize {
+        self.report
+            .as_ref()
+            .map_or(0, |report| report.interpolated_segments)
+    }
+
+    fn refinements(&self) -> usize {
+        self.report.as_ref().map_or(0, |report| report.refinements)
+    }
+
+    fn fitting_rows(&self) -> usize {
+        self.report.as_ref().map_or(0, |report| report.fitting_rows)
+    }
+
+    fn checked_intervals(&self) -> usize {
+        self.report
+            .as_ref()
+            .map_or(0, |report| report.checked_intervals)
+    }
+
+    fn max_errors(&self) -> &[f64] {
+        self.report
+            .as_ref()
+            .map(|report| report.max_errors.as_slice())
+            .unwrap_or(&[])
+    }
+}
+
 impl TimeProfile2Result {
     fn ok(&self) -> bool {
         self.ok
@@ -3330,9 +3616,9 @@ mod tests {
     /// bridge to ensure profile/expert result copying stays compatible with Rust.
     #[test]
     fn topp3_solvers_smoke() {
-        let s = [0.0, 0.5, 1.0];
-        let amax = [1.0, 1.0, 1.0];
-        let a_linearization = [0.25, 0.25, 0.25];
+        let s = [0.0, 0.25, 0.5, 0.75, 1.0];
+        let amax = [1.0; 5];
+        let a_linearization = [0.25; 5];
         let make_options = || {
             let mut options = clarabel_default_options();
             options.allow_almost_solved = true;
@@ -3347,15 +3633,26 @@ mod tests {
             second_len: 0,
         }];
 
-        let mut robot = robot_new(1, 3).unwrap();
+        let mut robot = robot_new(1, 5).unwrap();
         robot.append_s(&s).unwrap();
         robot.add_constraint_1st_vector(&amax, 0).unwrap();
 
         let info = robot
-            .topp3_problem_prepare(0, &a_linearization, 0.25, 0.25, 0.0, 0.0, 1, 1, 1.0e-10)
+            .topp3_problem_prepare(
+                0,
+                &a_linearization,
+                &[],
+                0.25,
+                0.25,
+                0.0,
+                0.0,
+                1,
+                1,
+                1.0e-10,
+            )
             .unwrap();
-        assert_eq!(info.s_len, 3);
-        assert_eq!(info.idx_s_final, 2);
+        assert_eq!(info.s_len, 5);
+        assert_eq!(info.idx_s_final, 4);
         assert_eq!(info.num_stationary_start, 0);
         assert_eq!(info.num_stationary_end, 0);
 
@@ -3363,6 +3660,7 @@ mod tests {
             .topp3_lp_solve(
                 0,
                 &a_linearization,
+                &[],
                 0.25,
                 0.25,
                 0.0,
@@ -3373,13 +3671,14 @@ mod tests {
                 make_options(),
             )
             .unwrap();
-        assert_eq!(lp.a().len(), 3);
-        assert_eq!(lp.b().len(), 3);
+        assert_eq!(lp.a().len(), 5);
+        assert_eq!(lp.b().len(), 5);
 
         let socp = robot
             .topp3_socp_solve(
                 0,
                 &a_linearization,
+                &[],
                 0.25,
                 0.25,
                 0.0,
@@ -3390,13 +3689,14 @@ mod tests {
                 make_options(),
             )
             .unwrap();
-        assert_eq!(socp.a().len(), 3);
-        assert_eq!(socp.b().len(), 3);
+        assert_eq!(socp.a().len(), 5);
+        assert_eq!(socp.b().len(), 5);
 
         let copp_info = robot
             .copp3_problem_prepare(
                 0,
                 &a_linearization,
+                &[],
                 0.25,
                 0.25,
                 0.0,
@@ -3408,12 +3708,13 @@ mod tests {
                 &[],
             )
             .unwrap();
-        assert_eq!(copp_info.s_len, 3);
+        assert_eq!(copp_info.s_len, 5);
 
         let expert = robot
             .copp3_socp_solve_expert(
                 0,
                 &a_linearization,
+                &[],
                 0.25,
                 0.25,
                 0.0,
@@ -3427,8 +3728,8 @@ mod tests {
             )
             .unwrap();
         assert!(expert.has_profile());
-        assert_eq!(expert.profile_a().len(), 3);
-        assert_eq!(expert.profile_b().len(), 3);
+        assert_eq!(expert.profile_a().len(), 5);
+        assert_eq!(expert.profile_b().len(), 5);
         assert!(expert.has_objective_value());
         assert_eq!(expert.objective_terms().len(), 1);
     }
@@ -3667,5 +3968,315 @@ mod tests {
         assert!(expert.obj_val().is_finite());
         assert!(expert.has_objective_value());
         assert_eq!(expert.objective_terms().len(), 1);
+    }
+
+    /// Build the unit-limit two-axis third-order robot used by the
+    /// contour-algorithm and linearization-mode bridge tests.
+    fn unit_limit_third_order_robot(n: usize) -> Box<RobotHandle> {
+        let dim = 2;
+        let s = (0..n)
+            .map(|i| i as f64 / (n - 1) as f64)
+            .collect::<Vec<_>>();
+        let mut q = vec![0.0; dim * n];
+        let mut dq = vec![0.0; dim * n];
+        let ddq = vec![0.0; dim * n];
+        let dddq = vec![0.0; dim * n];
+        for (col, s_value) in s.iter().copied().enumerate() {
+            q[col * dim] = s_value;
+            q[col * dim + 1] = 2.0 * s_value;
+            dq[col * dim] = 1.0;
+            dq[col * dim + 1] = 2.0;
+        }
+        let desc = || ffi::MatrixDescriptor {
+            rows: dim,
+            cols: n,
+            leading_dim: dim,
+            layout: 0,
+        };
+
+        let mut robot = robot_new(dim, n).unwrap();
+        robot.append_s(&s).unwrap();
+        robot
+            .set_q_3rd(&q, desc(), &dq, desc(), &ddq, desc(), &dddq, desc(), 0)
+            .unwrap();
+        let upper = [1.0, 1.0];
+        let lower = [-1.0, -1.0];
+        for kind in 0..3 {
+            robot
+                .add_limits_broadcast(kind, &upper, &lower, 0, s.len())
+                .unwrap();
+        }
+        robot
+    }
+
+    /// Test purpose: fitted waypoint paths expose a smoothing report whose
+    /// bounds respect the requested tolerances, interpolated paths do not,
+    /// and invalid fitting input becomes a bridge error.
+    #[test]
+    fn path_from_waypoints_fitting_smoke() {
+        let waypoints = [
+            0.0, 0.0, //
+            0.25, 0.1, //
+            0.5, -0.1, //
+            0.75, 0.2, //
+            1.0, 0.0,
+        ];
+        let desc = || ffi::MatrixDescriptor {
+            rows: 2,
+            cols: 5,
+            leading_dim: 2,
+            layout: 0,
+        };
+        let config = |tolerance: f64| ffi::SmoothingConfigBridge {
+            tolerance,
+            has_axes: false,
+            has_parameters: false,
+            max_refinements: 20,
+            max_segments: 20_000,
+            out_of_range_mode: 0,
+        };
+
+        let path =
+            path_from_waypoints_fitting(&waypoints, desc(), config(1.0e-3), &[], &[], &[]).unwrap();
+        let report = path.smoothing_report();
+        assert!(report.has_report());
+        assert_eq!(report.axes(), &[0, 1]);
+        assert_eq!(report.max_errors().len(), 2);
+        assert!(report.max_errors().iter().all(|&error| error <= 1.0e-3));
+        assert!(report.segments() > 0);
+
+        let per_axis = path_from_waypoints_fitting(
+            &waypoints,
+            desc(),
+            ffi::SmoothingConfigBridge {
+                has_axes: true,
+                has_parameters: true,
+                ..config(1.0e-3)
+            },
+            &[1.0e-2],
+            &[1],
+            &[2.0, 2.5, 3.0, 3.5, 4.0],
+        )
+        .unwrap();
+        assert_eq!(per_axis.s_min(), 2.0);
+        assert_eq!(per_axis.s_max(), 4.0);
+        let per_axis_report = per_axis.smoothing_report();
+        assert_eq!(per_axis_report.axes(), &[1]);
+        assert!(per_axis_report.max_errors()[0] <= 1.0e-2);
+
+        let interpolated = path_from_waypoints(
+            &waypoints,
+            2,
+            5,
+            2,
+            5,
+            0.0,
+            1.0,
+            0,
+            &[],
+            0,
+            0,
+            0,
+            &[],
+            0,
+            0,
+            0,
+        )
+        .unwrap();
+        assert!(!interpolated.smoothing_report().has_report());
+        assert!(interpolated.smoothing_report().max_errors().is_empty());
+
+        assert!(
+            path_from_waypoints_fitting(&waypoints, desc(), config(0.0), &[], &[], &[]).is_err()
+        );
+    }
+
+    /// Test purpose: exercise the in-place TOPP3 positivity post-processing
+    /// bridge and its invalid-input error path.
+    #[test]
+    fn force_positive_a_3rd_smoke() {
+        let s = [0.0, 0.25, 0.5, 0.75, 1.0];
+        let mut a = [1.0; 5];
+        let mut b = [0.0; 5];
+        assert!(force_positive_a_3rd(&s, &mut a, &mut b, 0, 0, 1.0e-12).unwrap());
+        assert_eq!(a, [1.0; 5]);
+        assert_eq!(b, [0.0; 5]);
+
+        let mut short_a = [1.0; 3];
+        let mut short_b = [0.0; 3];
+        assert!(force_positive_a_3rd(&s[..3], &mut short_a, &mut short_b, 0, 0, 1.0e-12).is_err());
+    }
+
+    /// Test purpose: TOPP2/TOPP3 violation magnitudes are non-positive for a
+    /// feasible profile, positive when `a` exceeds `amax`, and NaN when the
+    /// station range or profile lengths are unusable.
+    #[test]
+    fn exceed_smoke() {
+        let s = [0.0, 0.5, 1.0];
+        let amax = [1.0, 1.0, 1.0];
+        let mut robot = robot_new(1, 3).unwrap();
+        robot.append_s(&s).unwrap();
+        robot.add_constraint_1st_vector(&amax, 0).unwrap();
+
+        let feasible = robot.exceed_topp2(0, &[0.5, 0.5, 0.5]);
+        assert!(feasible.exceed_1order <= 0.0);
+        assert!(feasible.exceed_2order <= 0.0);
+        assert!(robot.exceed_topp2(0, &[0.5, 2.0, 0.5]).exceed_1order > 0.0);
+        assert!(robot.exceed_topp2(5, &[0.5, 0.5]).exceed_1order.is_nan());
+
+        let zero_b = [0.0, 0.0, 0.0];
+        let feasible = robot.exceed_topp3(0, &[0.5, 0.5, 0.5], &zero_b, 0, 0);
+        assert!(feasible.exceed_1order <= 0.0);
+        assert!(feasible.exceed_2order <= 0.0);
+        assert!(feasible.exceed_3order <= 0.0);
+        assert!(
+            robot
+                .exceed_topp3(0, &[0.5, 2.0, 0.5], &zero_b, 0, 0)
+                .exceed_1order
+                > 0.0
+        );
+        assert!(
+            robot
+                .exceed_topp3(0, &[0.5, 0.5, 0.5], &zero_b[..2], 0, 0)
+                .exceed_1order
+                .is_nan()
+        );
+    }
+
+    /// Solve zero-boundary TOPP3-LP through the raw bridge.
+    fn solve_topp3_lp(
+        robot: &mut RobotHandle,
+        a_linearization: &[f64],
+        b_linearization: &[f64],
+    ) -> Result<Box<Profile3rdResult>, String> {
+        let mut options = clarabel_default_options();
+        options.allow_almost_solved = true;
+        options.allow_max_iterations = true;
+        options.allow_insufficient_progress = true;
+        robot.topp3_lp_solve(
+            0,
+            a_linearization,
+            b_linearization,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1,
+            1,
+            1.0e-10,
+            options,
+        )
+    }
+
+    /// Test purpose: a solved third-order profile can be fed back as
+    /// `(a_linearization, b_linearization)` to select the adaptive
+    /// linearization mode for TOPP3 and COPP3, and mismatched lengths are
+    /// rejected by the Rust problem builders.
+    #[test]
+    fn topp3_linearization_mode_from_profile() {
+        let n = 7;
+        let mut robot = unit_limit_third_order_robot(n);
+        let first = solve_topp3_lp(&mut robot, &vec![1.0; n], &[]).unwrap();
+        let a_first = first.a().to_vec();
+        let b_first = first.b().to_vec();
+
+        let second = solve_topp3_lp(&mut robot, &a_first, &b_first).unwrap();
+        assert_eq!(second.a().len(), n);
+        assert_eq!(second.b().len(), n);
+        assert!(solve_topp3_lp(&mut robot, &a_first, &b_first[..n - 1]).is_err());
+
+        let objectives = [ffi::ObjectiveDescriptor {
+            kind: 0,
+            weight: 1.0,
+            first_offset: 0,
+            first_len: 0,
+            second_offset: 0,
+            second_len: 0,
+        }];
+        let info = robot
+            .copp3_problem_prepare(
+                0,
+                &a_first,
+                &b_first,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1,
+                1,
+                1.0e-10,
+                &objectives,
+                &[],
+            )
+            .unwrap();
+        assert_eq!(info.s_len, n);
+    }
+
+    /// Test purpose: every third-order bridge entry point forwards
+    /// `b_linearization` to the shared problem builders, so a wrong-length
+    /// `b_linearization` is rejected with the core builders' diagnostic.
+    #[test]
+    fn short_b_linearization_rejected_by_every_third_order_entry() {
+        let n = 7;
+        let mut robot = unit_limit_third_order_robot(n);
+        let a = vec![1.0; n];
+        let b = vec![0.0; n - 1];
+        let objectives = [ffi::ObjectiveDescriptor {
+            kind: 0,
+            weight: 1.0,
+            first_offset: 0,
+            first_len: 0,
+            second_offset: 0,
+            second_len: 0,
+        }];
+        let clarabel = clarabel_default_options;
+        let check = |name: &str, error: Option<String>| {
+            let message =
+                error.unwrap_or_else(|| panic!("{name} accepted a short b_linearization"));
+            assert!(message.contains("b_linearization"), "{name}: {message}");
+        };
+
+        let r = &mut robot;
+        let (z, f) = (0.0, 1.0e-10);
+        check(
+            "topp3_problem_prepare",
+            r.topp3_problem_prepare(0, &a, &b, z, z, z, z, 1, 1, f)
+                .err(),
+        );
+        check(
+            "topp3_lp_solve",
+            r.topp3_lp_solve(0, &a, &b, z, z, z, z, 1, 1, f, clarabel())
+                .err(),
+        );
+        check(
+            "topp3_lp_solve_expert",
+            r.topp3_lp_solve_expert(0, &a, &b, z, z, z, z, 1, 1, f, clarabel())
+                .err(),
+        );
+        check(
+            "topp3_socp_solve",
+            r.topp3_socp_solve(0, &a, &b, z, z, z, z, 1, 1, f, clarabel())
+                .err(),
+        );
+        check(
+            "topp3_socp_solve_expert",
+            r.topp3_socp_solve_expert(0, &a, &b, z, z, z, z, 1, 1, f, clarabel())
+                .err(),
+        );
+        check(
+            "copp3_problem_prepare",
+            r.copp3_problem_prepare(0, &a, &b, z, z, z, z, 1, 1, f, &objectives, &[])
+                .err(),
+        );
+        check(
+            "copp3_socp_solve",
+            r.copp3_socp_solve(0, &a, &b, z, z, z, z, 1, 1, f, &objectives, &[], clarabel())
+                .err(),
+        );
+        check(
+            "copp3_socp_solve_expert",
+            r.copp3_socp_solve_expert(0, &a, &b, z, z, z, z, 1, 1, f, &objectives, &[], clarabel())
+                .err(),
+        );
     }
 }

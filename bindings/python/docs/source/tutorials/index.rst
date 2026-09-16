@@ -10,5 +10,6 @@ When an example changes, the documentation changes with it.
    topp2_ra
    reach_set2
    copp2_socp
+   topp3_lp
    topp3_socp
    copp3_socp

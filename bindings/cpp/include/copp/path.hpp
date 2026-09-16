@@ -328,6 +328,79 @@ namespace copp
         std::optional<Matrix> end_state;
     };
 
+    /// Configuration for tolerance-bounded waypoint fitting.
+    ///
+    /// Used by `Path::from_waypoints_fitting`; mirrors Rust
+    /// `copp::path::SmoothingConfig`. Error is the absolute deviation of
+    /// each selected axis from the input polyline at the same parameter, in
+    /// input units, over the complete parameter domain. No kinematics, angle
+    /// unwrapping, nearest-point search, or unit conversion is performed.
+    ///
+    /// Defaults match Rust/Python:
+    ///
+    /// - fit every input row
+    /// - absolute tolerance `1e-3` on each selected row
+    /// - waypoint parameters uniform on `[0, 1]`
+    /// - at most 20 refinement passes and 20000 selected-axis spans
+    /// - out-of-range queries are errors
+    ///
+    /// @warning Unstable API; see `Path::from_waypoints_fitting`.
+    struct SmoothingConfig
+    {
+        /// Absolute tolerance applied to every selected axis when
+        /// `tolerance_per_axis` is empty. Must be finite and strictly positive.
+        double tolerance = 1.0e-3;
+        /// Optional per-axis absolute tolerances. When non-empty it replaces
+        /// `tolerance`; it needs one finite, strictly positive entry per
+        /// selected axis, in `axes` order (not row order). With
+        /// `axes == std::nullopt` the order is rows `0..dim-1`.
+        std::vector<double> tolerance_per_axis;
+        /// 0-based input rows allowed to deviate from their reference
+        /// polyline. `std::nullopt` selects every row; an explicit list must be
+        /// non-empty, distinct, and in range. Unselected rows keep C4 quintic
+        /// interpolation through all waypoint columns.
+        std::optional<std::vector<std::size_t>> axes;
+        /// Optional common parameter per waypoint column: finite, strictly
+        /// increasing, one entry per column. The first and last entries become
+        /// the path range. `std::nullopt` assigns columns uniformly on `[0, 1]`.
+        std::optional<std::vector<double>> parameters;
+        /// Maximum number of adaptive knot-refinement passes.
+        std::size_t max_refinements = 20;
+        /// Maximum number of polynomial spans used by the selected axes.
+        std::size_t max_segments = 20000;
+        /// Policy for later queries outside the path range.
+        OutOfRangeMode out_of_range = OutOfRangeMode::Error;
+    };
+
+    /// Diagnostics recorded while constructing a fitted waypoint path.
+    ///
+    /// Returned by `Path::smoothing_report()`; mirrors Rust
+    /// `copp::path::SmoothingReport`. `axes`, `segments`, and
+    /// `interpolated_segments` describe the final representation, while
+    /// `refinements`, `fitting_rows`, and `checked_intervals` are cumulative
+    /// work counters. None of these values is an optimality or run-time
+    /// guarantee.
+    struct SmoothingReport
+    {
+        /// Selected input-row indices, in tolerance/report order.
+        std::vector<std::size_t> axes;
+        /// Number of final polynomial spans shared by the selected axes.
+        std::size_t segments = 0;
+        /// Number of spans in the separate unselected-axis interpolant; zero
+        /// when every axis is selected.
+        std::size_t interpolated_segments = 0;
+        /// Number of completed local knot-refinement passes.
+        std::size_t refinements = 0;
+        /// Number of discrete or quadrature fitting rows assembled.
+        std::size_t fitting_rows = 0;
+        /// Number of reference-polyline intervals visited by numerical audits.
+        std::size_t checked_intervals = 0;
+        /// Final whole-domain absolute-error bound for each selected axis, in
+        /// input units and `axes` order. These are Bernstein-derived numerical
+        /// bounds computed in ordinary floating point, not formal certificates.
+        std::vector<double> max_errors;
+    };
+
     /// Result of path evaluation.
     ///
     /// All matrices use shape `(dim, s.size())` and column-major storage. Optional
@@ -353,6 +426,9 @@ namespace copp
     {
     public:
         /// Build a spline path from waypoint positions.
+        ///
+        /// Equivalent alias of `from_waypoints_interpolating`: the spline passes
+        /// through every waypoint. Both names are supported.
         ///
         /// `waypoints` is a `(dim x n_points)` matrix where each column is one
         /// waypoint. At least one dimension and two waypoint columns are required.
@@ -407,6 +483,124 @@ namespace copp
             SplineConfig config,
             NoThrowTag);
         static Expected<Path> from_waypoints(
+            std::initializer_list<std::initializer_list<double>> waypoints,
+            NoThrowTag);
+
+        /// Build a spline path that interpolates every waypoint.
+        ///
+        /// The path passes through **every** waypoint column at its assigned
+        /// parameter, up to floating-point roundoff. Choose it when each
+        /// waypoint is a position or event that must be retained; use
+        /// `from_waypoints_fitting` when the waypoints form a reference
+        /// polyline that may be approximated within tolerances.
+        ///
+        /// `waypoints` is a `(dim x n_points)` matrix where each column is one
+        /// waypoint. At least one dimension and two waypoint columns are
+        /// required. Row-major views are copied once into column-major storage;
+        /// the view only needs to remain valid during this call.
+        ///
+        /// @warning Unstable API: the waypoint interpolation and fitting
+        /// constructor families (all `from_waypoints*` overloads) may change
+        /// names, signatures, configuration types, and method-selection
+        /// interfaces in future releases as more algorithms are added.
+        ///
+        /// @param waypoints Borrowed waypoint matrix.
+        /// @param config Spline order, parameter range, boundary states, and
+        /// out-of-range policy.
+        /// @return Movable owning `Path`.
+        /// @throws copp::Error on invalid shape, invalid config, or Rust spline
+        /// construction failure.
+        ///
+        /// @code
+        /// auto waypoints = copp::Matrix::from_columns({
+        ///     {0.0, 0.0},
+        ///     {0.5, 0.25},
+        ///     {1.0, 1.0},
+        /// });
+        /// auto path = copp::Path::from_waypoints_interpolating(waypoints.view());
+        /// @endcode
+        static Path from_waypoints_interpolating(MatrixView waypoints, SplineConfig config = {});
+        static Expected<Path> from_waypoints_interpolating(
+            MatrixView waypoints,
+            SplineConfig config,
+            NoThrowTag);
+        static Expected<Path> from_waypoints_interpolating(MatrixView waypoints, NoThrowTag);
+
+        /// Build an interpolating spline path from waypoint-list notation.
+        ///
+        /// Each inner list is one waypoint vector, not a matrix row.
+        ///
+        /// @warning Unstable API; see the `MatrixView` overload.
+        ///
+        /// @code
+        /// auto path = copp::Path::from_waypoints_interpolating({
+        ///     {0.0, 0.0},
+        ///     {0.5, 0.25},
+        ///     {1.0, 1.0},
+        /// });
+        /// @endcode
+        static Path from_waypoints_interpolating(
+            std::initializer_list<std::initializer_list<double>> waypoints,
+            SplineConfig config = {});
+        static Expected<Path> from_waypoints_interpolating(
+            std::initializer_list<std::initializer_list<double>> waypoints,
+            SplineConfig config,
+            NoThrowTag);
+        static Expected<Path> from_waypoints_interpolating(
+            std::initializer_list<std::initializer_list<double>> waypoints,
+            NoThrowTag);
+
+        /// Build a tolerance-bounded fitted path from waypoint positions.
+        ///
+        /// Adjacent waypoint columns form a reference polyline under one common
+        /// parameter. The result uses adaptive nonuniform C4 quintic B-splines
+        /// and does **not** pass through interior waypoints: selected axes may
+        /// deviate from the polyline within their tolerances, while endpoint
+        /// positions are retained. The absolute error at the same parameter is
+        /// numerically audited over every complete reference interval.
+        /// Unselected axes keep C4 quintic interpolation through all columns.
+        /// Inspect the achieved bounds with `smoothing_report()`.
+        ///
+        /// Fitting is geometric preprocessing, not time parameterization; path
+        /// derivatives remain derivatives with respect to `s`.
+        ///
+        /// @warning Unstable API: the waypoint interpolation and fitting
+        /// constructor families (all `from_waypoints*` overloads) may change
+        /// names, signatures, configuration types, and method-selection
+        /// interfaces in future releases as more algorithms are added.
+        ///
+        /// @param waypoints Borrowed `(dim x n_points)` waypoint matrix.
+        /// @param config Tolerances, axis selection, parameters, and budgets.
+        /// @return Movable owning `Path` with a populated `smoothing_report()`.
+        /// @throws copp::Error on invalid shape or configuration, or when the
+        /// tolerances cannot be met within the configured budgets.
+        ///
+        /// @code
+        /// copp::SmoothingConfig config;
+        /// config.tolerance = 1.0e-3;
+        /// auto path = copp::Path::from_waypoints_fitting(waypoints.view(), config);
+        /// auto report = path.smoothing_report(); // report->max_errors[i] <= 1e-3
+        /// @endcode
+        static Path from_waypoints_fitting(MatrixView waypoints, SmoothingConfig config = {});
+        static Expected<Path> from_waypoints_fitting(
+            MatrixView waypoints,
+            SmoothingConfig config,
+            NoThrowTag);
+        static Expected<Path> from_waypoints_fitting(MatrixView waypoints, NoThrowTag);
+
+        /// Build a tolerance-bounded fitted path from waypoint-list notation.
+        ///
+        /// Each inner list is one waypoint vector, not a matrix row.
+        ///
+        /// @warning Unstable API; see the `MatrixView` overload.
+        static Path from_waypoints_fitting(
+            std::initializer_list<std::initializer_list<double>> waypoints,
+            SmoothingConfig config = {});
+        static Expected<Path> from_waypoints_fitting(
+            std::initializer_list<std::initializer_list<double>> waypoints,
+            SmoothingConfig config,
+            NoThrowTag);
+        static Expected<Path> from_waypoints_fitting(
             std::initializer_list<std::initializer_list<double>> waypoints,
             NoThrowTag);
 
@@ -545,6 +739,12 @@ namespace copp
         PathDerivatives evaluate_up_to_3rd(Span<const double> s) const;
         Expected<PathDerivatives> evaluate_up_to_3rd(Span<const double> s, NoThrowTag) const;
 
+        /// Return fitting diagnostics of a path built by `from_waypoints_fitting`.
+        ///
+        /// @return A copied `SmoothingReport`, or `std::nullopt` for
+        /// interpolated, parametric, and evaluator paths.
+        std::optional<SmoothingReport> smoothing_report() const;
+
     private:
         struct Impl;
 
@@ -581,6 +781,62 @@ namespace copp
         NoThrowTag tag)
     {
         return from_waypoints(waypoints, SplineConfig{}, tag);
+    }
+
+    inline Expected<Path> Path::from_waypoints_interpolating(
+        MatrixView waypoints,
+        SplineConfig config,
+        NoThrowTag)
+    {
+        return detail::expected_from([&] { return from_waypoints_interpolating(waypoints, config); });
+    }
+
+    inline Expected<Path> Path::from_waypoints_interpolating(MatrixView waypoints, NoThrowTag tag)
+    {
+        return from_waypoints_interpolating(waypoints, SplineConfig{}, tag);
+    }
+
+    inline Expected<Path> Path::from_waypoints_interpolating(
+        std::initializer_list<std::initializer_list<double>> waypoints,
+        SplineConfig config,
+        NoThrowTag)
+    {
+        return detail::expected_from([&] { return from_waypoints_interpolating(waypoints, config); });
+    }
+
+    inline Expected<Path> Path::from_waypoints_interpolating(
+        std::initializer_list<std::initializer_list<double>> waypoints,
+        NoThrowTag tag)
+    {
+        return from_waypoints_interpolating(waypoints, SplineConfig{}, tag);
+    }
+
+    inline Expected<Path> Path::from_waypoints_fitting(
+        MatrixView waypoints,
+        SmoothingConfig config,
+        NoThrowTag)
+    {
+        return detail::expected_from([&] { return from_waypoints_fitting(waypoints, config); });
+    }
+
+    inline Expected<Path> Path::from_waypoints_fitting(MatrixView waypoints, NoThrowTag tag)
+    {
+        return from_waypoints_fitting(waypoints, SmoothingConfig{}, tag);
+    }
+
+    inline Expected<Path> Path::from_waypoints_fitting(
+        std::initializer_list<std::initializer_list<double>> waypoints,
+        SmoothingConfig config,
+        NoThrowTag)
+    {
+        return detail::expected_from([&] { return from_waypoints_fitting(waypoints, config); });
+    }
+
+    inline Expected<Path> Path::from_waypoints_fitting(
+        std::initializer_list<std::initializer_list<double>> waypoints,
+        NoThrowTag tag)
+    {
+        return from_waypoints_fitting(waypoints, SmoothingConfig{}, tag);
     }
 
     inline Expected<Path> Path::from_parametric(

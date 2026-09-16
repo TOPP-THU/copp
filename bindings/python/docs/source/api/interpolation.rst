@@ -25,6 +25,20 @@ Third Order
 .. autoclass:: Profile3rd
    :members:
 
+``Profile3rd.force_positive_a(s, a_min=1e-12)`` post-processes a profile in
+place so interpolated ``a(s)`` stays strictly positive on every interval.
+Apply it before ``s_to_t_topp3`` to any profile whose ``a`` touches zero.
+Because it rewrites ``a`` and ``b`` without knowing the
+limits, audit the result afterwards with
+:meth:`copp_py.constraints.Constraints.exceed_topp3`, which checks the
+original nonlinear third-order limits:
+
+.. code-block:: python
+
+   profile.force_positive_a(s)
+   exceed_1st, exceed_2nd, exceed_3rd = robot.constraints.exceed_topp3(profile)
+   t_final, t_s = copp.interpolation.s_to_t_topp3(s, profile)
+
 .. autofunction:: s_to_t_topp3
 
 .. autofunction:: t_to_s_topp3_uniform

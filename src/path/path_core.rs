@@ -1,6 +1,7 @@
 use crate::diag::PathError;
 use crate::path::OutOfRangeMode;
 use crate::path::autodiff::Jet3;
+use crate::path::smoothing::{SmoothedSpline, SmoothingConfig, SmoothingReport};
 use crate::path::spline::{SplineConfig, SplinePath};
 use nalgebra::{DMatrix, DMatrixView};
 use rayon::prelude::*;
@@ -115,7 +116,8 @@ enum Order {
 /// Unified path abstraction over parametric, spline, and evaluator representations.
 ///
 /// Construct via [`Path::from_parametric`](crate::path::Path::from_parametric),
-/// [`Path::from_waypoints`](crate::path::Path::from_waypoints),
+/// [`Path::from_waypoints_interpolating`](crate::path::Path::from_waypoints_interpolating),
+/// [`Path::from_waypoints_fitting`](crate::path::Path::from_waypoints_fitting),
 /// [`Path::from_evaluator_2nd`](crate::path::Path::from_evaluator_2nd), or
 /// [`Path::from_evaluator_3rd`](crate::path::Path::from_evaluator_3rd), then
 /// query a batch of parameter values with the `evaluate_*` family of methods.
@@ -136,6 +138,8 @@ enum PathRepr {
     Parametric(ParametricFn),
     /// Piecewise-polynomial path built from waypoints.
     Spline(SplinePath),
+    /// Tolerance-fitted selected axes plus waypoint interpolation of unselected axes.
+    Smoothed(Box<SmoothedSpline>),
     /// User-provided path evaluator with explicit derivatives up to second order.
     Evaluator2nd(Arc<dyn PathEvaluator2nd>),
     /// User-provided path evaluator with explicit derivatives up to third order.
@@ -143,6 +147,201 @@ enum PathRepr {
 }
 
 impl Path {
+    /// Construct a tolerance-bounded `C4` quintic approximation of a waypoint polyline.
+    ///
+    /// This constructor is intended for sampled or programmed paths whose
+    /// selected coordinates may be denoised or rounded within explicit absolute
+    /// tolerances. Use
+    /// [`Path::from_waypoints_interpolating`](crate::path::Path::from_waypoints_interpolating)
+    /// when every waypoint must be interpolated.
+    /// For a borrowed compatible strided column-major matrix, use
+    /// [`Path::from_waypoints_fitting_view`].
+    ///
+    /// # API stability
+    ///
+    /// This constructor is currently **unstable**. Its name, signature,
+    /// configuration, and algorithm-selection interface may change as additional
+    /// waypoint-fitting methods are introduced.
+    ///
+    /// # Reference path and tolerances
+    ///
+    /// `waypoints` has shape `(dim, n_points)` and each **column** is one ordered
+    /// waypoint. A common parameter is assigned to every column by
+    /// [`SmoothingConfig::parameters`](crate::path::SmoothingConfig::parameters),
+    /// or uniformly on `[0, 1]` by default. Adjacent columns are linearly
+    /// interpolated at that common parameter to form the reference polyline.
+    ///
+    /// For each selected axis `j`, successful construction numerically audits
+    /// the complete-domain contract
+    ///
+    /// $$
+    /// \max_s |q_j(s)-r_j(s)| \le \varepsilon_j.
+    /// $$
+    ///
+    /// This is a same-parameter, per-axis absolute bound in input-coordinate
+    /// units. It is not merely a waypoint check, a nearest-distance/Hausdorff
+    /// bound, or a Cartesian error after forward kinematics.
+    ///
+    /// # Continuity and derivatives
+    ///
+    /// Selected axes use one adaptive nonuniform quintic B-spline with simple
+    /// interior knots, giving `C4` continuity. Their first and last positions
+    /// are fixed to the input, while endpoint derivatives are determined by the
+    /// fit. Unselected axes use a separate quintic `C4` interpolant through all
+    /// input columns, with zero first and second parameter derivatives at both
+    /// endpoints. Positional endpoint equalities are subject only to ordinary
+    /// floating-point roundoff.
+    ///
+    /// Returned derivatives are with respect to the configured path parameter
+    /// `s`, not time. Smoothing therefore does not replace time parameterization
+    /// or impose physical velocity, acceleration, or jerk limits.
+    ///
+    /// # Construction method
+    ///
+    /// 1. Parameters are mapped to `[0, 1]`; every selected coordinate is
+    ///    shifted by its first value and divided by its tolerance.
+    /// 2. A straight-chord fast path is tried first. Otherwise a shared slope
+    ///    corridor seeds nonuniform knots near changes in direction.
+    /// 3. An open degree-five B-spline is fitted to the reference polyline with
+    ///    a span-scaled third-parameter-derivative penalty. Compact banded normal
+    ///    equations exploit the six-function local support.
+    /// 4. Every spline-span/reference-segment intersection is converted to a
+    ///    degree-five Bernstein error polynomial. Its coefficients provide an
+    ///    exact-arithmetic sufficient bound over the complete intersection.
+    /// 5. Failed regions receive new knots and local control-point refits until
+    ///    the computed bounds pass or a configured budget is exhausted.
+    /// 6. Coordinates are restored to physical units and the entire domain is
+    ///    audited again before the path is returned.
+    ///
+    /// The least-squares fit does not directly impose hard error constraints;
+    /// the tolerance behavior comes from this audit/refinement/rejection loop.
+    /// Bernstein bounds are computed with ordinary `f64` arithmetic and are
+    /// therefore numerical audit results, not outward-rounded formal proofs.
+    ///
+    /// # Arguments
+    ///
+    /// - `waypoints`: finite `(dim, n_points)` matrix with `dim > 0` and
+    ///   `n_points >= 2`; each column is one waypoint;
+    /// - `cfg`: selected axes, their tolerances, common waypoint parameters,
+    ///   refinement budgets, and out-of-range query behavior.
+    ///
+    /// # Returns
+    ///
+    /// A unified [`Path`] that supports position and derivatives through
+    /// [`Path::evaluate_up_to_3rd`]. Construction diagnostics and final error
+    /// bounds are available from [`Path::smoothing_report`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PathError::Smoothing`](crate::diag::PathError::Smoothing) when:
+    ///
+    /// - waypoint values, dimensions, axis indices, tolerances, or parameters
+    ///   violate their input contracts;
+    /// - the selected-axis span count exceeds the configured segment budget;
+    /// - the banded fit encounters an unsupported or non-finite numerical system;
+    /// - refinement exhausts its pass budget or parameter resolution; or
+    /// - the final physical-unit whole-interval audit does not satisfy tolerance.
+    ///
+    /// An unchecked or silently relaxed approximation is never returned.
+    ///
+    /// # Limitations
+    ///
+    /// The adaptive knot layout is heuristic and does not guarantee the minimum
+    /// span count. Bernstein bounds use ordinary floating-point arithmetic, not
+    /// outward-rounded interval arithmetic. No guarantee is made for forward
+    /// kinematics, collision avoidance, monotonicity, dynamics, or traversal
+    /// time.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # fn main() -> Result<(), copp::diag::PathError> {
+    /// use copp::path::{Path, SmoothingConfig, SmoothingTolerance};
+    /// use nalgebra::DMatrix;
+    ///
+    /// let waypoints = DMatrix::from_row_slice(
+    ///     2,
+    ///     3,
+    ///     &[
+    ///         0.0, 0.5, 1.0,
+    ///         0.0, 1.0, 2.0,
+    ///     ],
+    /// );
+    /// let config = SmoothingConfig {
+    ///     axes: Some(vec![0, 1]),
+    ///     tolerance: SmoothingTolerance::PerAxis(vec![0.001, 0.01]),
+    ///     parameters: Some(vec![2.0, 3.0, 4.0]),
+    ///     ..Default::default()
+    /// };
+    ///
+    /// let path = Path::from_waypoints_fitting(&waypoints, config)?;
+    /// let values = path.evaluate_up_to_3rd(&[2.0, 3.0, 4.0])?;
+    /// let report = path.smoothing_report().unwrap();
+    ///
+    /// assert_eq!(values.q.shape(), (2, 3));
+    /// assert_eq!(report.axes, vec![0, 1]);
+    /// assert!(report.max_errors[0] <= 0.001);
+    /// assert!(report.max_errors[1] <= 0.01);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn from_waypoints_fitting(
+        waypoints: &DMatrix<f64>,
+        cfg: SmoothingConfig,
+    ) -> Result<Self, PathError> {
+        Self::from_waypoints_fitting_view(waypoints.as_view(), cfg)
+    }
+
+    /// Construct a tolerance-bounded `C4` quintic approximation from a borrowed
+    /// waypoint matrix view.
+    ///
+    /// This accepts nalgebra views such as `waypoints.as_view()` and compatible
+    /// strided column-major views. Construction reads the view and stores an
+    /// owned fitted representation in the returned [`Path`], which does not
+    /// borrow the input afterwards. See [`Path::from_waypoints_fitting`] for the
+    /// complete fitting semantics, configuration, errors, and limitations.
+    ///
+    /// # API stability
+    ///
+    /// This view constructor has the same unstable API status as
+    /// [`Path::from_waypoints_fitting`].
+    pub fn from_waypoints_fitting_view(
+        waypoints: DMatrixView<'_, f64>,
+        cfg: SmoothingConfig,
+    ) -> Result<Self, PathError> {
+        let dim = waypoints.nrows();
+        let spline = SmoothedSpline::build(waypoints, &cfg)?;
+        Ok(Self {
+            dim,
+            s_min: spline.start,
+            s_max: spline.end,
+            out_of_range_mode: cfg.out_of_range_mode,
+            repr: PathRepr::Smoothed(Box::new(spline)),
+        })
+    }
+
+    /// Return construction diagnostics for a tolerance-fitted waypoint path.
+    ///
+    /// # Returns
+    ///
+    /// - `Some(report)` for a path successfully constructed by either
+    ///   [`Path::from_waypoints_fitting`] or [`Path::from_waypoints_fitting_view`];
+    /// - `None` for analytic, strictly interpolated, and user-evaluator paths.
+    ///
+    /// [`SmoothingReport::max_errors`](crate::path::SmoothingReport::max_errors)
+    /// contains Bernstein-derived whole-domain numerical bounds in physical input
+    /// units and follows the order of
+    /// [`SmoothingReport::axes`](crate::path::SmoothingReport::axes).
+    /// `refinements`, `fitting_rows`, and `checked_intervals` are cumulative work
+    /// counters; axis and segment fields describe the final representation.
+    /// None of these values is an optimality or run-time guarantee.
+    pub fn smoothing_report(&self) -> Option<&SmoothingReport> {
+        match &self.repr {
+            PathRepr::Smoothed(spline) => Some(&spline.report),
+            _ => None,
+        }
+    }
+
     /// Build a parametric path from an analytic closure.
     ///
     /// Derivatives up to third order are computed automatically via [`Jet3`](crate::path::Jet3)
@@ -423,9 +622,21 @@ impl Path {
         Self::from_shared_evaluator_3rd(evaluator, s_min, s_max)
     }
 
-    /// Build a spline path by interpolating a waypoint matrix.
+    /// Build a spline path that interpolates every waypoint in a matrix.
     ///
-    /// Internally solves the Hermite spline system with an O(N) block-Thomas
+    /// Every input column is a hard positional interpolation condition: at that
+    /// waypoint's assigned parameter, the returned path passes through the
+    /// column up to floating-point roundoff. This differs from
+    /// [`Path::from_waypoints_fitting`], which may deviate from interior
+    /// waypoints within configured tolerances.
+    ///
+    /// # API stability
+    ///
+    /// This constructor is currently **unstable**. Its name, signature,
+    /// configuration, and algorithm-selection interface may change as additional
+    /// waypoint-interpolation methods are introduced.
+    ///
+    /// Internally, the current algorithm solves the Hermite spline system with an O(N) block-Thomas
     /// algorithm; all dimensions are solved in parallel.
     /// The default configuration ([`SplineConfig::default`](crate::path::SplineConfig::default)) uses a quintic
     /// (order-5) spline with `s in [0, 1]`.
@@ -458,7 +669,7 @@ impl Path {
     ///         0.0, 0.1, -0.1, 0.2, 0.0,
     ///     ],
     /// );
-    /// let path = Path::from_waypoints(&waypoints, SplineConfig::default())?;
+    /// let path = Path::from_waypoints_interpolating(&waypoints, SplineConfig::default())?;
     ///
     /// let s = [0.0, 0.5, 1.0];
     /// let out = path.evaluate_q(s.as_slice())?;
@@ -467,16 +678,20 @@ impl Path {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn from_waypoints(waypoints: &DMatrix<f64>, cfg: SplineConfig) -> Result<Self, PathError> {
-        Self::from_waypoints_view(waypoints.as_view(), cfg)
+    pub fn from_waypoints_interpolating(
+        waypoints: &DMatrix<f64>,
+        cfg: SplineConfig,
+    ) -> Result<Self, PathError> {
+        Self::from_waypoints_interpolating_view(waypoints.as_view(), cfg)
     }
 
-    /// Build a spline path from a borrowed waypoint matrix view.
+    /// Build a waypoint-interpolating spline from a borrowed matrix view.
     ///
     /// This accepts nalgebra views such as `waypoints.as_view()` and compatible
-    /// strided column-major views. See [`Path::from_waypoints`] for the full
-    /// interpolation semantics, configuration, and error conditions.
-    pub fn from_waypoints_view(
+    /// strided column-major views. See [`Path::from_waypoints_interpolating`] for
+    /// the full interpolation semantics, configuration, error conditions, and
+    /// unstable API status.
+    pub fn from_waypoints_interpolating_view(
         waypoints: DMatrixView<'_, f64>,
         cfg: SplineConfig,
     ) -> Result<Self, PathError> {
@@ -504,6 +719,23 @@ impl Path {
             out_of_range_mode: spline.out_of_range_mode,
             repr: PathRepr::Spline(spline),
         })
+    }
+
+    /// Deprecated compatibility alias for [`Path::from_waypoints_interpolating`].
+    #[doc(hidden)]
+    #[deprecated(since = "0.2.3", note = "use Path::from_waypoints_interpolating")]
+    pub fn from_waypoints(waypoints: &DMatrix<f64>, cfg: SplineConfig) -> Result<Self, PathError> {
+        Self::from_waypoints_interpolating(waypoints, cfg)
+    }
+
+    /// Deprecated compatibility alias for [`Path::from_waypoints_interpolating_view`].
+    #[doc(hidden)]
+    #[deprecated(since = "0.2.3", note = "use Path::from_waypoints_interpolating_view")]
+    pub fn from_waypoints_view(
+        waypoints: DMatrixView<'_, f64>,
+        cfg: SplineConfig,
+    ) -> Result<Self, PathError> {
+        Self::from_waypoints_interpolating_view(waypoints, cfg)
     }
 
     /// Returns the spatial dimension (number of joints) of the path.
@@ -611,6 +843,30 @@ impl Path {
             }
             PathRepr::Spline(spline) => {
                 eval_spline(spline, self, dim, (s, &mut q, &mut dq, &mut ddq, &mut dddq))?;
+            }
+            PathRepr::Smoothed(spline) => {
+                // Nonuniform fitted spans are located per query. Validate or
+                // clamp each public parameter first; `SmoothedSpline::evaluate`
+                // then normalizes it and applies derivative chain-rule scaling.
+                for (j, &value) in s.iter().enumerate() {
+                    if !value.is_finite() {
+                        return Err(PathError::OutOfRangeS {
+                            s_min: self.s_min,
+                            s_max: self.s_max,
+                            index: j,
+                            value,
+                        });
+                    }
+                    let x = self.validate_s(value, j)?;
+                    let range = j * dim..(j + 1) * dim;
+                    spline.evaluate(
+                        x,
+                        &mut q[range.clone()],
+                        dq.as_mut().map(|v| &mut v[range.clone()]),
+                        ddq.as_mut().map(|v| &mut v[range.clone()]),
+                        dddq.as_mut().map(|v| &mut v[range]),
+                    );
+                }
             }
             PathRepr::Evaluator2nd(evaluator) => {
                 eval_evaluator_2nd(
@@ -1039,7 +1295,8 @@ mod tests {
             Dyn(LEADING_DIM),
         );
 
-        let path = PathModel::from_waypoints_view(waypoints, SplineConfig::default())?;
+        let path =
+            PathModel::from_waypoints_interpolating_view(waypoints, SplineConfig::default())?;
         let s = [0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0];
         let out = path.evaluate_q(&s)?;
 
@@ -1225,7 +1482,7 @@ mod tests {
         let waypoints = make_waypoints(n_pts);
 
         let cfg = SplineConfig::default();
-        let path = PathModel::from_waypoints(&waypoints, cfg)?;
+        let path = PathModel::from_waypoints_interpolating(&waypoints, cfg)?;
 
         let s = DMatrix::<f64>::from_fn(1, n_pts, |_, j| j as f64 / (n_pts - 1) as f64);
         let out = path.evaluate_up_to_3rd(s.as_slice())?;
@@ -1248,7 +1505,7 @@ mod tests {
     #[test]
     fn test_s_out_of_range_error_dim6() -> Result<(), PathError> {
         let waypoints = make_waypoints(12);
-        let path = PathModel::from_waypoints(&waypoints, SplineConfig::default())?;
+        let path = PathModel::from_waypoints_interpolating(&waypoints, SplineConfig::default())?;
         let s = DMatrix::<f64>::from_row_slice(1, 3, &[-0.1, 0.5, 1.1]);
         let err = path.evaluate_up_to_3rd(s.as_slice()).unwrap_err();
         match err {
@@ -1283,7 +1540,8 @@ mod tests {
         for &n_pts in &n_waypoints_list {
             let waypoints = make_waypoints(n_pts);
             let start = Instant::now();
-            let spline_path = PathModel::from_waypoints(&waypoints, SplineConfig::default())?;
+            let spline_path =
+                PathModel::from_waypoints_interpolating(&waypoints, SplineConfig::default())?;
             let tc_build = start.elapsed().as_secs_f64() * 1e3;
 
             let start = Instant::now();
@@ -1323,7 +1581,8 @@ mod tests {
 
         let n_pts = 10;
         let waypoints = make_waypoints(n_pts);
-        let spline_path = PathModel::from_waypoints(&waypoints, SplineConfig::default())?;
+        let spline_path =
+            PathModel::from_waypoints_interpolating(&waypoints, SplineConfig::default())?;
         let spline_out = spline_path.evaluate_up_to_3rd(s.as_slice())?;
         let wp_s: Vec<f64> = (0..n_pts).map(|j| j as f64 / (n_pts - 1) as f64).collect();
         plot_grid_4x6(

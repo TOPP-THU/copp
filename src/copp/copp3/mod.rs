@@ -9,10 +9,13 @@
 //! - `opt3`: optimization backends, including LP/SOCP variants on Clarabel.
 //! - `formulation`: validated problem data models/builders for TOPP3/COPP3.
 //! - `interpolation`: profile conversion and `s(t)` / `t(s)` mapping helpers.
+//! - `exact_interval`: exact dyadic interval predicates shared by the
+//!   interpolation and profile-checking paths.
 //!
 //! # Export policy
 //! This module re-exports public APIs from all submodules for user convenience.
 
+pub(crate) mod exact_interval;
 pub(crate) mod formulation;
 pub(crate) mod interpolation;
 pub(crate) mod opt3;
@@ -24,12 +27,11 @@ pub use formulation::{Topp3Profile, Topp3ProfileMut, Topp3ProfileRef};
 /// `lib.rs` should import from this module instead of deep internal paths
 /// (`opt3::*`, `formulation::*`, `interpolation::*`) so internal
 /// module refactors do not propagate to public facade wiring.
-#[allow(unused_imports)]
 pub(crate) mod stable {
     pub(crate) mod basic {
         pub use super::super::formulation::{
-            Copp3Problem, Copp3ProblemBuilder, Topp3Problem, Topp3ProblemBuilder, Topp3Profile,
-            Topp3ProfileMut, Topp3ProfileRef,
+            Copp3Problem, Copp3ProblemBuilder, LinearizationModeTopp3, Topp3Problem,
+            Topp3ProblemBuilder, Topp3Profile, Topp3ProfileMut, Topp3ProfileRef,
         };
         pub use super::super::interpolation::{s_to_t_topp3, t_to_s_topp3};
     }

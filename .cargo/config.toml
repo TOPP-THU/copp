@@ -1,7 +1,7 @@
 # .cargo/config.toml
+#
+# Tuning for the host CPU is opt-in, because a binary built that way is not
+# portable to other machines. Enable it per build with
+# RUSTFLAGS="-C target-cpu=native".
 [build]
-rustdocflags = ["--html-in-header", "mathjax-config.html"]
-rustflags = ["-C", "target-cpu=native"]
-
-[doc]
 rustdocflags = ["--html-in-header", "mathjax-config.html"]

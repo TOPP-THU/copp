@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -7,6 +8,7 @@
 #include <vector>
 
 #include "copp/core.hpp"
+#include "copp/interpolation.hpp"
 #include "copp/path.hpp"
 
 namespace copp
@@ -213,6 +215,49 @@ namespace copp
             std::size_t idx_s,
             bool is_negative = false);
 
+        /// Evaluate the maximum TOPP2 constraint violation of a node profile.
+        ///
+        /// `a` holds `a = (ds/dt)^2` on consecutive stations starting at
+        /// `idx_s_start`. Each interval's path acceleration is reconstructed as
+        /// `b[k] = (a[k+1] - a[k]) / (2 ds[k])` and checked against the
+        /// second-order rows of both endpoint stations.
+        ///
+        /// @param a Node profile to check.
+        /// @param idx_s_start Global station id of `a[0]`.
+        /// @return `{exceed_1st, exceed_2nd}`, each `<= 0` when feasible and
+        /// positive (the violation magnitude) when violated. The first-order
+        /// term covers `0 <= a[k] <= amax[k]`. Both entries are `NaN` when the
+        /// station range is unavailable or `b` cannot be reconstructed from `a`.
+        std::array<double, 2> exceed_topp2(Span<const double> a, std::size_t idx_s_start = 0) const;
+
+        /// Evaluate the maximum TOPP3 constraint violation of a node profile `(a, b)`.
+        ///
+        /// The third-order term uses the original nonlinear
+        /// `sqrt(a) * (jerk_a*a + jerk_b*b + jerk_c*c + jerk_d) <= jerk_max`
+        /// form with `c = (b[k+1] - b[k]) / ds[k]`, not the linearized rows,
+        /// and skips the two stationary boundary blocks. It checks the profile
+        /// that is actually delivered, so run it after post-processing such as
+        /// `Profile3rd::force_positive_a`.
+        ///
+        /// @param a Node profile `a = (ds/dt)^2`.
+        /// @param b Node profile `b = d^2s/dt^2`, same length as `a`.
+        /// @param num_stationary_start Stationary intervals at the start.
+        /// @param num_stationary_end Stationary intervals at the end.
+        /// @param idx_s_start Global station id of `a[0]`.
+        /// @return `{exceed_1st, exceed_2nd, exceed_3rd}`, each `<= 0` when
+        /// feasible and positive when violated. All entries are `NaN` when the
+        /// station range is unavailable, `a` and `b` disagree in length, fewer
+        /// than two stations are given, or `a` or `b` contains a non-finite value.
+        std::array<double, 3> exceed_topp3(
+            Span<const double> a,
+            Span<const double> b,
+            std::size_t num_stationary_start,
+            std::size_t num_stationary_end,
+            std::size_t idx_s_start = 0) const;
+
+        /// Evaluate `exceed_topp3` for an owned third-order profile.
+        std::array<double, 3> exceed_topp3(const Profile3rd &profile, std::size_t idx_s_start = 0) const;
+
     private:
         explicit ConstraintsRef(void *handle) noexcept;
 
@@ -290,6 +335,18 @@ namespace copp
             MatrixView jerk_max,
             std::size_t idx_s,
             bool is_negative = false);
+
+        /// Same as `ConstraintsRef::exceed_topp2`.
+        std::array<double, 2> exceed_topp2(Span<const double> a, std::size_t idx_s_start = 0) const;
+        /// Same as `ConstraintsRef::exceed_topp3`.
+        std::array<double, 3> exceed_topp3(
+            Span<const double> a,
+            Span<const double> b,
+            std::size_t num_stationary_start,
+            std::size_t num_stationary_end,
+            std::size_t idx_s_start = 0) const;
+        /// Same as `ConstraintsRef::exceed_topp3` for an owned profile.
+        std::array<double, 3> exceed_topp3(const Profile3rd &profile, std::size_t idx_s_start = 0) const;
 
     private:
         struct Impl;

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Callable, ClassVar, Literal, Protocol, TypedDict, overload
 
 import numpy as np
@@ -107,6 +108,66 @@ class SplineConfig:
         ...
 
 
+class SmoothingConfig:
+    """Configuration for tolerance-bounded waypoint fitting.
+
+    Used by ``Path.from_waypoints_fitting``. This API is unstable: names,
+    signatures, and configuration types may change as more waypoint
+    algorithms are added.
+
+    Parameters
+    ----------
+    tolerance:
+        Maximum absolute deviation of each selected axis from the
+        piecewise-linear reference polyline through the waypoints, in that
+        axis's input units. A scalar applies to every selected axis. A
+        one-dimensional array gives one finite, positive value per selected
+        axis and follows the order of ``axes``, not the dimension index; when
+        ``axes`` is ``None`` the order is ``0..dim``.
+    axes:
+        Distinct 0-based path dimensions allowed to deviate from the
+        waypoints. ``None`` selects every dimension. Unselected dimensions
+        keep quintic C4 interpolation through every waypoint.
+    parameters:
+        Finite, strictly increasing path parameter for each waypoint. The
+        first and last values become the path range. ``None`` assigns
+        waypoints uniformly on ``[0, 1]``.
+    max_refinements:
+        Maximum number of adaptive knot-refinement passes.
+    max_segments:
+        Maximum number of polynomial spans used by the selected axes.
+    out_of_range:
+        Evaluation policy outside the path range. Strings are accepted for
+        script-friendly use; enum values are preferred for stable APIs.
+
+    Raises
+    ------
+    ValueError
+        If a wrapper-level option or array format is invalid. Core-level
+        checks, such as positive tolerances or distinct in-range axes, run
+        when the path is built and raise ``PathError``.
+    """
+
+    tolerance: float | NDArray[np.float64]
+    axes: list[int] | None
+    parameters: NDArray[np.float64] | None
+    max_refinements: int
+    max_segments: int
+    out_of_range: OutOfRangeMode
+
+    def __init__(
+        self,
+        *,
+        tolerance: float | ArrayLike = 0.001,
+        axes: Sequence[int] | None = None,
+        parameters: ArrayLike | None = None,
+        max_refinements: int = 20,
+        max_segments: int = 20000,
+        out_of_range: OutOfRangeModeLike = OutOfRangeMode.ERROR,
+    ) -> None:
+        ...
+
+
 class PathDerivatives:
     """Batch path-evaluation result.
 
@@ -123,6 +184,43 @@ class PathDerivatives:
     dddq: NDArray[np.float64] | None
 
 
+class SmoothingReport:
+    """Construction diagnostics of a tolerance-fitted waypoint path.
+
+    Obtained from ``Path.smoothing_report``. ``axes``, ``segments``, and
+    ``interpolated_segments`` describe the final representation;
+    ``refinements``, ``fitting_rows``, and ``checked_intervals`` are
+    cumulative work counters. None of these values is an optimality or
+    run-time guarantee. This API is unstable.
+    """
+
+    axes: list[int]
+    """Selected 0-based path dimensions, in tolerance/report order."""
+
+    segments: int
+    """Number of final polynomial spans shared by the selected axes."""
+
+    interpolated_segments: int
+    """Number of spans in the separate unselected-axis interpolant."""
+
+    refinements: int
+    """Number of completed local knot-refinement passes."""
+
+    fitting_rows: int
+    """Cumulative number of fitting rows assembled."""
+
+    checked_intervals: int
+    """Cumulative number of reference intervals visited by numerical audits."""
+
+    max_errors: NDArray[np.float64]
+    """Final whole-domain absolute-error bound per selected axis, in ``axes`` order.
+
+    Values are in input units. They are Bernstein-derived numerical bounds
+    computed with ordinary floating-point arithmetic, not formal certificates
+    or Cartesian errors.
+    """
+
+
 class Path:
     """Unified path object backed by the Rust COPP core."""
 
@@ -131,6 +229,96 @@ class Path:
 
     s_range: tuple[float, float]
     """Inclusive valid path-parameter range ``(s_min, s_max)``."""
+
+    smoothing_report: SmoothingReport | None
+    """Fitting diagnostics of ``from_waypoints_fitting`` paths; ``None`` otherwise."""
+
+    @staticmethod
+    @overload
+    def from_waypoints_interpolating(
+        waypoints: ArrayLike,
+        config: SplineConfig,
+        *,
+        layout: MatrixLayoutLike = MatrixLayout.SAMPLE_MAJOR,
+    ) -> Path:
+        """Build an interpolating waypoint-spline path from a ``SplineConfig``.
+
+        The path passes exactly through every waypoint. Use
+        ``Path.from_waypoints_fitting`` instead when waypoints only need to be
+        followed within a tolerance. ``Path.from_waypoints`` is an equivalent
+        alias. This constructor family is unstable: names, signatures, and
+        configuration types may change as more waypoint algorithms are added.
+
+        With the default ``MatrixLayout.SAMPLE_MAJOR``, ``waypoints`` has shape
+        ``(n_points, dim)`` and each row is one waypoint. With
+        ``MatrixLayout.DIM_MAJOR``, ``waypoints`` has shape ``(dim, n_points)``
+        and each column is one waypoint.
+
+        Parameters
+        ----------
+        waypoints:
+            Two-dimensional ArrayLike value convertible to ``float64``.
+        config:
+            Spline construction options.
+        layout:
+            Matrix layout for both input waypoints and returned derivative
+            arrays. Strings ``"sample_major"`` and ``"dim_major"`` are
+            accepted.
+
+        Raises
+        ------
+        ValueError
+            If array layout, dtype, or wrapper-level options are invalid.
+        CoppError
+            If the Rust COPP core rejects the path data or spline options.
+        """
+        ...
+
+    @staticmethod
+    @overload
+    def from_waypoints_interpolating(
+        waypoints: ArrayLike,
+        config: None = None,
+        *,
+        order: int = 5,
+        s_min: float = 0.0,
+        s_max: float = 1.0,
+        out_of_range: OutOfRangeModeLike = OutOfRangeMode.ERROR,
+        parametrization: ParametrizationLike = Parametrization.UNIFORM,
+        start_state: ArrayLike | None = None,
+        end_state: ArrayLike | None = None,
+        layout: MatrixLayoutLike = MatrixLayout.SAMPLE_MAJOR,
+    ) -> Path:
+        """Build an interpolating waypoint-spline path from keyword options.
+
+        The path passes exactly through every waypoint. ``Path.from_waypoints``
+        is an equivalent alias. This constructor family is unstable: names,
+        signatures, and configuration types may change as more waypoint
+        algorithms are added.
+
+        Parameters
+        ----------
+        waypoints:
+            Two-dimensional ArrayLike value convertible to ``float64``.
+        config:
+            Optional spline construction options. If omitted, keyword
+            arguments build an equivalent temporary ``SplineConfig``.
+        order, s_min, s_max, out_of_range, parametrization, start_state, end_state:
+            Spline construction options used only when ``config`` is omitted.
+        layout:
+            Matrix layout for both input waypoints and returned derivative
+            arrays. Strings ``"sample_major"`` and ``"dim_major"`` are
+            accepted.
+
+        Raises
+        ------
+        ValueError
+            If array layout, dtype, wrapper-level options, or mixed
+            ``config``/keyword options are invalid.
+        CoppError
+            If the Rust COPP core rejects the path data or spline options.
+        """
+        ...
 
     @staticmethod
     @overload
@@ -141,6 +329,8 @@ class Path:
         layout: MatrixLayoutLike = MatrixLayout.SAMPLE_MAJOR,
     ) -> Path:
         """Build a waypoint-spline path from an explicit ``SplineConfig``.
+
+        Equivalent alias for ``Path.from_waypoints_interpolating``.
 
         This overload mirrors the Rust API shape most closely: all spline
         options are carried by ``config``, while ``layout`` only controls how
@@ -188,6 +378,8 @@ class Path:
     ) -> Path:
         """Build a waypoint-spline path.
 
+        Equivalent alias for ``Path.from_waypoints_interpolating``.
+
         With the default ``MatrixLayout.SAMPLE_MAJOR``, ``waypoints`` has shape
         ``(n_points, dim)`` and each row is one waypoint. With
         ``MatrixLayout.DIM_MAJOR``, ``waypoints`` has shape ``(dim, n_points)``
@@ -214,6 +406,85 @@ class Path:
             ``config``/keyword options are invalid.
         CoppError
             If the Rust COPP core rejects the path data or spline options.
+        """
+        ...
+
+    @staticmethod
+    @overload
+    def from_waypoints_fitting(
+        waypoints: ArrayLike,
+        config: SmoothingConfig,
+        *,
+        layout: MatrixLayoutLike = MatrixLayout.SAMPLE_MAJOR,
+    ) -> Path:
+        """Build a tolerance-bounded fitted waypoint path from a ``SmoothingConfig``.
+
+        The path is an adaptive nonuniform quintic B-spline with C4
+        continuity. It does not pass through interior waypoints: each selected
+        axis may deviate from the piecewise-linear reference polyline through
+        the waypoints by at most its tolerance, audited at the same path
+        parameter over every complete reference interval. Endpoints are
+        retained, and unselected axes keep quintic C4 interpolation through
+        every waypoint. Diagnostics are available from
+        ``Path.smoothing_report``. This constructor family is unstable: names,
+        signatures, and configuration types may change as more waypoint
+        algorithms are added.
+
+        ``waypoints`` uses the same layouts as
+        ``from_waypoints_interpolating``. ``SmoothingConfig.axes`` are 0-based
+        path dimensions, i.e. columns of a sample-major waypoint matrix.
+
+        Raises
+        ------
+        ValueError
+            If array layout, dtype, or wrapper-level options are invalid.
+        PathError
+            If the Rust COPP core rejects the waypoints or options, or cannot
+            satisfy the tolerance within the configured budgets.
+        """
+        ...
+
+    @staticmethod
+    @overload
+    def from_waypoints_fitting(
+        waypoints: ArrayLike,
+        config: None = None,
+        *,
+        tolerance: float | ArrayLike = 0.001,
+        axes: Sequence[int] | None = None,
+        parameters: ArrayLike | None = None,
+        max_refinements: int = 20,
+        max_segments: int = 20000,
+        out_of_range: OutOfRangeModeLike = OutOfRangeMode.ERROR,
+        layout: MatrixLayoutLike = MatrixLayout.SAMPLE_MAJOR,
+    ) -> Path:
+        """Build a tolerance-bounded fitted waypoint path from keyword options.
+
+        Keyword options build an equivalent temporary ``SmoothingConfig``;
+        see that class for their meaning. Passing both ``config`` and
+        non-default keyword options raises ``ValueError``.
+
+        Examples
+        --------
+        Fit dimensions 0 and 3 to different tolerances; tolerance entries
+        follow ``axes`` order::
+
+            path = copp.Path.from_waypoints_fitting(
+                waypoints,
+                tolerance=[1e-3, 1e-2],
+                axes=[0, 3],
+            )
+            report = path.smoothing_report
+            assert (report.max_errors <= [1e-3, 1e-2]).all()
+
+        Raises
+        ------
+        ValueError
+            If array layout, dtype, wrapper-level options, or mixed
+            ``config``/keyword options are invalid.
+        PathError
+            If the Rust COPP core rejects the waypoints or options, or cannot
+            satisfy the tolerance within the configured budgets.
         """
         ...
 
@@ -558,4 +829,5 @@ class Path:
     def evaluate_up_to_3rd(self, s: ArrayLike) -> PathDerivatives:
         """Evaluate ``q``, ``dq``, ``ddq``, and ``dddq`` at path parameters ``s``."""
         ...
+
 

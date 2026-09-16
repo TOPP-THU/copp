@@ -8,7 +8,8 @@ use crate::solver::copp3_socp::{
     Copp3Problem as RustCopp3Problem, Copp3ProblemBuilder as RustCopp3ProblemBuilder,
 };
 use crate::solver::topp3_socp::{
-    Topp3Problem as RustTopp3Problem, Topp3ProblemBuilder as RustTopp3ProblemBuilder,
+    LinearizationModeTopp3, Topp3Problem as RustTopp3Problem,
+    Topp3ProblemBuilder as RustTopp3ProblemBuilder,
 };
 use std::slice;
 
@@ -251,9 +252,10 @@ pub unsafe extern "C" fn copp_profile_3rd_free(profile: CoppProfile3rd) {
 
 /// Borrowed value descriptor for a TOPP3 problem solved from C.
 ///
-/// This is not an owning handle. `robot` and `a_linearization` are borrowed
-/// only during the solver call.  Building the internal TOPP3 problem mutates the
-/// robot's internal linearized third-order constraint cache.
+/// This is not an owning handle. `robot`, `a_linearization`, and
+/// `b_linearization` are borrowed only during the solver call.  Building the
+/// internal TOPP3 problem mutates the robot's internal linearized third-order
+/// constraint cache.
 ///
 /// # Example
 /// The example below builds a TOPP3 descriptor using a seed `a` profile for
@@ -272,6 +274,17 @@ pub unsafe extern "C" fn copp_profile_3rd_free(profile: CoppProfile3rd) {
 ///     1,
 ///     1e-10,
 /// };
+/// ```
+///
+/// `b_linearization` is the last field, so a positional initializer that omits
+/// it, such as the one above, leaves it empty and selects direct linearization.
+/// The example below refines around a previously solved third-order `profile`
+/// with adaptive linearization.
+///
+/// ```c
+/// struct Topp3Problem refined = problem;
+/// refined.a_linearization = (struct CoppSliceF64){profile.a.data, profile.a.len};
+/// refined.b_linearization = (struct CoppSliceF64){profile.b.data, profile.b.len};
 /// ```
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -297,6 +310,26 @@ pub struct Topp3Problem {
     pub num_stationary_max_end: usize,
     /// Denominator floor used when linearizing third-order constraints.
     pub a_linearization_floor: f64,
+    /// Optional path acceleration `b[k]` paired with `a_linearization`.
+    ///
+    /// Leave empty (`data = NULL`, `len = 0`, as zero-initialization does) to
+    /// linearize every third-order row of station `k` at `a_linearization[k]`.
+    /// When non-empty, each row is instead anchored where that row is nearly
+    /// active at the feasible state `(a_linearization, b_linearization)`, so a
+    /// slack row is anchored high and a tight one stays near the state. It must
+    /// then have the same length as `a_linearization`, otherwise the solver
+    /// returns `COPP_STATUS_SOLVER_INVALID_INPUT` when it builds the problem,
+    /// and the two must be the `a` and `b` of one previously solved
+    /// third-order profile; the `b` of a TOPP2 profile is discretized
+    /// differently and must not be used.
+    ///
+    /// Prefer this adaptive mode when `a` spans a wide range over the window,
+    /// and especially when `a` can approach zero (about `1e-10`): anchoring
+    /// both rows of one axis at the same small `a_linearization[k]` cancels `b`
+    /// and `c` and leaves `a[k] <= 3 * a_linearization[k]`. On profiles that
+    /// stay well away from zero the two modes agree closely, and leaving this
+    /// field empty is cheaper.
+    pub b_linearization: CoppSliceF64,
 }
 
 impl Topp3Problem {
@@ -304,7 +337,8 @@ impl Topp3Problem {
     ///
     /// # Safety
     /// `self.robot` must be a valid mutable `CoppRobot` handle and
-    /// `self.a_linearization` must be valid for reads during the call.
+    /// `self.a_linearization` and `self.b_linearization` must be valid for
+    /// reads during the call.
     pub(crate) unsafe fn build_rust<'a>(self) -> Result<RustTopp3Problem<'a>, CoppStatus> {
         // SAFETY: The C ABI contract requires `robot` to be a live mutable
         // handle for the duration of this call.
@@ -312,6 +346,8 @@ impl Topp3Problem {
         // SAFETY: The C ABI contract requires non-empty slices to point to
         // valid contiguous `double` arrays for the duration of this call.
         let a_linearization = unsafe { self.a_linearization.as_slice()? };
+        // SAFETY: Same input-slice contract as above.
+        let linearization_mode = unsafe { linearization_mode(self.b_linearization)? };
 
         RustTopp3ProblemBuilder::new(
             robot,
@@ -322,6 +358,7 @@ impl Topp3Problem {
         )
         .with_num_stationary_max_pair((self.num_stationary_max_start, self.num_stationary_max_end))
         .with_a_linearization_floor(self.a_linearization_floor)
+        .with_linearization_mode(linearization_mode)
         .build_with_linearization()
         .map_err(|error| CoppStatus::from(&error))
     }
@@ -380,6 +417,26 @@ pub struct Copp3Problem {
     pub objectives: *const CoppObjective,
     /// Number of objective descriptors.
     pub num_objectives: usize,
+    /// Optional path acceleration `b[k]` paired with `a_linearization`.
+    ///
+    /// Leave empty (`data = NULL`, `len = 0`, as zero-initialization does) to
+    /// linearize every third-order row of station `k` at `a_linearization[k]`.
+    /// When non-empty, each row is instead anchored where that row is nearly
+    /// active at the feasible state `(a_linearization, b_linearization)`, so a
+    /// slack row is anchored high and a tight one stays near the state. It must
+    /// then have the same length as `a_linearization`, otherwise the solver
+    /// returns `COPP_STATUS_SOLVER_INVALID_INPUT` when it builds the problem,
+    /// and the two must be the `a` and `b` of one previously solved
+    /// third-order profile; the `b` of a TOPP2 profile is discretized
+    /// differently and must not be used.
+    ///
+    /// Prefer this adaptive mode when `a` spans a wide range over the window,
+    /// and especially when `a` can approach zero (about `1e-10`): anchoring
+    /// both rows of one axis at the same small `a_linearization[k]` cancels `b`
+    /// and `c` and leaves `a[k] <= 3 * a_linearization[k]`. On profiles that
+    /// stay well away from zero the two modes agree closely, and leaving this
+    /// field empty is cheaper.
+    pub b_linearization: CoppSliceF64,
 }
 
 impl Copp3Problem {
@@ -424,6 +481,8 @@ impl Copp3Problem {
         // SAFETY: The C ABI contract requires non-empty slices to point to
         // valid contiguous `double` arrays for the duration of this call.
         let a_linearization = unsafe { self.a_linearization.as_slice()? };
+        // SAFETY: Same input-slice contract as above.
+        let linearization_mode = unsafe { linearization_mode(self.b_linearization)? };
         // SAFETY: Objective descriptors are borrowed only during this call.
         let objectives = unsafe { self.rust_objectives(allow_total_variation_torque)? };
 
@@ -437,6 +496,7 @@ impl Copp3Problem {
         )
         .with_num_stationary_max_pair((self.num_stationary_max_start, self.num_stationary_max_end))
         .with_a_linearization_floor(self.a_linearization_floor)
+        .with_linearization_mode(linearization_mode)
         .build_with_linearization()
         .map_err(|error| CoppStatus::from(&error))?;
 
@@ -463,4 +523,70 @@ pub(crate) unsafe fn objective_slice<'a>(
     // SAFETY: The caller guarantees that `objectives` is valid for
     // `num_objectives` reads when `num_objectives` is non-zero.
     Ok(unsafe { slice::from_raw_parts(objectives, num_objectives) })
+}
+
+/// Select the third-order linearization mode requested by a C descriptor.
+///
+/// An empty `b_linearization` selects [`LinearizationModeTopp3::Direct`]; a
+/// non-empty one selects [`LinearizationModeTopp3::GivenFeasibleAdaptive`].
+/// The problem builder checks that it matches `a_linearization` in length.
+///
+/// # Safety
+/// A non-empty `b_linearization` must point to at least `len` initialized
+/// `f64` values that remain valid for the returned lifetime.
+unsafe fn linearization_mode<'a>(
+    b_linearization: CoppSliceF64,
+) -> Result<LinearizationModeTopp3<'a>, CoppStatus> {
+    // SAFETY: The caller forwards the C ABI input-slice contract.
+    let b_linearization = unsafe { b_linearization.as_slice()? };
+    if b_linearization.is_empty() {
+        return Ok(LinearizationModeTopp3::Direct);
+    }
+    Ok(LinearizationModeTopp3::GivenFeasibleAdaptive(
+        b_linearization,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ptr;
+
+    fn slice(values: &[f64]) -> CoppSliceF64 {
+        CoppSliceF64 {
+            data: values.as_ptr(),
+            len: values.len(),
+        }
+    }
+
+    #[test]
+    fn empty_b_linearization_selects_direct_mode() {
+        let empty = CoppSliceF64 {
+            data: ptr::null(),
+            len: 0,
+        };
+        let mode = unsafe { linearization_mode(empty) }.unwrap();
+        assert_eq!(mode, LinearizationModeTopp3::Direct);
+    }
+
+    #[test]
+    fn nonempty_b_linearization_selects_adaptive_mode() {
+        let b = [0.0, 0.5, -0.5];
+        let mode = unsafe { linearization_mode(slice(&b)) }.unwrap();
+        assert_eq!(mode, LinearizationModeTopp3::GivenFeasibleAdaptive(&b));
+    }
+
+    #[test]
+    fn invalid_b_linearization_is_rejected() {
+        // The length check against `a_linearization` belongs to the problem
+        // builder; this layer only rejects an unreadable slice.
+        let null = CoppSliceF64 {
+            data: ptr::null(),
+            len: 3,
+        };
+        assert!(matches!(
+            unsafe { linearization_mode(null) },
+            Err(CoppStatus::NullPointer)
+        ));
+    }
 }

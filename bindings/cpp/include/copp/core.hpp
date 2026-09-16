@@ -199,7 +199,7 @@ namespace copp
     ///     1.0, 1.0,
     /// };
     /// auto row_major = copp::MatrixView::row_major(values.data(), 3, 2);
-    /// auto path = copp::Path::from_waypoints(row_major);
+    /// auto path = copp::Path::from_waypoints_interpolating(row_major);
     /// @endcode
     class MatrixView
     {
@@ -513,7 +513,7 @@ namespace copp
     /// is not a `-fno-exceptions` build mode.
     ///
     /// @code
-    /// auto result = copp::Path::from_waypoints({{0.0}, {1.0}}, copp::no_throw);
+    /// auto result = copp::Path::from_waypoints_interpolating({{0.0}, {1.0}}, copp::no_throw);
     /// if (!result) {
     ///     std::cerr << result.error().message << "\n";
     ///     return;

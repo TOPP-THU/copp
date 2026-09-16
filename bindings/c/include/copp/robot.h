@@ -313,6 +313,78 @@ enum CoppStatus copp_robot_jerk_linear_constraints_at(const struct CoppRobot *ro
                                                       struct CoppMatrixF64 *out_jerk_max_linear);
 
 /**
+ * Evaluate the maximum TOPP2 constraint violations of a second-order profile.
+ *
+ * `a` holds `a[k] = dot{s}_k^2` on the stations
+ * `[idx_s_start, idx_s_start + a.len)`. The path acceleration of each
+ * interval is reconstructed by the TOPP2 relation
+ * `b[k] = (a[k+1] - a[k]) / (2 * (s[k+1] - s[k]))`, and the second-order
+ * rows of both endpoint stations are checked against that interval's `b`.
+ *
+ * `*out_exceed_1order` receives the maximum violation of
+ * `0 <= a[k] <= amax[k]`, and `*out_exceed_2order` the maximum violation of
+ * `acc_a * a + acc_b * b <= acc_max`. Each value is `<= 0` when the profile
+ * satisfies that constraint order and positive when it is violated.
+ *
+ * If the station range is not stored in the robot or `b` cannot be
+ * reconstructed from `a`, this still returns `COPP_STATUS_OK` and writes
+ * `NaN` to both outputs.
+ *
+ * \par Safety
+ * `robot` must be a non-null handle returned by `copp_robot_create`.
+ * `a.data` must be valid for `a.len` reads when `a.len` is non-zero. Every
+ * output pointer must be valid for one `double` write.
+ */
+enum CoppStatus copp_robot_exceed_topp2(const struct CoppRobot *robot,
+                                        size_t idx_s_start,
+                                        struct CoppSliceF64 a,
+                                        double *out_exceed_1order,
+                                        double *out_exceed_2order);
+
+/**
+ * Evaluate the maximum TOPP3 constraint violations of a third-order profile.
+ *
+ * `a` and `b` hold `a[k] = dot{s}_k^2` and `b[k] = ddot{s}_k` on the
+ * stations `[idx_s_start, idx_s_start + a.len)`. `num_stationary_start` and
+ * `num_stationary_end` are the profile's effective stationary interval
+ * counts, as returned in `CoppProfile3rd`.
+ *
+ * `*out_exceed_1order` receives the maximum violation of
+ * `0 <= a[k] <= amax[k]`, `*out_exceed_2order` the maximum violation of
+ * `acc_a * a[k] + acc_b * b[k] <= acc_max`, and `*out_exceed_3order` the
+ * maximum violation of the original nonlinear rows
+ * `sqrt(a) * (jerk_a*a + jerk_b*b + jerk_c*c + jerk_d) <= jerk_max`, not
+ * their linearization. Each interval contributes
+ * `c = (b[k+1] - b[k]) / (s[k+1] - s[k])` at both of its endpoints; the two
+ * stationary blocks are skipped because their constant-jerk model is not a
+ * finite difference of `b`. Each value is `<= 0` when the profile satisfies
+ * that constraint order and positive when it is violated.
+ *
+ * This certifies the profile that is actually delivered, so call it after
+ * any post-processing such as `copp_force_positive_a_3rd`, which rewrites `a`
+ * and `b` without knowing about the acceleration and jerk limits.
+ *
+ * If the station range is not stored in the robot, `a` and `b` differ in
+ * length or have fewer than two entries, `a` or `b` contains a non-finite
+ * value, or a station interval is not strictly increasing, this still returns
+ * `COPP_STATUS_OK` and writes `NaN` to all three outputs.
+ *
+ * \par Safety
+ * `robot` must be a non-null handle returned by `copp_robot_create`.
+ * `a.data` and `b.data` must be valid for `a.len` and `b.len` reads when
+ * non-empty. Every output pointer must be valid for one `double` write.
+ */
+enum CoppStatus copp_robot_exceed_topp3(const struct CoppRobot *robot,
+                                        size_t idx_s_start,
+                                        struct CoppSliceF64 a,
+                                        struct CoppSliceF64 b,
+                                        size_t num_stationary_start,
+                                        size_t num_stationary_end,
+                                        double *out_exceed_1order,
+                                        double *out_exceed_2order,
+                                        double *out_exceed_3order);
+
+/**
  * Clear all logical constraints stored in the robot.
  *
  * When `keep_idx_s` is true, the current global station origin is preserved;

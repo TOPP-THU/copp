@@ -993,6 +993,141 @@ pub unsafe extern "C" fn copp_robot_jerk_linear_constraints_at(
     }
 }
 
+/// Evaluate the maximum TOPP2 constraint violations of a second-order profile.
+///
+/// `a` holds `a[k] = dot{s}_k^2` on the stations
+/// `[idx_s_start, idx_s_start + a.len)`. The path acceleration of each
+/// interval is reconstructed by the TOPP2 relation
+/// `b[k] = (a[k+1] - a[k]) / (2 * (s[k+1] - s[k]))`, and the second-order
+/// rows of both endpoint stations are checked against that interval's `b`.
+///
+/// `*out_exceed_1order` receives the maximum violation of
+/// `0 <= a[k] <= amax[k]`, and `*out_exceed_2order` the maximum violation of
+/// `acc_a * a + acc_b * b <= acc_max`. Each value is `<= 0` when the profile
+/// satisfies that constraint order and positive when it is violated.
+///
+/// If the station range is not stored in the robot or `b` cannot be
+/// reconstructed from `a`, this still returns `COPP_STATUS_OK` and writes
+/// `NaN` to both outputs.
+///
+/// # Safety
+/// `robot` must be a non-null handle returned by `copp_robot_create`.
+/// `a.data` must be valid for `a.len` reads when `a.len` is non-zero. Every
+/// output pointer must be valid for one `double` write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn copp_robot_exceed_topp2(
+    robot: *const CoppRobot,
+    idx_s_start: usize,
+    a: CoppSliceF64,
+    out_exceed_1order: *mut f64,
+    out_exceed_2order: *mut f64,
+) -> CoppStatus {
+    crate::ffi::c::core::status::clear_last_error();
+    if robot.is_null() || out_exceed_1order.is_null() || out_exceed_2order.is_null() {
+        return CoppStatus::NullPointer.into_ffi_status();
+    }
+
+    match catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: Same checked pointer contract as this function.
+        let robot = unsafe { CoppRobot::robot(robot) }.ok_or(CoppStatus::NullPointer)?;
+        // SAFETY: The C ABI contract requires non-empty input slices to point
+        // to valid contiguous `double` arrays for the duration of this call.
+        let a = unsafe { a.as_slice()? };
+        let (exceed_1order, exceed_2order) = robot.constraints.exceed_topp2(idx_s_start, a);
+        // SAFETY: Output pointers were checked for null above and are expected
+        // to be valid for one write each by the C ABI contract.
+        unsafe {
+            out_exceed_1order.write(exceed_1order);
+            out_exceed_2order.write(exceed_2order);
+        }
+        Ok(CoppStatus::Ok)
+    })) {
+        Ok(Ok(status)) | Ok(Err(status)) => status.into_ffi_status(),
+        Err(payload) => panic_to_status(payload).into_ffi_status(),
+    }
+}
+
+/// Evaluate the maximum TOPP3 constraint violations of a third-order profile.
+///
+/// `a` and `b` hold `a[k] = dot{s}_k^2` and `b[k] = ddot{s}_k` on the
+/// stations `[idx_s_start, idx_s_start + a.len)`. `num_stationary_start` and
+/// `num_stationary_end` are the profile's effective stationary interval
+/// counts, as returned in `CoppProfile3rd`.
+///
+/// `*out_exceed_1order` receives the maximum violation of
+/// `0 <= a[k] <= amax[k]`, `*out_exceed_2order` the maximum violation of
+/// `acc_a * a[k] + acc_b * b[k] <= acc_max`, and `*out_exceed_3order` the
+/// maximum violation of the original nonlinear rows
+/// `sqrt(a) * (jerk_a*a + jerk_b*b + jerk_c*c + jerk_d) <= jerk_max`, not
+/// their linearization. Each interval contributes
+/// `c = (b[k+1] - b[k]) / (s[k+1] - s[k])` at both of its endpoints; the two
+/// stationary blocks are skipped because their constant-jerk model is not a
+/// finite difference of `b`. Each value is `<= 0` when the profile satisfies
+/// that constraint order and positive when it is violated.
+///
+/// This certifies the profile that is actually delivered, so call it after
+/// any post-processing such as `copp_force_positive_a_3rd`, which rewrites `a`
+/// and `b` without knowing about the acceleration and jerk limits.
+///
+/// If the station range is not stored in the robot, `a` and `b` differ in
+/// length or have fewer than two entries, `a` or `b` contains a non-finite
+/// value, or a station interval is not strictly increasing, this still returns
+/// `COPP_STATUS_OK` and writes `NaN` to all three outputs.
+///
+/// # Safety
+/// `robot` must be a non-null handle returned by `copp_robot_create`.
+/// `a.data` and `b.data` must be valid for `a.len` and `b.len` reads when
+/// non-empty. Every output pointer must be valid for one `double` write.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn copp_robot_exceed_topp3(
+    robot: *const CoppRobot,
+    idx_s_start: usize,
+    a: CoppSliceF64,
+    b: CoppSliceF64,
+    num_stationary_start: usize,
+    num_stationary_end: usize,
+    out_exceed_1order: *mut f64,
+    out_exceed_2order: *mut f64,
+    out_exceed_3order: *mut f64,
+) -> CoppStatus {
+    crate::ffi::c::core::status::clear_last_error();
+    if robot.is_null()
+        || out_exceed_1order.is_null()
+        || out_exceed_2order.is_null()
+        || out_exceed_3order.is_null()
+    {
+        return CoppStatus::NullPointer.into_ffi_status();
+    }
+
+    match catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: Same checked pointer contract as this function.
+        let robot = unsafe { CoppRobot::robot(robot) }.ok_or(CoppStatus::NullPointer)?;
+        // SAFETY: The C ABI contract requires non-empty input slices to point
+        // to valid contiguous `double` arrays for the duration of this call.
+        let a = unsafe { a.as_slice()? };
+        // SAFETY: Same input-slice contract as above.
+        let b = unsafe { b.as_slice()? };
+        let (exceed_1order, exceed_2order, exceed_3order) = robot.constraints.exceed_topp3(
+            idx_s_start,
+            a,
+            b,
+            (num_stationary_start, num_stationary_end),
+        );
+        // SAFETY: Output pointers were checked for null above and are expected
+        // to be valid for one write each by the C ABI contract.
+        unsafe {
+            out_exceed_1order.write(exceed_1order);
+            out_exceed_2order.write(exceed_2order);
+            out_exceed_3order.write(exceed_3order);
+        }
+        Ok(CoppStatus::Ok)
+    })) {
+        Ok(Ok(status)) | Ok(Err(status)) => status.into_ffi_status(),
+        Err(payload) => panic_to_status(payload).into_ffi_status(),
+    }
+}
+
 /// Clear all logical constraints stored in the robot.
 ///
 /// When `keep_idx_s` is true, the current global station origin is preserved;
@@ -1798,4 +1933,168 @@ pub unsafe extern "C" fn copp_robot_free(robot: *mut CoppRobot) {
         drop(Box::from_raw(robot.cast::<CoppRobotInner>()));
     }
     clear_last_error();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ffi::c::CoppMatrixLayout;
+
+    const NUM_POINTS: usize = 5;
+
+    fn slice(values: &[f64]) -> CoppSliceF64 {
+        CoppSliceF64 {
+            data: values.as_ptr(),
+            len: values.len(),
+        }
+    }
+
+    fn view(values: &[f64], rows: usize) -> CoppMatrixViewF64 {
+        CoppMatrixViewF64 {
+            data: values.as_ptr(),
+            rows,
+            cols: values.len() / rows,
+            layout: CoppMatrixLayout::ColumnMajor,
+            leading_dim: rows,
+        }
+    }
+
+    /// One-axis robot with `a <= 4`, `|b| <= 2`, and `sqrt(a) * c <= 1`.
+    fn raw_constraint_robot() -> *mut CoppRobot {
+        let s: Vec<f64> = (0..NUM_POINTS)
+            .map(|k| k as f64 / (NUM_POINTS - 1) as f64)
+            .collect();
+        let amax = [4.0; NUM_POINTS];
+        let acc_a = [0.0; 2 * NUM_POINTS];
+        let acc_b: Vec<f64> = (0..NUM_POINTS).flat_map(|_| [1.0, -1.0]).collect();
+        let acc_max = [2.0; 2 * NUM_POINTS];
+        let zeros = [0.0; NUM_POINTS];
+        let jerk_c = [1.0; NUM_POINTS];
+        let jerk_max = [1.0; NUM_POINTS];
+
+        let mut robot = ptr::null_mut();
+        unsafe {
+            assert_eq!(copp_robot_create(1, NUM_POINTS, &mut robot), CoppStatus::Ok);
+            assert_eq!(copp_robot_append_s(robot, slice(&s)), CoppStatus::Ok);
+            assert_eq!(
+                copp_add_raw_constraint_1st(robot, 0, view(&amax, 1)),
+                CoppStatus::Ok
+            );
+            assert_eq!(
+                copp_add_raw_constraint_2nd(
+                    robot,
+                    0,
+                    view(&acc_a, 2),
+                    view(&acc_b, 2),
+                    view(&acc_max, 2)
+                ),
+                CoppStatus::Ok
+            );
+            assert_eq!(
+                copp_add_raw_constraint_3rd(
+                    robot,
+                    0,
+                    view(&zeros, 1),
+                    view(&zeros, 1),
+                    view(&jerk_c, 1),
+                    view(&zeros, 1),
+                    view(&jerk_max, 1)
+                ),
+                CoppStatus::Ok
+            );
+        }
+        robot
+    }
+
+    fn exceed_topp2(robot: *const CoppRobot, idx_s_start: usize, a: &[f64]) -> (f64, f64) {
+        let mut exceed = (f64::NAN, f64::NAN);
+        let status = unsafe {
+            copp_robot_exceed_topp2(robot, idx_s_start, slice(a), &mut exceed.0, &mut exceed.1)
+        };
+        assert_eq!(status, CoppStatus::Ok);
+        exceed
+    }
+
+    fn exceed_topp3(robot: *const CoppRobot, a: &[f64], b: &[f64]) -> (f64, f64, f64) {
+        let mut exceed = (f64::NAN, f64::NAN, f64::NAN);
+        let status = unsafe {
+            copp_robot_exceed_topp3(
+                robot,
+                0,
+                slice(a),
+                slice(b),
+                0,
+                0,
+                &mut exceed.0,
+                &mut exceed.1,
+                &mut exceed.2,
+            )
+        };
+        assert_eq!(status, CoppStatus::Ok);
+        exceed
+    }
+
+    #[test]
+    fn exceed_topp2_reports_feasible_infeasible_and_unavailable_profiles() {
+        let robot = raw_constraint_robot();
+
+        // b = (a[k+1] - a[k]) / (2 * 0.25) = +-0.8 stays inside |b| <= 2.
+        let (first, second) = exceed_topp2(robot, 0, &[0.0, 0.4, 0.8, 0.4, 0.0]);
+        assert!(first <= 0.0 && second <= 0.0, "({first}, {second})");
+
+        // a = 5 exceeds amax = 4, and b = 10 exceeds the acceleration row.
+        let (first, second) = exceed_topp2(robot, 0, &[0.0, 5.0, 0.0, 0.0, 0.0]);
+        assert_eq!(first, 1.0);
+        assert_eq!(second, 8.0);
+
+        let (first, second) = exceed_topp2(robot, NUM_POINTS, &[0.0, 0.0]);
+        assert!(first.is_nan() && second.is_nan());
+
+        unsafe { copp_robot_free(robot) };
+    }
+
+    #[test]
+    fn exceed_topp3_reports_feasible_infeasible_and_unavailable_profiles() {
+        let robot = raw_constraint_robot();
+
+        let (first, second, third) = exceed_topp3(robot, &[1.0; NUM_POINTS], &[0.0; NUM_POINTS]);
+        assert!(first <= 0.0 && second <= 0.0 && third <= 0.0);
+
+        // c = +-4 violates sqrt(a) * c <= 1 by 3 while b stays inside |b| <= 2.
+        let (first, second, third) =
+            exceed_topp3(robot, &[1.0; NUM_POINTS], &[0.0, 1.0, 0.0, 1.0, 0.0]);
+        assert!(first <= 0.0 && second <= 0.0);
+        assert_eq!(third, 3.0);
+
+        let (first, second, third) = exceed_topp3(robot, &[1.0; NUM_POINTS], &[0.0; 2]);
+        assert!(first.is_nan() && second.is_nan() && third.is_nan());
+
+        unsafe { copp_robot_free(robot) };
+    }
+
+    #[test]
+    fn exceed_rejects_null_pointers() {
+        let a = [0.0; NUM_POINTS];
+        let mut out = 0.0;
+        unsafe {
+            assert_eq!(
+                copp_robot_exceed_topp2(ptr::null(), 0, slice(&a), &mut out, &mut out),
+                CoppStatus::NullPointer
+            );
+            assert_eq!(
+                copp_robot_exceed_topp3(
+                    ptr::null(),
+                    0,
+                    slice(&a),
+                    slice(&a),
+                    0,
+                    0,
+                    &mut out,
+                    &mut out,
+                    ptr::null_mut()
+                ),
+                CoppStatus::NullPointer
+            );
+        }
+    }
 }

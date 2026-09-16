@@ -547,6 +547,118 @@ classdef Robot < handle
             copp.internal.copp_mex( ...
                 'robot_clear_inverse_dynamics', obj.native_id_for_mex());
         end
+
+        function [e1, e2] = exceed_topp2(obj, a, opts)
+            %EXCEED_TOPP2 Maximum TOPP2 constraint violations of an a profile.
+            %
+            % [E1, E2] = exceed_topp2(OBJ, A) evaluates the node profile
+            % A = (ds/dt)^2 on the stations idx_s_start through
+            % idx_s_start + numel(A) - 1. The path acceleration of each
+            % interval is reconstructed by the TOPP2 relation
+            % b(k) = (a(k+1) - a(k)) / (2*(s(k+1) - s(k))), and the
+            % second-order rows of both endpoint stations are checked against
+            % that interval's b.
+            %
+            % E1 is the maximum violation of 0 <= a(k) <= amax(k) and E2 the
+            % maximum violation of acc_a*a + acc_b*b <= acc_max. Each value is
+            % <= 0 when the profile satisfies that constraint order and
+            % positive when it is violated. Both are NaN when the station range
+            % is not stored in the robot or b cannot be reconstructed from A.
+            %
+            % Name-value options:
+            %   idx_s_start:
+            %       1-based station of A(1). Defaults to 1.
+            arguments
+                obj (1,1) copp.Robot
+                a {mustBeNumeric, mustBeReal, mustBeVector, mustBeFinite}
+                opts.idx_s_start (1,1) {mustBeNumeric, mustBeReal, mustBeInteger, mustBePositive} = 1
+            end
+
+            [e1, e2] = copp.internal.copp_mex( ...
+                'robot_exceed_topp2', ...
+                obj.native_id_for_mex(), ...
+                double(opts.idx_s_start - 1), ...
+                double(a));
+        end
+
+        function [e1, e2, e3] = exceed_topp3(obj, a, b, opts)
+            %EXCEED_TOPP3 Maximum TOPP3 constraint violations of a third-order profile.
+            %
+            % [E1, E2, E3] = exceed_topp3(OBJ, A, B) evaluates the node
+            % profiles A = (ds/dt)^2 and B = d2s/dt2 on the stations
+            % idx_s_start through idx_s_start + numel(A) - 1.
+            %
+            % [E1, E2, E3] = exceed_topp3(OBJ, PROFILE) takes a, b, and
+            % num_stationary from a copp.Profile3rd. B and num_stationary
+            % must not be passed in this form.
+            %
+            % E1 is the maximum violation of 0 <= a(k) <= amax(k), E2 of
+            % acc_a*a(k) + acc_b*b(k) <= acc_max, and E3 of the original
+            % nonlinear third-order rows
+            % sqrt(a)*(jerk_a*a + jerk_b*b + jerk_c*c + jerk_d) <= jerk_max,
+            % not their linearization. Each interval contributes
+            % c = (b(k+1) - b(k)) / (s(k+1) - s(k)) at both of its endpoints;
+            % the two stationary blocks are skipped. Each value is <= 0 when the
+            % profile satisfies that constraint order and positive when it is
+            % violated. All three are NaN when the station range is not stored
+            % in the robot, A and B differ in length or have fewer than two
+            % entries, a station interval is not strictly increasing, or
+            % PROFILE holds a non-finite a or b (A and B vectors must be finite).
+            %
+            % This audits the profile that is actually delivered, so call it
+            % after post-processing such as Profile3rd.force_positive_a.
+            %
+            % Name-value options:
+            %   num_stationary:
+            %       [NS0, NSF] stationary interval counts of the profile, as
+            %       stored in Profile3rd.num_stationary. Empty (default) means
+            %       [0, 0] for A/B vectors; it must stay empty for a
+            %       Profile3rd.
+            %   idx_s_start:
+            %       1-based station of A(1). Defaults to 1.
+            arguments
+                obj (1,1) copp.Robot
+                a
+                b = []
+                opts.num_stationary = []
+                opts.idx_s_start (1,1) {mustBeNumeric, mustBeReal, mustBeInteger, mustBePositive} = 1
+            end
+
+            if isa(a, 'copp.Profile3rd')
+                if ~isscalar(a) || ~isempty(b) || ~isempty(opts.num_stationary)
+                    error("copp:InvalidArgument", ...
+                        "exceed_topp3 takes b and num_stationary from a scalar Profile3rd; do not pass them separately.");
+                end
+                a_values = a.a;
+                b_values = a.b;
+                num_stationary = a.num_stationary;
+            else
+                if isempty(b)
+                    error("copp:InvalidArgument", ...
+                        "exceed_topp3 requires b unless a is a Profile3rd.");
+                end
+                validateattributes(a, {'numeric'}, {'real', 'finite', 'vector'}, 'exceed_topp3', 'a');
+                validateattributes(b, {'numeric'}, {'real', 'finite', 'vector'}, 'exceed_topp3', 'b');
+                a_values = double(a);
+                b_values = double(b);
+                num_stationary = [0, 0];
+                if ~isempty(opts.num_stationary)
+                    num_stationary = double(opts.num_stationary);
+                    validateattributes(num_stationary, {'numeric'}, ...
+                        {'real', 'finite', 'integer', 'nonnegative', 'numel', 2}, ...
+                        'exceed_topp3', 'num_stationary');
+                end
+            end
+
+            [e1, e2, e3] = copp.internal.copp_mex( ...
+                'robot_exceed_topp3', ...
+                obj.native_id_for_mex(), ...
+                double(opts.idx_s_start - 1), ...
+                a_values, ...
+                b_values, ...
+                double(num_stationary(1)), ...
+                double(num_stationary(2)));
+        end
     end
 
     methods (Hidden)

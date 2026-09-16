@@ -38,6 +38,44 @@ classdef test_topp3_lp_socp < matlab.unittest.TestCase
                 @() copp.solver.topp3_lp.Problem(robot, -ones(n, 1)), ...
                 'copp:InvalidArgument');
 
+            % Empty b_linearization (the default) selects direct linearization.
+            testCase.verifyEmpty(problem.b_linearization);
+            testCase.verifySize(problem.b_linearization, [0, 1]);
+            % The native solver rejects a length mismatch at solve time.
+            mismatched = copp.solver.topp3_lp.Problem( ...
+                robot, ones(n, 1), b_linearization=zeros(n - 1, 1));
+            testCase.verifyError( ...
+                @() copp.solver.topp3_lp.solve(mismatched), ...
+                'copp:SolverError');
+
+            clear cleaner
+        end
+
+        function topp3_b_linearization_refines_solved_profile(testCase)
+            % Re-solve around a previously solved third-order profile.
+            n = 7;
+            [robot, cleaner, s] = simple_topp3_robot(n);
+
+            problem = copp.solver.topp3_lp.Problem( ...
+                robot, ones(n, 1), num_stationary_max=1);
+            profile = copp.solver.topp3_lp.solve(problem);
+
+            refined_problem = copp.solver.topp3_lp.Problem( ...
+                robot, max(profile.a, 0), ...
+                num_stationary_max=1, ...
+                b_linearization=profile.b.');
+            testCase.verifyEqual(refined_problem.b_linearization, profile.b);
+
+            refined_lp = copp.solver.topp3_lp.solve(refined_problem);
+            refined_expert = copp.solver.topp3_lp.solve_expert(refined_problem);
+            refined_socp = copp.solver.topp3_socp.solve(refined_problem);
+
+            verify_topp3_profile(testCase, refined_lp, n);
+            testCase.verifyTrue(refined_expert.has_profile);
+            verify_topp3_profile(testCase, refined_expert.profile, n);
+            verify_topp3_profile(testCase, refined_socp, n);
+            testCase.verifyGreaterThan(copp.interpolation.s_to_t_topp3(s, refined_lp), 0.0);
+
             clear cleaner
         end
 

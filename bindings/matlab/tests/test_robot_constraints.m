@@ -47,6 +47,67 @@ classdef test_robot_constraints < matlab.unittest.TestCase
 
             clear cleaner
         end
+
+        function exceed_topp2_reports_violations(testCase)
+            % Nonpositive values mean feasible; NaN means the range is unavailable.
+            n = 5;
+            robot = simple_second_order_robot(n);
+            cleaner = onCleanup(@() robot.release());
+
+            [e1, e2] = robot.exceed_topp2(0.5 * ones(n, 1));
+            testCase.verifyLessThanOrEqual([e1, e2], 0);
+
+            [e1_fast, ~] = robot.exceed_topp2(1.0e6 * ones(n, 1));
+            testCase.verifyGreaterThan(e1_fast, 0);
+
+            [e1_tail, e2_tail] = robot.constraints.exceed_topp2(0.5 * ones(n - 1, 1), idx_s_start=2);
+            testCase.verifyLessThanOrEqual([e1_tail, e2_tail], 0);
+
+            [e1_nan, e2_nan] = robot.exceed_topp2(ones(n, 1), idx_s_start=2);
+            testCase.verifyTrue(isnan(e1_nan) && isnan(e2_nan));
+
+            clear cleaner
+        end
+
+        function exceed_topp3_accepts_vectors_and_profiles(testCase)
+            n = 6;
+            robot = simple_third_order_robot(n);
+            cleaner = onCleanup(@() robot.release());
+            a = ones(n, 1);
+            b = zeros(n, 1);
+
+            [e1, e2, e3] = robot.exceed_topp3(a, b);
+            testCase.verifyLessThanOrEqual([e1, e2, e3], 0);
+
+            % The jump of b inside the first and last intervals violates the
+            % jerk rows unless num_stationary=[1, 1] skips those end blocks.
+            b_ends = [0; 1.0e3 * ones(n - 2, 1); 0];
+            [~, ~, e3_moving] = robot.exceed_topp3(a, b_ends);
+            [~, ~, e3_stationary] = robot.exceed_topp3(a, b_ends, num_stationary=[1, 1]);
+            testCase.verifyGreaterThan(e3_moving, 0);
+            testCase.verifyLessThan(e3_stationary, e3_moving);
+
+            % A Profile3rd supplies a, b, and num_stationary together.
+            profile = copp.Profile3rd(a, b_ends, num_stationary=[1, 1]);
+            [p1, p2, p3] = robot.exceed_topp3(profile);
+            [v1, v2, v3] = robot.constraints.exceed_topp3(a, b_ends, num_stationary=[1, 1]);
+            testCase.verifyEqual([p1, p2, p3], [v1, v2, v3]);
+            testCase.verifyEqual(p3, e3_stationary);
+
+            [~, ~, e3_fast] = robot.exceed_topp3(a, 1.0e4 * (1:n).');
+            testCase.verifyGreaterThan(e3_fast, 0);
+
+            [n1, n2, n3] = robot.exceed_topp3(a, zeros(n - 1, 1));
+            testCase.verifyTrue(all(isnan([n1, n2, n3])));
+
+            testCase.verifyError(@() robot.exceed_topp3(profile, b), 'copp:InvalidArgument');
+            testCase.verifyError( ...
+                @() robot.exceed_topp3(profile, num_stationary=[0, 0]), ...
+                'copp:InvalidArgument');
+            testCase.verifyError(@() robot.exceed_topp3(a), 'copp:InvalidArgument');
+
+            clear cleaner
+        end
     end
 end
 

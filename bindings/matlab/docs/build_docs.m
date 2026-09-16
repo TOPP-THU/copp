@@ -6,9 +6,18 @@ function html_files = build_docs(opts)
 % Help Center-style reference layout. The authored .m files stay diffable,
 % runnable, and compatible with MATLAB publish in R2024b.
 %
+% OutputDir defaults to the html folder next to this file; a relative value is
+% resolved against the current folder, not against this file.
+%
+% Publishing executes the authored pages, so the default EvalCode=true needs a
+% working MEX gateway. In a tree that has none -- a clone of
+% TOPP-THU/copp-matlab, or a clone of TOPP-THU/copp before build() has run --
+% pass EvalCode=false to render the pages without executing them.
+%
 % Examples
 %   build_docs
-%   build_docs(OutputDir="docs/html", BuildSearchDatabase=true)
+%   build_docs(BuildSearchDatabase=true)
+%   build_docs(EvalCode=false)
 
 arguments
     opts.OutputDir (1,1) string = string(fullfile(fileparts(mfilename('fullpath')), 'html'))
@@ -1825,7 +1834,7 @@ end
 html = char(html);
 [protected_matches, starts, ends] = regexp(html, '(?s)<pre(?=[\s>]).*?</pre>|<a(?=[\s>]).*?</a>|\\\(.*?\\\)|\\\[.*?\\\]', 'match', 'start', 'end');
 for k = numel(protected_matches):-1:1
-    placeholder = sprintf('__COPP_ESCAPED_HTML_%04d__', k);
+    placeholder = sprintf('__COPP_PROTECTED_HTML_%04d__', k);
     html = [html(1:starts(k)-1), placeholder, html(ends(k)+1:end)];
 end
 
@@ -1844,7 +1853,7 @@ for idx = reshape(order, 1, [])
 end
 
 for k = 1:numel(protected_matches)
-    placeholder = sprintf('__COPP_ESCAPED_HTML_%04d__', k);
+    placeholder = sprintf('__COPP_PROTECTED_HTML_%04d__', k);
     html = strrep(html, placeholder, protected_matches{k});
 end
 end
@@ -2051,7 +2060,7 @@ elseif contains(name, ".solver.") && endsWith(name, ".Options")
     namespace = extractBefore(name, strlength(name) - strlength(".Options") + 1);
     paragraphs(end+1, 1) = "Use this Options object to override numerical tolerances, sampling counts, verbosity, or backend policy for " + namespace + " calls.";
     paragraphs(end+1, 1) = "Default construction is usually a good first choice; set name-value arguments only when a solve needs different precision, diagnostics, or refinement behavior.";
-elseif contains(name, ".solver.") && (endsWith(name, ".solve") || endsWith(name, ".solve_expert") || endsWith(name, ".solve_with_reach_set"))
+elseif contains(name, ".solver.") && (endsWith(name, ".solve") || endsWith(name, ".solve_expert"))
     namespace = extractBefore(name, strlength(name) - strlength("." + last_api_part(name)) + 1);
     paragraphs(end+1, 1) = "Call this function after constructing the matching " + namespace + ".Problem and options object. Normal solve functions return accepted profiles directly; expert variants return diagnostic Result objects.";
 elseif kind == "class"
@@ -2099,7 +2108,7 @@ switch name
     case "copp.Path"
         examples(end+1, 1) = strjoin([
             "waypoints = [0 1 2; 0 0.5 0];"
-            "path = copp.Path.from_waypoints(waypoints, s_range=[0, 1]);"
+            "path = copp.Path.from_waypoints_interpolating(waypoints, s_range=[0, 1]);"
             "s = linspace(0, 1, 5);"
             "q = path.evaluate_q(s);"
             "disp(q)"], newline);
@@ -2139,7 +2148,7 @@ switch member_name
         examples = solver_problem_example(solver_name);
     case "Options"
         examples = solver_options_example(solver_name);
-    case {"solve", "solve_expert", "solve_with_reach_set", "backward", "bidirectional"}
+    case {"solve", "solve_expert", "backward", "bidirectional"}
         examples = solver_call_example(solver_name, member_name);
 end
 end
@@ -2355,10 +2364,28 @@ switch lower(name)
         summary = "Seed a(s) profile used to linearize third-order constraints.";
     case "a_linearization_floor"
         summary = "Positive floor applied to a_linearization when forming third-order linearization data.";
+    case "b_linearization"
+        summary = "Optional b(s) profile paired with a_linearization. Empty selects direct linearization; the a and b of a previously solved third-order profile select adaptive linearization.";
+    case "tolerance"
+        summary = "Absolute waypoint-fitting tolerance in input units: a scalar for every selected axis, or one value per entry of axes.";
+    case "axes"
+        summary = "1-based waypoint rows allowed to deviate within tolerance. Empty selects every row.";
+    case "parameters"
+        summary = "Optional strictly increasing path parameter of each waypoint column. Empty assigns the columns uniformly on [0, 1].";
+    case "max_refinements"
+        summary = "Maximum number of adaptive knot-refinement passes used by waypoint fitting.";
+    case "max_segments"
+        summary = "Maximum number of polynomial spans used by the fitted axes.";
+    case "report"
+        summary = "Waypoint-fitting report struct, or [] for paths not built by Path.from_waypoints_fitting.";
+    case "succeeded"
+        summary = "Whether force_positive_a adjusted the profile successfully. False is not an error.";
+    case {"e1", "e2", "e3"}
+        summary = "Maximum first-, second-, or third-order constraint violation. Values <= 0 are feasible; NaN means the range is unavailable.";
+    case "num_stationary"
+        summary = "Stationary interval counts [start, end] of a third-order profile.";
     case "num_stationary_max"
         summary = "Maximum number of stationary nodes allowed by the third-order profile descriptor.";
-    case "num_edge_max"
-        summary = "Maximum edge or contour capacity used by reachable-set options.";
     case "include_final"
         summary = "Whether sampling helpers should include the final time sample exactly.";
     case "verbosity"

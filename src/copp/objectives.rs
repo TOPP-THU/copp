@@ -26,9 +26,7 @@ use crate::diag::CoppError;
 /// - COPP3: `tau[i][k]` is node value $\boldsymbol{\tau}(s_k)$, computed from `(a[k], b[k])`.
 ///
 /// # Solver support
-/// The table below describes the built-in objective dispatcher. Expert solver
-/// entry points that accept a custom objective trait can represent other costs
-/// under the contract documented by that trait.
+/// The table below describes the built-in objective dispatcher.
 ///
 /// | Objective | COPP2-SOCP | COPP3-SOCP |
 /// |---|---|---|

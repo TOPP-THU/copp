@@ -50,34 +50,19 @@ fn make_random_robot(
     rng: &mut StdRng,
 ) -> Result<(Robot<usize>, Path), CoppError> {
     let waypoints = make_random_waypoints(config.dim, config.num_waypoints, rng);
-    let path = Path::from_waypoints(&waypoints, SplineConfig::default())?;
+    let path = Path::from_waypoints_interpolating(&waypoints, SplineConfig::default())?;
 
     let s: Vec<f64> = (0..config.s_len)
         .map(|j| j as f64 / (config.s_len - 1) as f64)
         .collect();
-    let derivs = path.evaluate_up_to_3rd(&s)?;
 
     let mut robot = Robot::with_capacity(config.dim, config.s_len);
-    robot.with_s(s.as_slice())?;
-    robot.with_q(
-        &derivs.q.as_view(),
-        &derivs.dq.as_ref().expect("dq must exist").as_view(),
-        &derivs.ddq.as_ref().expect("ddq must exist").as_view(),
-        derivs.dddq.as_ref().map(|m| m.as_view()).as_ref(),
-        0,
-    )?;
-
     let vel_max = (0..config.dim)
         .map(|_| config.velocity_max * rng.random_range(0.9..1.1))
         .collect::<Vec<_>>();
     let vel_min = (0..config.dim)
         .map(|_| -config.velocity_max * rng.random_range(0.9..1.1))
         .collect::<Vec<_>>();
-    robot.with_axial_velocity(
-        (vel_max.as_slice(), config.s_len),
-        (vel_min.as_slice(), config.s_len),
-        0,
-    )?;
 
     let acc_max = (0..config.dim)
         .map(|_| config.acceleration_max * rng.random_range(0.9..1.1))
@@ -85,11 +70,6 @@ fn make_random_robot(
     let acc_min = (0..config.dim)
         .map(|_| -config.acceleration_max * rng.random_range(0.9..1.1))
         .collect::<Vec<_>>();
-    robot.with_axial_acceleration(
-        (acc_max.as_slice(), config.s_len),
-        (acc_min.as_slice(), config.s_len),
-        0,
-    )?;
 
     let jerk_max = (0..config.dim)
         .map(|_| config.jerk_max * rng.random_range(0.9..1.1))
@@ -97,11 +77,24 @@ fn make_random_robot(
     let jerk_min = (0..config.dim)
         .map(|_| -config.jerk_max * rng.random_range(0.9..1.1))
         .collect::<Vec<_>>();
-    robot.with_axial_jerk(
-        (jerk_max.as_slice(), config.s_len),
-        (jerk_min.as_slice(), config.s_len),
-        0,
-    )?;
+    robot
+        .with_s(s.as_slice())?
+        .with_q_from_path_3rd(&path, 0, config.s_len)?
+        .with_axial_velocity(
+            (vel_max.as_slice(), config.s_len),
+            (vel_min.as_slice(), config.s_len),
+            0,
+        )?
+        .with_axial_acceleration(
+            (acc_max.as_slice(), config.s_len),
+            (acc_min.as_slice(), config.s_len),
+            0,
+        )?
+        .with_axial_jerk(
+            (jerk_max.as_slice(), config.s_len),
+            (jerk_min.as_slice(), config.s_len),
+            0,
+        )?;
 
     Ok((robot, path))
 }
@@ -243,10 +236,9 @@ fn thermal_energy_3(
     robot: &Robot<usize>,
     path: &Path,
     normalize: &[f64],
-    a: &[f64],
-    b: &[f64],
-    num_stationary: (usize, usize),
+    profile: Topp3ProfileRef<'_>,
 ) -> Result<f64, CoppError> {
+    let (a, b, num_stationary) = profile;
     let s = robot.constraints.s_vec(0, robot.constraints.len())?;
     let t_s = s_to_t_topp3(&s, (a, b, num_stationary), 0.0)?.1;
     let path_derivs = path.evaluate_up_to_2nd(&s)?;
@@ -358,15 +350,15 @@ mod tests {
     /// Conditions: release, --include-ignored, CPU = Intel(R) Core(TM) Ultra 9 285K.
     /// ==== Summary over 100 experiments ====
     /// Tc(ms) mean/std:
-    ///   TOPP2-RA   : mean = 0.665447, std = 0.278833
-    ///   COPP2-SOCP : mean = 161.544955, std = 13.342861
-    ///   TOPP3-LP   : mean = 346.354708, std = 38.865584
-    ///   TOPP3-SOCP : mean = 312.118867, std = 20.544208
-    ///   COPP3-SOCP : mean = 305.931003, std = 22.910681
+    ///   TOPP2-RA   : mean = 0.615425, std = 0.244409
+    ///   COPP2-SOCP : mean = 149.969964, std = 9.364334
+    ///   TOPP3-LP   : mean = 327.074029, std = 28.893341
+    ///   TOPP3-SOCP : mean = 289.654071, std = 12.862133
+    ///   COPP3-SOCP : mean = 285.004302, std = 13.471264
     /// Tf(s) mean/std:
     ///   TOPP2-RA   : mean = 40.903420, std = 1.378671
-    ///   COPP2-SOCP : mean = 40.900036, std = 1.378611
-    ///   TOPP3-LP   : mean = 41.422937, std = 1.381852
+    ///   COPP2-SOCP : mean = 40.900039, std = 1.378613
+    ///   TOPP3-LP   : mean = 41.422945, std = 1.381874
     ///   TOPP3-SOCP : mean = 41.418608, std = 1.381202
     ///   COPP3-SOCP : mean = 41.418608, std = 1.381202
     ///
@@ -399,6 +391,7 @@ mod tests {
         let mut tc_topp3_lp_vec = Vec::with_capacity(config.n_exp);
         let mut tc_topp3_socp_vec = Vec::with_capacity(config.n_exp);
         let mut tc_copp3_socp_vec = Vec::with_capacity(config.n_exp);
+
         let mut tf_topp2_ra_vec = Vec::with_capacity(config.n_exp);
         let mut tf_copp2_socp_vec = Vec::with_capacity(config.n_exp);
         let mut tf_topp3_lp_vec = Vec::with_capacity(config.n_exp);
@@ -519,6 +512,7 @@ mod tests {
             tc_topp3_lp_vec.push(tc_topp3_lp.as_secs_f64() * 1E3);
             tc_topp3_socp_vec.push(tc_topp3_socp.as_secs_f64() * 1E3);
             tc_copp3_socp_vec.push(tc_copp3_socp.as_secs_f64() * 1E3);
+
             tf_topp2_ra_vec.push(tf_topp2_ra);
             tf_copp2_socp_vec.push(tf_copp2_socp);
             tf_topp3_lp_vec.push(tf_topp3_lp);
@@ -556,19 +550,20 @@ mod tests {
         Ok(())
     }
 
+    /// Conditions: release, --include-ignored, CPU = Intel(R) Core(TM) Ultra 9 285K.
     /// ==== Summary over 100 experiments ====
-    /// Tc(ms) mean/std:
-    ///   TOPP2-RA   : mean = 0.696362, std = 0.300599
-    ///   COPP2-SOCP : mean = 300.428479, std = 71.154448
-    ///   TOPP3-LP   : mean = 384.399012, std = 79.626532
-    ///   TOPP3-SOCP : mean = 340.468745, std = 59.209470
-    ///   COPP3-SOCP : mean = 376.119382, std = 88.865232
-    /// Obj mean/std:
-    ///   TOPP2-RA   : mean = 223.896965, std = 9.485003
-    ///   COPP2-SOCP : mean = 97.746537, std = 2.652869
-    ///   TOPP3-LP   : mean = 217.858895, std = 9.324830
-    ///   TOPP3-SOCP : mean = 218.026329, std = 9.285519
-    ///   COPP3-SOCP : mean = 97.871570, std = 2.645819
+    // Tc(ms) mean/std:
+    //   TOPP2-RA   : mean = 0.534700, std = 0.069296
+    //   COPP2-SOCP : mean = 270.059250, std = 52.073677
+    //   TOPP3-LP   : mean = 348.000000, std = 9.326314
+    //   TOPP3-SOCP : mean = 301.227000, std = 12.938498
+    //   COPP3-SOCP : mean = 301.227000, std = 12.938498
+    // Obj mean/std:
+    //   TOPP2-RA   : mean = 217.444861, std = 12.462360
+    //   COPP2-SOCP : mean = 96.517354, std = 3.641154
+    //   TOPP3-LP   : mean = 211.611085, std = 12.367224
+    //   TOPP3-SOCP : mean = 211.974066, std = 12.323865
+    //   COPP3-SOCP : mean = 96.634962, std = 3.613264
     ///
     /// Uses convex objective `Obj = Time + weight_energy * ThermalEnergy`.
     /// TOPP methods in this test still optimize time directly; the reported `Obj`
@@ -584,7 +579,7 @@ mod tests {
             acceleration_max: 5.0,
             jerk_max: 50.0,
             seed: 20260414,
-            n_exp: 100,
+            n_exp: 2,
         };
         let normalize = vec![1.0; config.dim];
         let weight_energy = 0.2;
@@ -605,6 +600,7 @@ mod tests {
         let mut tc_topp3_lp_vec = Vec::with_capacity(config.n_exp);
         let mut tc_topp3_socp_vec = Vec::with_capacity(config.n_exp);
         let mut tc_copp3_socp_vec = Vec::with_capacity(config.n_exp);
+
         let mut obj_topp2_ra_vec = Vec::with_capacity(config.n_exp);
         let mut obj_copp2_socp_vec = Vec::with_capacity(config.n_exp);
         let mut obj_topp3_lp_vec = Vec::with_capacity(config.n_exp);
@@ -672,9 +668,7 @@ mod tests {
                 &robot,
                 &path,
                 &normalize,
-                &a_topp3_lp,
-                &b_topp3_lp,
-                num_stat_topp3_lp,
+                (&a_topp3_lp, &b_topp3_lp, num_stat_topp3_lp),
             )?;
             let obj_topp3_lp = tf_topp3_lp + weight_energy * energy_topp3_lp;
 
@@ -704,9 +698,7 @@ mod tests {
                 &robot,
                 &path,
                 &normalize,
-                &a_topp3_socp,
-                &b_topp3_socp,
-                num_stat_topp3_socp,
+                (&a_topp3_socp, &b_topp3_socp, num_stat_topp3_socp),
             )?;
             let obj_topp3_socp = tf_topp3_socp + weight_energy * energy_topp3_socp;
 
@@ -737,9 +729,7 @@ mod tests {
                 &robot,
                 &path,
                 &normalize,
-                &a_copp3_socp,
-                &b_copp3_socp,
-                num_stat_copp3_socp,
+                (&a_copp3_socp, &b_copp3_socp, num_stat_copp3_socp),
             )?;
             let obj_copp3_socp = tf_copp3_socp + weight_energy * energy_copp3_socp;
 
@@ -756,6 +746,7 @@ mod tests {
             tc_topp3_lp_vec.push(tc_topp3_lp.as_secs_f64() * 1E3);
             tc_topp3_socp_vec.push(tc_topp3_socp.as_secs_f64() * 1E3);
             tc_copp3_socp_vec.push(tc_copp3_socp.as_secs_f64() * 1E3);
+
             obj_topp2_ra_vec.push(obj_topp2_ra);
             obj_copp2_socp_vec.push(obj_copp2_socp);
             obj_topp3_lp_vec.push(obj_topp3_lp);

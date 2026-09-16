@@ -52,5 +52,4 @@ Reachability Debugging
 ----------------------
 
 For TOPP2, inspect ``ReachSet2.a_min`` and ``ReachSet2.a_max`` to find where
-the feasible interval collapses. For TOPP3/COPP3, compare strict and expert
-Clarabel results at stations near the suspected failure.
+the feasible interval collapses.

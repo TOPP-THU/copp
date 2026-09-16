@@ -247,10 +247,102 @@ int main(void)
     assert(helper_profile.a.len == NUM_POINTS);
     assert(helper_profile.b.len == NUM_POINTS);
 
+    /*
+     * Adaptive linearization: re-solve around the accepted profile by pairing
+     * its `a` with its `b`.  An empty `b_linearization` keeps the direct mode
+     * used by the first solve.
+     */
+    struct CoppProfile3rd adaptive = {{NULL, 0, 0}, {NULL, 0, 0}, 0, 0};
+    struct CoppProfile3rd rejected = {{NULL, 0, 0}, {NULL, 0, 0}, 0, 0};
+    struct Topp3Problem adaptive_problem = problem;
+    adaptive_problem.a_linearization = (struct CoppSliceF64){profile.a.data, profile.a.len};
+    adaptive_problem.b_linearization = (struct CoppSliceF64){profile.b.data, profile.b.len};
+    status = topp3_lp(adaptive_problem, lp_options, &adaptive);
+    if (expect_ok(status, "topp3_lp adaptive re-linearization"))
+    {
+        copp_profile_3rd_free(helper_profile);
+        copp3_socp_result_free(expert_result);
+        copp_vec_f64_free(t_s);
+        copp_profile_3rd_free(profile);
+        copp_vec_f64_free(a_seed);
+        copp_robot_free(robot);
+        copp_path_free(path);
+        return 1;
+    }
+    assert(adaptive.a.len == NUM_POINTS);
+    assert(adaptive.b.len == NUM_POINTS);
+
+    /* A `b_linearization` shorter than `a_linearization` is rejected. */
+    adaptive_problem.b_linearization.len = profile.b.len - 1;
+    status = topp3_lp(adaptive_problem, lp_options, &rejected);
+    assert(status == COPP_STATUS_SOLVER_INVALID_INPUT);
+    assert(rejected.a.data == NULL);
+
+    /* The accepted profile must stay inside the robot constraints. */
+    double exceed_1order = NAN;
+    double exceed_2order = NAN;
+    double exceed_3order = NAN;
+    status = copp_robot_exceed_topp3(
+        robot,
+        problem.idx_s_start,
+        (struct CoppSliceF64){adaptive.a.data, adaptive.a.len},
+        (struct CoppSliceF64){adaptive.b.data, adaptive.b.len},
+        adaptive.num_stationary_start,
+        adaptive.num_stationary_end,
+        &exceed_1order,
+        &exceed_2order,
+        &exceed_3order);
+    if (expect_ok(status, "copp_robot_exceed_topp3"))
+    {
+        copp_profile_3rd_free(adaptive);
+        copp_profile_3rd_free(helper_profile);
+        copp3_socp_result_free(expert_result);
+        copp_vec_f64_free(t_s);
+        copp_profile_3rd_free(profile);
+        copp_vec_f64_free(a_seed);
+        copp_robot_free(robot);
+        copp_path_free(path);
+        return 1;
+    }
+    printf("TOPP3-LP adaptive profile exceed: %.3e, %.3e, %.3e\n",
+           exceed_1order,
+           exceed_2order,
+           exceed_3order);
+    assert(exceed_1order <= 1e-6);
+    assert(exceed_2order <= 1e-6);
+    assert(exceed_3order <= 1e-6);
+
+    /* Profiles of different lengths report NaN with an OK status. */
+    status = copp_robot_exceed_topp3(
+        robot,
+        problem.idx_s_start,
+        (struct CoppSliceF64){adaptive.a.data, adaptive.a.len},
+        (struct CoppSliceF64){adaptive.b.data, adaptive.b.len - 1},
+        adaptive.num_stationary_start,
+        adaptive.num_stationary_end,
+        &exceed_1order,
+        &exceed_2order,
+        &exceed_3order);
+    if (expect_ok(status, "copp_robot_exceed_topp3 mismatched lengths"))
+    {
+        copp_profile_3rd_free(adaptive);
+        copp_profile_3rd_free(helper_profile);
+        copp3_socp_result_free(expert_result);
+        copp_vec_f64_free(t_s);
+        copp_profile_3rd_free(profile);
+        copp_vec_f64_free(a_seed);
+        copp_robot_free(robot);
+        copp_path_free(path);
+        return 1;
+    }
+    assert(isnan(exceed_1order) && isnan(exceed_2order) && isnan(exceed_3order));
+
     printf("TOPP3-LP C smoke test passed: t_final=%.17g, len=%zu\n",
            t_final,
            profile.a.len);
 
+    copp_profile_3rd_free(rejected);
+    copp_profile_3rd_free(adaptive);
     copp_profile_3rd_free(helper_profile);
     copp3_socp_result_free(expert_result);
     copp_vec_f64_free(t_s);

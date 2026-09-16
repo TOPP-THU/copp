@@ -24,6 +24,7 @@ classdef Problem < copp.solver.topp3.Problem
                 opts.b_boundary (1,2) {mustBeNumeric, mustBeReal, mustBeFinite} = [0, 0]
                 opts.num_stationary_max = 1
                 opts.a_linearization_floor (1,1) {mustBeNumeric, mustBeReal, mustBeFinite, mustBePositive} = 1.0e-10
+                opts.b_linearization {mustBeNumeric, mustBeReal, mustBeFinite} = []
             end
 
             obj@copp.solver.topp3.Problem( ...
@@ -33,7 +34,8 @@ classdef Problem < copp.solver.topp3.Problem
                 a_boundary=opts.a_boundary, ...
                 b_boundary=opts.b_boundary, ...
                 num_stationary_max=opts.num_stationary_max, ...
-                a_linearization_floor=opts.a_linearization_floor);
+                a_linearization_floor=opts.a_linearization_floor, ...
+                b_linearization=opts.b_linearization);
         end
     end
 end

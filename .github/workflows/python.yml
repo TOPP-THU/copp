@@ -252,6 +252,23 @@ jobs:
           }
           Write-Host "Tag $env:RELEASE_TAG matches pyproject.toml version $projectVersion."
 
+      - name: Compare tag against Cargo.toml
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}
+        run: |
+          $tagVersion = $env:RELEASE_TAG -replace '^v', ''
+          $match = Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' |
+            Select-Object -First 1
+          if (-not $match) {
+            throw "Could not read version from Cargo.toml."
+          }
+          $crateVersion = $match.Matches[0].Groups[1].Value
+          if ($tagVersion -ne $crateVersion) {
+            throw "Tag $env:RELEASE_TAG does not match Cargo.toml version $crateVersion."
+          }
+          Write-Host "Tag $env:RELEASE_TAG matches Cargo.toml version $crateVersion."
+
   publish-draft:
     name: Attach Python Distributions to Draft Release
     needs:

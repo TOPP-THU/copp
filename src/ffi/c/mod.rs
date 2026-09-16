@@ -12,8 +12,8 @@ pub mod robot;
 pub mod solver;
 
 pub use core::{
-    CoppMatrixF64, CoppMatrixLayout, CoppMatrixViewF64, CoppSliceF64, CoppSliceMutF64, CoppStatus,
-    CoppVecF64, CoppVecUsize, CoppVerbosity,
+    CoppMatrixF64, CoppMatrixLayout, CoppMatrixViewF64, CoppSliceF64, CoppSliceMutF64,
+    CoppSliceUsize, CoppStatus, CoppVecF64, CoppVecUsize, CoppVerbosity,
 };
 pub use formulation::{
     Copp2Problem, Copp3Problem, CoppObjective, CoppObjectiveKind, CoppProfile3rd, Topp2Problem,
@@ -21,7 +21,8 @@ pub use formulation::{
 };
 pub use path::{
     CoppJet3, CoppPath, CoppPathEvaluate2ndFn, CoppPathEvaluate3rdFn, CoppPathOptions,
-    CoppPathOutOfRangeMode, CoppPathParametricFn, CoppPathParametrization,
+    CoppPathOutOfRangeMode, CoppPathParametricFn, CoppPathParametrization, CoppSmoothingOptions,
+    CoppSmoothingReport,
 };
 pub use robot::{CoppInverseDynamicsFn, CoppRobot};
 pub use solver::{

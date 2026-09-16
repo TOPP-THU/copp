@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable, ClassVar, Literal, Protocol, TypedDict, overload
+from typing import Any, Callable, ClassVar,  Protocol, TypedDict, overload
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -79,6 +79,11 @@ class Topp3Problem:
         ...
 
     @property
+    def b_linearization(self) -> NDArray[np.float64] | None:
+        """Copy of the adaptive-linearization ``b`` profile, or ``None``."""
+        ...
+
+    @property
     def s_len(self) -> int:
         """Number of station samples in this TOPP3 interval."""
         ...
@@ -93,6 +98,7 @@ class Topp3Problem:
         b_boundary: tuple[float, float] = (0.0, 0.0),
         num_stationary_max: NumStationaryMaxLike = 1,
         a_linearization_floor: float = 1.0e-10,
+        b_linearization: ArrayLike | None = None,
     ) -> None:
         """Construct and immediately linearize a TOPP3 problem descriptor.
 
@@ -116,15 +122,31 @@ class Topp3Problem:
         a_linearization_floor:
             Positive denominator floor used when linearizing third-order
             constraints near ``a = 0``.
+        b_linearization:
+            Optional ``b`` profile of the same previously solved third-order
+            profile whose ``a`` is passed as ``a_linearization``, with the same
+            length. A TOPP2 profile's ``b`` is discretized differently and must
+            not be used. When given, each third-order row is anchored where
+            that row is nearly active at the feasible state
+            ``(a_linearization, b_linearization)`` instead of directly at
+            ``a_linearization``. Recommended when ``a`` spans a wide range and
+            especially when it can approach zero: anchoring both rows of one
+            axis at the same small ``a_linearization[k]`` cancels ``b`` and
+            ``c`` and leaves ``a[k] <= 3 * a_linearization[k]``. On profiles
+            well away from zero, the default direct linearization is cheaper
+            and nearly identical. ``None`` or an empty array selects direct
+            linearization.
 
         Raises
         ------
         ValueError
-            If ``a_linearization`` cannot be converted to a one-dimensional
-            ``float64`` array, or if ``num_stationary_max`` is not an integer
-            or integer pair.
+            If ``a_linearization`` or ``b_linearization`` cannot be converted
+            to a one-dimensional ``float64`` array, or if
+            ``num_stationary_max`` is not an integer or integer pair.
         CoppError
-            If Rust validation or third-order constraint linearization fails.
+            If Rust validation or third-order constraint linearization fails,
+            including a non-empty ``b_linearization`` whose length differs
+            from ``a_linearization``.
         """
         ...
 
@@ -135,6 +157,7 @@ class Topp3Problem:
         constraint buffer.
         """
         ...
+
 
 def topp3_lp(
     problem: Topp3Problem,

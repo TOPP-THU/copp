@@ -73,14 +73,14 @@ objectives = {
     copp.objective.time(1.0)
     copp.objective.thermal_energy(0.05, ones(robot.dim, 1))
 };
-coppblem = copp.solver.copp2_socp.Problem( ...
+copp_problem = copp.solver.copp2_socp.Problem( ...
     robot, ...
     objectives, ...
     idx_s_interval=[1, n], ...
     a_boundary=[0, 0]);
 
-a_socp = copp.solver.copp2_socp.solve(coppblem);
-result_socp = copp.solver.copp2_socp.solve_expert(coppblem);
+a_socp = copp.solver.copp2_socp.solve(copp_problem);
+result_socp = copp.solver.copp2_socp.solve_expert(copp_problem);
 [t_socp, ~] = copp.interpolation.s_to_t_topp2(s, a_socp);
 
 fprintf("COPP2-SOCP final time: %.6f seconds\n", t_socp);

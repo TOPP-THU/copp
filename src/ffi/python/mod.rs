@@ -19,7 +19,7 @@ mod solver;
 /// useful.
 const MODULE_DOC: &str = r#"Python bindings for copp-py.
 
-Install the distribution as `copp-py`. The public Python module is imported as:
+The public package is intended to be imported as:
 
     import copp_py as copp
 

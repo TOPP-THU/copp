@@ -33,6 +33,46 @@ use itertools::izip;
 const DEFAULT_A_LINEARIZATION_FLOOR: f64 = 1E-10;
 const DEFAULT_NUM_STATIONARY_MAX: (usize, usize) = (1, 1);
 
+/// Where the third-order rows of a station take their linearization point.
+///
+/// The tangent of `1/sqrt(a)` lies below `1/sqrt(a)` for every positive anchor, so
+/// both variants keep the linearized rows an inner approximation of the nonlinear
+/// ones; they differ only in how tight that approximation is and in which `a` the
+/// rows still admit.
+///
+/// Typical usage:
+/// - Default to [`LinearizationModeTopp3::Direct`], which reproduces the historical
+///   behaviour.
+/// - [`LinearizationModeTopp3::GivenFeasibleAdaptive`] requires `a_linearization` to
+///   be the `a` of a previously solved third-order profile and that profile's `b`
+///   to be at hand; a lower-order profile discretizes `b` as
+///   `(a[k+1] - a[k]) / (2 * ds[k])` rather than through
+///   `a[k+1] = a[k] + (b[k] + b[k+1]) * ds[k]`, so its state cannot be used here.
+/// - Given those, prefer it whenever `a` spans a wide range over the window, and
+///   especially when `a` can reach the `1e-10` scale of `EPS_ZERO`.  The upper and
+///   lower row of one axis differ only by an overall sign, so anchoring both at the
+///   same small `a_linearization[k]` cancels `b` and `c` and leaves
+///   `a[k] <= 3 * a_linearization[k]` -- a cap set by the anchor rather than by the
+///   jerk limit, and one that no `b` or `c` can offset.  Adapting each row
+///   separately breaks the cancellation.
+/// - On a profile that stays well away from zero the two agree closely, and
+///   [`LinearizationModeTopp3::Direct`] is the cheaper of the two.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum LinearizationModeTopp3<'a> {
+    /// Direct:
+    /// every row of a station is linearized at `a_linearization[k]`.
+    #[default]
+    Direct,
+    /// GivenFeasibleAdaptive(b_linearization):
+    /// each row is anchored where that row is nearly active at the feasible state
+    /// `(a_linearization, b_linearization)`, so a slack row is anchored high and a
+    /// tight one stays near the state.  `b_linearization` must be the path
+    /// acceleration of the same profile as `a_linearization`, with the same length;
+    /// it is normally taken from a previously computed feasible third-order
+    /// profile.
+    GivenFeasibleAdaptive(&'a [f64]),
+}
+
 /// Borrowed third-order TOPP/COPP profile parts.
 ///
 /// This view keeps APIs lightweight for callers that already own separate
@@ -97,8 +137,13 @@ impl Topp3Profile {
 }
 
 #[inline(always)]
+pub(crate) fn boundary_state_is_stationary(a: f64, b: f64) -> bool {
+    a == 0.0 && b == 0.0
+}
+
+#[inline(always)]
 fn determine_num_stationary_side(a: f64, b: f64, num_stationary_max: usize) -> usize {
-    if a.abs() < f64::EPSILON && b.abs() < f64::EPSILON {
+    if boundary_state_is_stationary(a, b) {
         num_stationary_max
     } else {
         0
@@ -115,6 +160,57 @@ fn determine_num_stationary_pair(
         determine_num_stationary_side(a_boundary.0, b_boundary.0, num_stationary_max.0),
         determine_num_stationary_side(a_boundary.1, b_boundary.1, num_stationary_max.1),
     )
+}
+
+/// Check that the window keeps more station intervals than its two boundary blocks.
+///
+/// Each boundary reserves `num_stationary.max(1)` intervals, so the window of
+/// `s_len` stations must satisfy
+/// `s_len - 1 > num_stationary.0.max(1) + num_stationary.1.max(1)`.
+fn check_num_station_intervals(
+    function_name: &str,
+    s_len: usize,
+    num_stationary: (usize, usize),
+) -> Result<(), CoppError> {
+    let num_intervals = s_len.saturating_sub(1);
+    let reserved = num_stationary
+        .0
+        .max(1)
+        .saturating_add(num_stationary.1.max(1));
+    if num_intervals <= reserved {
+        return Err(CoppError::InvalidInput(
+            function_name.into(),
+            format!(
+                "{num_intervals} station intervals must exceed \
+                 num_stationary.0.max(1) + num_stationary.1.max(1) = {reserved} \
+                 (num_stationary = {num_stationary:?})"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Check that an adaptive linearization state pairs one `b` with every `a`.
+fn check_linearization_mode(
+    function_name: &str,
+    a_linearization: &[f64],
+    linearization_mode: LinearizationModeTopp3<'_>,
+) -> Result<(), CoppError> {
+    match linearization_mode {
+        LinearizationModeTopp3::GivenFeasibleAdaptive(b_linearization)
+            if b_linearization.len() != a_linearization.len() =>
+        {
+            Err(CoppError::InvalidInput(
+                function_name.into(),
+                format!(
+                    "b_linearization.len() = {} must equal a_linearization.len() = {}",
+                    b_linearization.len(),
+                    a_linearization.len()
+                ),
+            ))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Prepared TOPP3 problem view.
@@ -180,11 +276,11 @@ pub struct Topp3Problem<'a> {
 /// use copp::robot::Robot;
 /// use copp::solver::topp3_lp::Topp3ProblemBuilder;
 ///
-/// let mut robot = Robot::with_capacity(2usize, 3);
-/// let s = [0.0, 0.5, 1.0];
+/// let mut robot = Robot::with_capacity(2usize, 5);
+/// let s = [0.0, 0.25, 0.5, 0.75, 1.0];
 /// robot.with_s(s.as_slice())?;
 ///
-/// let a_linearization = [0.0, 0.25, 0.0];
+/// let a_linearization = [0.0, 0.25, 0.25, 0.25, 0.0];
 /// let _problem = Topp3ProblemBuilder::new(
 ///     &mut robot,
 ///     0,
@@ -220,6 +316,12 @@ pub struct Topp3ProblemBuilder<'a> {
     ///
     /// More details are available in the [`Topp3Problem`](crate::solver::topp3_socp::Topp3Problem) documentation.
     pub a_linearization_floor: f64,
+
+    /// Where the third-order rows take their linearization point.
+    ///
+    /// Defaults to [`LinearizationModeTopp3::Direct`], which reproduces the historical
+    /// behaviour exactly.
+    pub linearization_mode: LinearizationModeTopp3<'a>,
 }
 
 impl<'a> Topp3ProblemBuilder<'a> {
@@ -243,6 +345,7 @@ impl<'a> Topp3ProblemBuilder<'a> {
             b_boundary,
             num_stationary_max: DEFAULT_NUM_STATIONARY_MAX,
             a_linearization_floor: DEFAULT_A_LINEARIZATION_FLOOR,
+            linearization_mode: LinearizationModeTopp3::Direct,
         }
     }
 
@@ -266,6 +369,7 @@ impl<'a> Topp3ProblemBuilder<'a> {
             b_boundary,
             num_stationary_max: DEFAULT_NUM_STATIONARY_MAX,
             a_linearization_floor: DEFAULT_A_LINEARIZATION_FLOOR,
+            linearization_mode: LinearizationModeTopp3::Direct,
         }
     }
 
@@ -298,9 +402,24 @@ impl<'a> Topp3ProblemBuilder<'a> {
         self
     }
 
+    /// Choose where the third-order rows take their linearization point.
+    ///
+    /// The default is [`LinearizationModeTopp3::Direct`].  The conditions
+    /// [`LinearizationModeTopp3::GivenFeasibleAdaptive`] requires of
+    /// `a_linearization`, and when it is worth selecting over the default, are
+    /// listed under *Typical usage* on [`LinearizationModeTopp3`].
+    #[inline]
+    pub fn with_linearization_mode(
+        mut self,
+        linearization_mode: LinearizationModeTopp3<'a>,
+    ) -> Self {
+        self.linearization_mode = linearization_mode;
+        self
+    }
+
     /// Build a TOPP3 problem and linearize third-order constraints in one step.
     ///
-    /// This validates boundaries/interval/floor first, then writes linearized jerk buffers
+    /// This validates boundaries/interval/station count/floor first, then writes linearized jerk buffers
     /// inside [`Constraints`](crate::constraints::Constraints). The generated rows
     /// can be inspected with
     /// [`Constraints::get_jerk_linear_constraints`](crate::constraints::Constraints::get_jerk_linear_constraints).
@@ -334,24 +453,46 @@ impl<'a> Topp3ProblemBuilder<'a> {
             ));
         }
 
-        self.constraints
-            .linearize_constraint_3order_with_floor(
-                self.a_linearization,
-                self.idx_s_start,
-                self.a_linearization_floor,
-            )
-            .map_err(|e| {
-                CoppError::InvalidInput(
-                    "Topp3ProblemBuilder::build_with_linearization".into(),
-                    format!("linearize_constraint_3order failed: {e}"),
-                )
-            })?;
-
         let num_stationary = determine_num_stationary_pair(
             self.a_boundary,
             self.b_boundary,
             self.num_stationary_max,
         );
+        check_num_station_intervals(
+            "Topp3ProblemBuilder::build_with_linearization",
+            self.a_linearization.len(),
+            num_stationary,
+        )?;
+        check_linearization_mode(
+            "Topp3ProblemBuilder::build_with_linearization",
+            self.a_linearization,
+            self.linearization_mode,
+        )?;
+
+        match self.linearization_mode {
+            LinearizationModeTopp3::Direct => {
+                self.constraints.linearize_constraint_3order_with_floor(
+                    self.a_linearization,
+                    self.idx_s_start,
+                    self.a_linearization_floor,
+                )
+            }
+            LinearizationModeTopp3::GivenFeasibleAdaptive(b_linearization) => {
+                self.constraints.linearize_constraint_3order_adaptive(
+                    self.a_linearization,
+                    b_linearization,
+                    self.idx_s_start,
+                    self.a_linearization_floor,
+                    num_stationary,
+                )
+            }
+        }
+        .map_err(|e| {
+            CoppError::InvalidInput(
+                "Topp3ProblemBuilder::build_with_linearization".into(),
+                format!("linearize_constraint_3order failed: {e}"),
+            )
+        })?;
 
         Ok(Topp3Problem {
             constraints: &*self.constraints,
@@ -403,11 +544,11 @@ pub struct Copp3Problem<'a, M: RobotTorque> {
 /// use copp::robot::Robot;
 /// use copp::solver::copp3_socp::{Copp3ProblemBuilder, CoppObjective};
 ///
-/// let mut robot = Robot::with_capacity(2usize, 3);
-/// let s = [0.0, 0.5, 1.0];
+/// let mut robot = Robot::with_capacity(2usize, 5);
+/// let s = [0.0, 0.25, 0.5, 0.75, 1.0];
 /// robot.with_s(s.as_slice())?;
 ///
-/// let a_linearization = [0.0, 0.25, 0.0];
+/// let a_linearization = [0.0, 0.25, 0.25, 0.25, 0.0];
 /// let normalize = [1.0, 1.0];
 /// let objectives = [
 ///     CoppObjective::Time(1.0),
@@ -450,8 +591,14 @@ pub struct Copp3ProblemBuilder<'a, M: RobotTorque> {
     /// Discrete code form:
     /// `1.0 / max(a_linearization, a_linearization_floor).sqrt()`.
     ///
-    /// More details are available in the [`Topp3Problem`] documentation.
+    /// More details are available in the [`Topp3Problem`](crate::solver::topp3_lp::Topp3Problem) documentation.
     pub a_linearization_floor: f64,
+
+    /// Where the third-order rows take their linearization point.
+    ///
+    /// Defaults to [`LinearizationModeTopp3::Direct`], which reproduces the historical
+    /// behaviour exactly.
+    pub linearization_mode: LinearizationModeTopp3<'a>,
 }
 
 impl<'a, M: RobotTorque> Copp3ProblemBuilder<'a, M> {
@@ -477,6 +624,7 @@ impl<'a, M: RobotTorque> Copp3ProblemBuilder<'a, M> {
             b_boundary,
             num_stationary_max: DEFAULT_NUM_STATIONARY_MAX,
             a_linearization_floor: DEFAULT_A_LINEARIZATION_FLOOR,
+            linearization_mode: LinearizationModeTopp3::Direct,
         }
     }
 
@@ -509,9 +657,24 @@ impl<'a, M: RobotTorque> Copp3ProblemBuilder<'a, M> {
         self
     }
 
+    /// Choose where the third-order rows take their linearization point.
+    ///
+    /// The default is [`LinearizationModeTopp3::Direct`].  The conditions
+    /// [`LinearizationModeTopp3::GivenFeasibleAdaptive`] requires of
+    /// `a_linearization`, and when it is worth selecting over the default, are
+    /// listed under *Typical usage* on [`LinearizationModeTopp3`].
+    #[inline]
+    pub fn with_linearization_mode(
+        mut self,
+        linearization_mode: LinearizationModeTopp3<'a>,
+    ) -> Self {
+        self.linearization_mode = linearization_mode;
+        self
+    }
+
     /// Build a validated COPP3 problem and linearize third-order constraints in one step.
     ///
-    /// This validates boundaries/interval/floor first, then writes linearized jerk buffers
+    /// This validates boundaries/interval/station count/floor first, then writes linearized jerk buffers
     /// inside [`Constraints`](crate::constraints::Constraints). The generated rows
     /// can be inspected with
     /// [`Constraints::get_jerk_linear_constraints`](crate::constraints::Constraints::get_jerk_linear_constraints).
@@ -546,25 +709,47 @@ impl<'a, M: RobotTorque> Copp3ProblemBuilder<'a, M> {
             ));
         }
 
-        self.robot
-            .constraints
-            .linearize_constraint_3order_with_floor(
-                self.a_linearization,
-                self.idx_s_start,
-                self.a_linearization_floor,
-            )
-            .map_err(|e| {
-                CoppError::InvalidInput(
-                    "Copp3ProblemBuilder::build_with_linearization".into(),
-                    format!("linearize_constraint_3order failed: {e}"),
-                )
-            })?;
-
         let num_stationary = determine_num_stationary_pair(
             self.a_boundary,
             self.b_boundary,
             self.num_stationary_max,
         );
+        check_num_station_intervals(
+            "Copp3ProblemBuilder::build_with_linearization",
+            self.a_linearization.len(),
+            num_stationary,
+        )?;
+        check_linearization_mode(
+            "Copp3ProblemBuilder::build_with_linearization",
+            self.a_linearization,
+            self.linearization_mode,
+        )?;
+
+        match self.linearization_mode {
+            LinearizationModeTopp3::Direct => self
+                .robot
+                .constraints
+                .linearize_constraint_3order_with_floor(
+                    self.a_linearization,
+                    self.idx_s_start,
+                    self.a_linearization_floor,
+                ),
+            LinearizationModeTopp3::GivenFeasibleAdaptive(b_linearization) => {
+                self.robot.constraints.linearize_constraint_3order_adaptive(
+                    self.a_linearization,
+                    b_linearization,
+                    self.idx_s_start,
+                    self.a_linearization_floor,
+                    num_stationary,
+                )
+            }
+        }
+        .map_err(|e| {
+            CoppError::InvalidInput(
+                "Copp3ProblemBuilder::build_with_linearization".into(),
+                format!("linearize_constraint_3order failed: {e}"),
+            )
+        })?;
 
         Ok(Copp3Problem {
             robot: self.robot,
@@ -719,7 +904,10 @@ pub(crate) fn set_ab_stationary_topp3<const START: bool>(
 
 #[cfg(test)]
 mod tests {
-    use super::determine_num_stationary_pair;
+    use super::{
+        LinearizationModeTopp3, boundary_state_is_stationary, check_linearization_mode,
+        check_num_station_intervals, determine_num_stationary_pair,
+    };
 
     #[test]
     fn test_determine_num_stationary_pair_respects_boundary_state() {
@@ -731,5 +919,49 @@ mod tests {
 
         let pair = determine_num_stationary_pair((0.0, 1.0), (0.0, 1.0), (2, 3));
         assert_eq!(pair, (2, 0));
+
+        let tiny_a = f64::from_bits(1);
+        let tiny_b = f64::from_bits(2);
+        let pair = determine_num_stationary_pair((tiny_a, tiny_a), (tiny_b, tiny_b), (2, 3));
+        assert_eq!(pair, (0, 0));
+        assert!(!boundary_state_is_stationary(tiny_a, tiny_b));
+        assert!(boundary_state_is_stationary(-0.0, 0.0));
+    }
+
+    #[test]
+    fn test_check_num_station_intervals_reserves_both_boundary_blocks() {
+        // Each side reserves `num_stationary.max(1)` intervals.
+        assert!(check_num_station_intervals("test", 4, (0, 0)).is_ok());
+        assert!(check_num_station_intervals("test", 3, (0, 0)).is_err());
+        assert!(check_num_station_intervals("test", 4, (1, 1)).is_ok());
+        assert!(check_num_station_intervals("test", 3, (1, 1)).is_err());
+        assert!(check_num_station_intervals("test", 6, (1, 3)).is_ok());
+        assert!(check_num_station_intervals("test", 5, (1, 3)).is_err());
+        assert!(check_num_station_intervals("test", 0, (0, 0)).is_err());
+        assert!(check_num_station_intervals("test", usize::MAX, (usize::MAX, 1)).is_err());
+    }
+
+    #[test]
+    fn test_check_linearization_mode_requires_one_b_per_a() {
+        let a = [0.25; 5];
+        let b = [0.0; 5];
+        let b_short = [0.0; 4];
+        assert!(check_linearization_mode("test", &a, LinearizationModeTopp3::Direct).is_ok());
+        assert!(
+            check_linearization_mode(
+                "test",
+                &a,
+                LinearizationModeTopp3::GivenFeasibleAdaptive(&b)
+            )
+            .is_ok()
+        );
+        assert!(
+            check_linearization_mode(
+                "test",
+                &a,
+                LinearizationModeTopp3::GivenFeasibleAdaptive(&b_short)
+            )
+            .is_err()
+        );
     }
 }

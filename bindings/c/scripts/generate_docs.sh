@@ -23,6 +23,9 @@ pwsh -NoProfile -File "$script_dir/generate_headers.ps1"
 rm -rf "$docs_html"
 
 cd "$repo_root"
+# Doxyfile reads PROJECT_NUMBER from this, so the docs carry the crate version.
+COPP_VERSION=$(awk -F'"' '/^version = "/ { print $2; exit }' "$repo_root/Cargo.toml")
+export COPP_VERSION
 doxygen "$doxyfile"
 
 printf 'Generated COPP C API docs at %s\n' "$docs_index"

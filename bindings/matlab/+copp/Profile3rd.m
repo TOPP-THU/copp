@@ -100,5 +100,54 @@ classdef Profile3rd
             %LENGTH Number of station samples in scalar Profile3rd objects.
             value = obj.len;
         end
+
+        function [obj, succeeded] = force_positive_a(obj, s, opts)
+            %FORCE_POSITIVE_A Adjust a and b so interpolated a(s) stays positive.
+            %
+            % [P, SUCCEEDED] = force_positive_a(P, S) returns a copy of profile
+            % P whose a and b node values are adjusted so the third-order
+            % interpolated a(s) stays strictly positive on every interval of
+            % the station grid S. S must be a strictly increasing real finite
+            % vector with numel(S) == P.len and at least four stations. The
+            % returned object keeps the class of P, including solver-local
+            % Profile3rd aliases, and its num_stationary metadata.
+            %
+            % SUCCEEDED is false when the adjustment failed for some interval.
+            % This is not an error, but other intervals may still have been
+            % adjusted, so keep using the original profile in that case.
+            % Invalid input raises copp:InvalidArgument: a length mismatch,
+            % fewer than four stations, negative a or a_min, non-finite values,
+            % non-increasing S, or stationary counts that leave no motion
+            % interval.
+            %
+            % This is a numerical safety pass for profiles whose a values may
+            % touch zero because of finite precision, applied before
+            % s_to_t_topp3. It rewrites a and
+            % b without knowing the robot limits, so re-check the delivered
+            % profile with Robot.exceed_topp3 afterwards.
+            %
+            % Name-value options:
+            %   a_min:
+            %       Nonnegative lower target for interpolated a. Defaults to
+            %       1e-12.
+            arguments
+                obj (1,1) copp.Profile3rd
+                s {mustBeNumeric, mustBeReal, mustBeVector, mustBeFinite}
+                opts.a_min (1,1) {mustBeNumeric, mustBeReal, mustBeFinite, mustBeNonnegative} = 1.0e-12
+            end
+
+            [a_adjusted, b_adjusted, native_succeeded] = copp.internal.copp_mex( ...
+                'force_positive_a_3rd', ...
+                double(s), ...
+                obj.a, ...
+                obj.b, ...
+                double(obj.num_stationary_start), ...
+                double(obj.num_stationary_end), ...
+                double(opts.a_min));
+
+            obj.a = reshape(double(a_adjusted), [], 1);
+            obj.b = reshape(double(b_adjusted), [], 1);
+            succeeded = logical(native_succeeded);
+        end
     end
 end

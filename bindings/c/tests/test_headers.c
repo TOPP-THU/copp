@@ -35,6 +35,18 @@ int main(void)
         view,
         view,
     };
+    struct CoppSliceUsize usize_slice = {NULL, 0};
+    struct CoppSmoothingOptions smoothing_options = {
+        1e-3,
+        slice,
+        usize_slice,
+        slice,
+        20,
+        20000,
+        COPP_PATH_OUT_OF_RANGE_MODE_ERROR,
+    };
+    struct CoppSmoothingReport smoothing_report = {{NULL, 0, 0}, 0, 0, 0, 0, 0, {NULL, 0, 0}};
+    enum CoppStatus smoothing_status = COPP_STATUS_PATH_SMOOTHING;
     struct Topp2Problem problem = {NULL, 0, 0, 0.0, 0.0};
     struct Topp2RaOptions ra_options = {1e-8, 1e-8, 1e-8, COPP_VERBOSITY_SILENT};
     struct CoppReachSet2Result reach_set = {{NULL, 0, 0}, {NULL, 0, 0}};
@@ -58,6 +70,7 @@ int main(void)
         1,
         1,
         1e-10,
+        slice,
     };
     struct Copp3Problem copp3_problem = {
         NULL,
@@ -72,6 +85,7 @@ int main(void)
         1e-10,
         &objective,
         1,
+        slice,
     };
     enum CoppClarabelSolverStatus solver_status = COPP_CLARABEL_SOLVER_STATUS_UNSOLVED;
     struct CoppClarabelLinearSolverInfo linsolver_info;
@@ -88,6 +102,22 @@ int main(void)
     (void)usize_vec;
     (void)matrix;
     (void)path_options;
+    (void)usize_slice;
+    (void)smoothing_options;
+    (void)smoothing_report;
+    (void)smoothing_status;
+    (void)COPP_VERSION_MAJOR;
+    (void)COPP_VERSION_MINOR;
+    (void)COPP_VERSION_PATCH;
+    (void)COPP_VERSION_STRING;
+    (void)copp_path_from_waypoints_interpolating;
+    (void)copp_path_from_waypoints;
+    (void)copp_smoothing_default_options;
+    (void)copp_path_from_waypoints_fitting;
+    (void)copp_path_smoothing_report;
+    (void)copp_smoothing_report_free;
+    (void)copp_robot_exceed_topp2;
+    (void)copp_robot_exceed_topp3;
     (void)problem;
     (void)ra_options;
     (void)reach_set;
@@ -116,6 +146,7 @@ int main(void)
     (void)copp_clarabel_default_options;
     (void)copp_clarabel_solution_to_profile_2nd;
     (void)copp_clarabel_solution_to_profile_3rd;
+    (void)copp_a_to_b_2nd;
     (void)copp_s_to_t_3rd;
     (void)copp_t_to_s_uniform_3rd;
     (void)copp_t_to_s_non_uniform_3rd;
@@ -142,6 +173,8 @@ int main(void)
     (void)copp_robot_pop_back_until;
     (void)copp_robot_set_q_2nd;
     (void)copp_robot_set_q_3rd;
+    (void)copp_add_axial_torque_limits;
+    (void)copp_robot_clear_inverse_dynamics;
     (void)topp3_lp;
     (void)topp3_lp_expert;
     (void)topp3_socp;

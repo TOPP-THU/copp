@@ -6,7 +6,7 @@
 
 This directory contains the public C ABI for the open-source COPP library. It focuses on using COPP from C through stable headers, ordinary C data types, and explicit ownership rules.
 
-The C ABI is in its feedback and stabilization phase. It is intended to be usable today, but function names, problem descriptors, result structs, and packaging details may still evolve before the first stable C release. Feedback from downstream bindings, robotics applications, and packaging workflows is welcome. For C ABI questions, packaging feedback, compatibility requests, COPP-Pro licensing, or commercial collaboration, please contact us at [hello@copp.pro](mailto:hello@copp.pro).
+The C ABI is in its feedback and stabilization phase. It is intended to be usable today, but function names, problem descriptors, result structs, and packaging details may still evolve before the first stable C release. Feedback from downstream bindings, robotics applications, and packaging workflows is welcome. For C ABI questions, packaging feedback, compatibility requests, COPP PRO licensing, or commercial collaboration, please contact us at [hello@copp.pro](mailto:hello@copp.pro).
 
 > **Open-source / PRO note:** this README documents the open-source C ABI. For the full project overview, open-source vs PRO algorithm matrix, solver-selection guidance, benchmark comparisons, citation information, and collaboration contact details, see the [COPP repository README](https://github.com/TOPP-THU/copp#readme).
 
@@ -22,15 +22,15 @@ The algorithmic background, open-source algorithm availability, benchmark tables
 
 ## API Availability
 
-| Problem class  | Public C API                                                                           |
-| -------------- | -------------------------------------------------------------------------------------- |
-| Core utilities | status, last error, slices, matrix views, owned vectors/matrices                       |
-| Path           | waypoint spline, Jet3 parametric, evaluator paths, 2nd/3rd derivative evaluation       |
-| Robot          | station grids, path sampling, raw constraints, axial limits, inverse dynamics callback |
-| TOPP2          | TOPP2-RA, ReachSet2, 2nd-order interpolation                                           |
-| COPP2          | COPP2-SOCP                                                                             |
-| TOPP3          | TOPP3-LP, TOPP3-SOCP, 3rd-order interpolation                                          |
-| COPP3          | COPP3-SOCP                                                                             |
+| Problem class  | Public C API                                                                                                        |
+| -------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Core utilities | status, last error, slices, matrix views, owned vectors/matrices                                                    |
+| Path           | waypoint interpolating, waypoint fitting, Jet3 parametric, evaluator paths, 2nd/3rd derivative evaluation           |
+| Robot          | station grids, path sampling, velocity/acceleration/jerk/torque limits, raw constraints, inverse dynamics callback, constraint-violation checks |
+| TOPP2          | TOPP2-RA, ReachSet2, 2nd-order interpolation                                                                        |
+| COPP2          | COPP2-SOCP                                                                                                          |
+| TOPP3          | TOPP3-LP, TOPP3-SOCP, 3rd-order interpolation                                                                       |
+| COPP3          | COPP3-SOCP                                                                                                          |
 
 Runnable examples are in [examples](examples/). They are built as CMake targets named `example_*`.
 
@@ -473,6 +473,10 @@ Most C examples follow the same shape:
 
 The C API intentionally avoids implementation-specific lifetimes, generics, closures, and builders. Problem structs are borrowed descriptors used only during the solver call.
 
+### Deprecated Robot Symbols
+
+The supported names for writing joint samples into a robot are `copp_robot_set_q_2nd` and `copp_robot_set_q_3rd`, so that every robot-mutating function shares the `copp_robot_*` prefix. The older names `copp_set_q_2nd` and `copp_set_q_3rd` remain exported from the shared and static libraries as forwarding aliases, so binaries built against an earlier release keep linking. They are not declared in the shipped headers under `include/copp`, so reaching them from new code requires declaring them by hand. They may be removed in a future release; port such code to the `copp_robot_*` names.
+
 ## Parametric Paths
 
 Use `copp_path_from_parametric` when you have a scalar formula for `q(s)` and
@@ -504,6 +508,28 @@ copp_path_from_parametric(1, 0.0, 1.0, eval_path, NULL, &path);
 The resulting path works with the same `copp_path_evaluate_up_to_2nd`,
 `copp_path_evaluate_up_to_3rd`, `copp_robot_sample_path_2nd`, and
 `copp_robot_sample_path_3rd` calls as waypoint and evaluator paths.
+
+## Waypoint Paths
+
+`copp_path_from_waypoints_interpolating` builds a spline through every
+waypoint column; `copp_path_from_waypoints` is an equivalent alias.
+`copp_path_from_waypoints_fitting` instead fits the selected axes within
+per-axis absolute tolerances using an adaptive `C4` quintic B-spline: interior
+waypoints are not interpolated, the first and last waypoints are kept, and
+`copp_path_smoothing_report` returns the audited error bounds. Both waypoint
+constructors, `CoppSmoothingOptions`, and `CoppSmoothingReport` are currently
+unstable and may change as more waypoint algorithms are added.
+
+```c
+struct CoppSmoothingOptions options;
+struct CoppPath *path = NULL;
+copp_smoothing_default_options(&options);
+options.tolerance = 1e-3;
+copp_path_from_waypoints_fitting(
+    COPP_MATRIX_VIEW_F64_COLUMN_MAJOR(waypoints, dim, num_waypoints),
+    options,
+    &path);
+```
 
 ## Minimal Program
 

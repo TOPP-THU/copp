@@ -123,6 +123,46 @@ impl PyProfile3rd {
         self.num_stationary.1
     }
 
+    /// Post-process the stored `(a, b)` profile in place so that interpolated
+    /// `a(s)` stays strictly positive per interval.
+    ///
+    /// Thin wrapper over the Rust core helper
+    /// [`force_positive_a`](crate::copp::copp3::interpolation::force_positive_a):
+    /// a numerical safety pass for profiles whose `a` values may touch zero
+    /// between stations due to finite precision, applied before timing
+    /// integration (`s_to_t_topp3`).
+    ///
+    /// Parameters
+    /// ----------
+    /// s : ArrayLike
+    ///     Strictly increasing station grid with the same length as the
+    ///     profile (at least 4 entries).
+    /// a_min : float, default=1e-12
+    ///     Lower floor used when lifting near-zero interior `a` values.
+    ///
+    /// Returns
+    /// -------
+    /// bool
+    ///     ``True`` when the in-place adjustment succeeds.
+    ///
+    /// Raises
+    /// ------
+    /// ValueError
+    ///     If ``s`` cannot be converted to a one-dimensional float64 array.
+    /// CoppError
+    ///     If the COPP core rejects the grid, profile, stationary counts, or
+    ///     numeric finiteness requirements.
+    #[pyo3(signature = (s, a_min = 1.0e-12), text_signature = "(s, a_min=1e-12)")]
+    fn force_positive_a(&mut self, s: &Bound<'_, PyAny>, a_min: f64) -> PyResult<bool> {
+        let s = array_like_to_vec_f64("s", s)?;
+        crate::copp::copp3::interpolation::force_positive_a(
+            (&mut self.a, &mut self.b, self.num_stationary),
+            &s,
+            a_min,
+        )
+        .map_err(to_py_err)
+    }
+
     /// Return the number of station nodes in the profile.
     #[getter]
     fn len(&self) -> usize {
@@ -372,6 +412,7 @@ fn t_to_s_topp2_samples<'py>(
 /// array([0.  , 0.25, 0.5 , 0.75, 1.  ])
 #[pyfunction]
 #[pyo3(signature = (s, a, t_s, *, t0 = 0.0, dt = None, include_final = true, t_sample = None))]
+#[allow(clippy::too_many_arguments)]
 fn t_to_s_topp2<'py>(
     py: Python<'py>,
     s: &Bound<'py, PyAny>,
@@ -578,6 +619,7 @@ fn t_to_s_topp3_samples<'py>(
 ///     parameters.
 #[pyfunction]
 #[pyo3(signature = (s, profile, t_s, *, t0 = 0.0, dt = None, include_final = true, t_sample = None))]
+#[allow(clippy::too_many_arguments)]
 fn t_to_s_topp3<'py>(
     py: Python<'py>,
     s: &Bound<'py, PyAny>,

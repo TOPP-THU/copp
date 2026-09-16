@@ -202,6 +202,24 @@ namespace copp
         return ref().segment(idx_s);
     }
 
+    bool Profile3rd::force_positive_a(Span<const double> s, double a_min)
+    {
+        try
+        {
+            return ::copp::bridge::force_positive_a_3rd(
+                to_rust_slice(s),
+                rust::Slice<double>(a.data(), a.size()),
+                rust::Slice<double>(b.data(), b.size()),
+                num_stationary_start,
+                num_stationary_end,
+                a_min);
+        }
+        catch (const rust::Error &error)
+        {
+            throw Error(Status::invalid_input, to_std_string(error));
+        }
+    }
+
 } // namespace copp
 
 namespace copp::interpolation

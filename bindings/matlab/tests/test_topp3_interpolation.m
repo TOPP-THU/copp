@@ -88,6 +88,42 @@ classdef test_topp3_interpolation < matlab.unittest.TestCase
                 'copp:InvalidArgument');
         end
 
+        function profile3rd_force_positive_a_returns_adjusted_copy(testCase)
+            % A sign change of b next to a tiny interior a makes the
+            % interpolated a(s) dip below zero on stations 3..4;
+            % force_positive_a repairs it and returns an adjusted copy.
+            s = linspace(0.0, 1.0, 6).';
+            ds = s(4) - s(3);
+            a = [0; 0.3; 1.0e-3; 1.0e-3; 0.3; 0];
+            b = [0.5; 0.2; -1.0; 1.0; -0.2; -0.5];
+            profile = copp.Profile3rd(a, b, num_stationary=[0, 0]);
+            interval_a = @(p) p.a(3) + 2 * p.b(3) * linspace(0, ds, 201) + ...
+                (p.b(4) - p.b(3)) / ds * linspace(0, ds, 201).^2;
+            testCase.verifyLessThan(min(interval_a(profile)), 0.0);
+
+            [adjusted, succeeded] = profile.force_positive_a(s, a_min=1.0e-12);
+
+            testCase.verifyClass(adjusted, 'copp.Profile3rd');
+            testCase.verifyClass(succeeded, 'logical');
+            testCase.verifyTrue(succeeded);
+            testCase.verifySize(adjusted.a, [6, 1]);
+            testCase.verifySize(adjusted.b, [6, 1]);
+            testCase.verifyEqual(adjusted.num_stationary, [0, 0]);
+            testCase.verifyTrue(all(isfinite(adjusted.a)) && all(isfinite(adjusted.b)));
+            testCase.verifyFalse(isequal([adjusted.a, adjusted.b], [a, b]));
+            testCase.verifyGreaterThanOrEqual(adjusted.a, 0.0);
+            testCase.verifyGreaterThan(min(interval_a(adjusted)), 0.0);
+
+            % The original value object is unchanged.
+            testCase.verifyEqual(profile.a, a);
+            testCase.verifyEqual(profile.b, b);
+
+            % Invalid input is an error; an unsuccessful adjustment is not.
+            testCase.verifyError(@() profile.force_positive_a(s(1:5)), 'copp:InvalidArgument');
+            short = copp.Profile3rd(ones(3, 1), zeros(3, 1));
+            testCase.verifyError(@() short.force_positive_a([0; 0.5; 1.0]), 'copp:InvalidArgument');
+        end
+
         function solver_namespace_interpolation_aliases_match_global_helpers(testCase)
             % Solver namespaces re-export common TOPP3/COPP3 post-processing helpers.
             s = [0; 0.5; 1.0];

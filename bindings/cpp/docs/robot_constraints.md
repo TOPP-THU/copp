@@ -160,8 +160,28 @@ constraints.add_constraint_2nd(acc_a.view(), acc_b.view(), acc_max.view(), 0);
 This mirrors the Rust/Python split: use `Robot` for physical limits, and use
 `Constraints` for direct mathematical control.
 
+## Checking A Profile Against The Constraints
+
+`exceed_topp2` and `exceed_topp3` (on `ConstraintsRef` and `Constraints`) return
+the maximum violation magnitude of each constraint order for a node profile.
+Each entry is `<= 0` when the profile is feasible and positive when it is
+violated.
+
+```cpp
+std::array<double, 2> e2 = constraints.exceed_topp2(a);          // {1st, 2nd}
+std::array<double, 3> e3 = robot.constraints().exceed_topp3(profile); // {1st, 2nd, 3rd}
+```
+
+- `exceed_topp2` reconstructs each interval's `b[k] = (a[k+1] - a[k]) / (2 ds[k])`;
+  the first-order entry covers `0 <= a[k] <= amax[k]`.
+- `exceed_topp3` uses the original nonlinear `sqrt(a)` jerk form rather than the
+  linearized rows and skips the two stationary boundary blocks.  Run it after
+  post-processing such as `Profile3rd::force_positive_a`.
+- All entries are `NaN` when the station range starting at `idx_s_start` is
+  unavailable, the profile lengths disagree, `b` cannot be reconstructed, or
+  the profile contains a non-finite value.
+
 ## Tutorial Sources
 
 - `bindings/cpp/examples/robot_inverse_dynamics.cpp`
 - `bindings/cpp/examples/topp2_ra.cpp`
-- `bindings/cpp/examples/topp3_socp.cpp`

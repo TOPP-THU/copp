@@ -44,6 +44,14 @@ classdef ConstraintsRef
             obj.robot.add_raw_constraint_3rd(varargin{:});
         end
 
+        function [e1, e2] = exceed_topp2(obj, varargin)
+            [e1, e2] = obj.robot.exceed_topp2(varargin{:});
+        end
+
+        function [e1, e2, e3] = exceed_topp3(obj, varargin)
+            [e1, e2, e3] = obj.robot.exceed_topp3(varargin{:});
+        end
+
         function clear(obj, varargin)
             obj.robot.clear_constraints(varargin{:});
         end

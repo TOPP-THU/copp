@@ -7,6 +7,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .clarabel import ClarabelOptions, Copp2SocpResult
+from .core import Verbosity, VerbosityLike
 from .objective import ObjectiveLike
 from .robot import Robot
 
@@ -24,6 +25,7 @@ class Copp2Problem:
         {"kind": "thermal_energy", "weight": 0.1, "normalize": normalize}
         {"kind": "linear", "weight": 1.0, "alpha": alpha, "beta": beta}
         {"kind": "total_variation_torque", "weight": 1.0, "normalize": normalize}
+
 
     Object constructors are exposed through ``copp.objective``::
 
@@ -72,6 +74,7 @@ class Copp2Problem:
         """Validate the descriptor against the current robot and objectives."""
         ...
 
+
 def copp2_socp(
     problem: Copp2Problem,
     options: ClarabelOptions | None = None,
@@ -97,8 +100,7 @@ def copp2_socp(
     ------
     CoppError
         If Rust problem validation, options validation, Clarabel solve setup,
-        or accepted-status extraction fails. ``copp2_socp`` supports
-        ``TotalVariationTorque`` objectives.
+        or accepted-status extraction fails.
     """
     ...
 
@@ -117,3 +119,4 @@ def copp2_socp_expert(
     Clarabel setup errors, still raise ``CoppError``.
     """
     ...
+

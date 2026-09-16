@@ -182,6 +182,7 @@ if(COPP_BUILD_TESTS)
     add_copp_c_test(test_topp3_socp tests/test_topp3_socp.c)
     add_copp_c_test(test_copp3_socp tests/test_copp3_socp.c)
     add_copp_c_test(test_path_evaluation tests/test_path_evaluation.c)
+    add_copp_c_test(test_path_fitting tests/test_path_fitting.c)
     add_copp_c_test(test_robot_raw_constraints tests/test_robot_raw_constraints.c)
 endif()
 

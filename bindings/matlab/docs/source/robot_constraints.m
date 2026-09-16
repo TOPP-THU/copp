@@ -106,6 +106,23 @@ robot2.constraints.add_raw_constraint_2nd( ...
 
 fprintf("Raw first- and second-order constraints added.\n");
 
+%% Auditing profiles against constraints
+% |exceed_topp2(a)| and |exceed_topp3(a, b)| (or |exceed_topp3(profile)|)
+% evaluate a candidate profile against the stored constraints and return the
+% maximum violation of each constraint order. Values \(\le 0\) mean that order
+% is satisfied, positive values are violations, and |NaN| means the station
+% range is unavailable, the vector lengths disagree, or a |Profile3rd| holds
+% non-finite values. TOPP2 reconstructs
+% \(b\) from \(a\); the TOPP3 third-order term uses the original nonlinear
+% \(\sqrt{a}\) rows and skips the stationary blocks given by
+% |num_stationary|. Both methods accept a 1-based |idx_s_start| and are also
+% available through |robot.constraints|.
+
+[e1_topp2, e2_topp2] = robot2.exceed_topp2(0.25 * ones(n, 1));
+[e1_topp3, e2_topp3, e3_topp3] = robot3.exceed_topp3(0.1 * ones(n, 1), zeros(n, 1));
+fprintf("TOPP2 exceed: %.3g / %.3g, TOPP3 exceed: %.3g / %.3g / %.3g\n", ...
+    e1_topp2, e2_topp2, e1_topp3, e2_topp3, e3_topp3);
+
 %% Queue-style operations
 % Receding-horizon code can discard stations from either end. These operations
 % mutate the native robot buffer, so any Problem object built before mutation

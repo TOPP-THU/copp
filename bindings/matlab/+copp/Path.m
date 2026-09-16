@@ -31,7 +31,7 @@ classdef Path < handle
         %
         % This is the number of rows in q(s). For waypoint paths it equals the
         % number of rows in the dim-by-N waypoint matrix passed to
-        % Path.from_waypoints.
+        % Path.from_waypoints_interpolating or Path.from_waypoints_fitting.
         dim
 
         %S_RANGE Valid scalar path-parameter range [s_min, s_max].
@@ -53,6 +53,63 @@ classdef Path < handle
     end
 
     methods (Static)
+        function obj = from_waypoints_interpolating(waypoints, opts)
+            %FROM_WAYPOINTS_INTERPOLATING Construct an interpolating waypoint spline path.
+            %
+            % OBJ = copp.Path.from_waypoints_interpolating(WAYPOINTS)
+            % builds a quintic spline over s in [0, 1] that passes through
+            % every waypoint. WAYPOINTS must be a real finite dim-by-N matrix
+            % with each column storing one waypoint q(:, k). At least enough
+            % waypoints for the selected native spline order must be provided.
+            %
+            % Name-value options:
+            %   s_range:
+            %       1-by-2 finite vector [s_min, s_max]. Defaults to [0, 1].
+            %   order:
+            %       Odd spline order accepted by the native path module.
+            %       Defaults to 5, matching Rust/Python defaults.
+            %   out_of_range_mode:
+            %       "error" to reject out-of-range evaluation, or "clamp" to
+            %       clamp query values into s_range.
+            %   start_state, end_state:
+            %       Optional dim-by-K boundary derivative matrices. Column j
+            %       stores the j-th boundary derivative. Empty arrays request
+            %       zero boundary derivatives from the native default path
+            %       options.
+            %
+            % Use Path.from_waypoints_fitting instead when the path only needs
+            % to stay within a tolerance of the waypoints. Path.from_waypoints
+            % is an equivalent alias of this constructor.
+            %
+            % API stability:
+            %   The waypoint path constructors are currently unstable: their
+            %   names, signatures, and options may change as additional
+            %   waypoint path-construction algorithms are added.
+            %
+            % The returned object owns the native path handle. release() may be
+            % called explicitly, but ordinary MATLAB object cleanup is also
+            % sufficient.
+            arguments
+                waypoints {mustBeNumeric, mustBeReal, mustBeFinite}
+                opts.s_range (1,2) {mustBeNumeric, mustBeReal, mustBeFinite} = [0, 1]
+                opts.order (1,1) {mustBeNumeric, mustBeReal, mustBeInteger, mustBePositive} = 5
+                opts.out_of_range_mode (1,1) string {mustBeMember(opts.out_of_range_mode, ["error", "clamp"])} = "error"
+                opts.start_state {mustBeNumeric, mustBeReal, mustBeFinite} = []
+                opts.end_state {mustBeNumeric, mustBeReal, mustBeFinite} = []
+            end
+
+            id = copp.internal.copp_mex( ...
+                'path_from_waypoints', ...
+                double(waypoints), ...
+                double(opts.s_range(1)), ...
+                double(opts.s_range(2)), ...
+                double(opts.order), ...
+                char(opts.out_of_range_mode), ...
+                double(opts.start_state), ...
+                double(opts.end_state));
+            obj = copp.Path.from_native_id(id);
+        end
+
         function obj = from_waypoints(waypoints, opts)
             %FROM_WAYPOINTS Construct a waypoint spline path.
             %
@@ -61,6 +118,11 @@ classdef Path < handle
             % matrix with each column storing one waypoint q(:, k). At least
             % enough waypoints for the selected native spline order must be
             % provided.
+            %
+            % Path.from_waypoints is an equivalent alias of
+            % Path.from_waypoints_interpolating with identical arguments,
+            % behavior, and errors. Both names remain supported and share the
+            % unstable status of the waypoint path constructors.
             %
             % Name-value options:
             %   s_range:
@@ -89,15 +151,103 @@ classdef Path < handle
                 opts.end_state {mustBeNumeric, mustBeReal, mustBeFinite} = []
             end
 
+            obj = copp.Path.from_waypoints_interpolating( ...
+                waypoints, ...
+                s_range=opts.s_range, ...
+                order=opts.order, ...
+                out_of_range_mode=opts.out_of_range_mode, ...
+                start_state=opts.start_state, ...
+                end_state=opts.end_state);
+        end
+
+        function obj = from_waypoints_fitting(waypoints, opts)
+            %FROM_WAYPOINTS_FITTING Construct a tolerance-bounded waypoint-fitting path.
+            %
+            % OBJ = copp.Path.from_waypoints_fitting(WAYPOINTS) assigns each
+            % column of the real finite dim-by-N matrix WAYPOINTS (N >= 2) a
+            % common path parameter and joins adjacent columns linearly into a
+            % reference polyline. The selected axes are approximated by one
+            % adaptive nonuniform quintic B-spline with C4 continuity whose
+            % same-parameter absolute deviation from the reference polyline
+            % stays within each axis tolerance. The error is audited over every
+            % whole reference interval, not only at the waypoints.
+            %
+            % Unlike Path.from_waypoints_interpolating, the fitted path does not
+            % pass through interior waypoints: selected axes may deviate within
+            % their tolerances, while the first and last waypoints are
+            % retained. Unselected rows keep quintic C4 interpolation through
+            % every column. Derivatives returned by path evaluation are with
+            % respect to s, not time. Use smoothing_report() to inspect the
+            % selected axes, final per-axis error bounds, and refinement work.
+            %
+            % Name-value options:
+            %   tolerance:
+            %       Absolute tolerance in each selected row's input units. A
+            %       scalar applies to every selected axis. A vector gives one
+            %       tolerance per selected axis, in the order of axes (not row
+            %       order). Entries must be finite and positive. Defaults to
+            %       1e-3.
+            %   axes:
+            %       1-based rows of WAYPOINTS allowed to deviate from the
+            %       reference polyline. Entries must be distinct and in range;
+            %       their order also defines the order of a vector tolerance
+            %       and of the report's axes and max_errors. Empty (default)
+            %       selects every row.
+            %   parameters:
+            %       Optional path parameter of each waypoint column: finite,
+            %       strictly increasing, one entry per column. The first and
+            %       last entries become s_range, and relative spacing affects
+            %       the fitted geometry. Empty (default) assigns the columns
+            %       uniformly on [0, 1].
+            %   max_refinements:
+            %       Maximum number of adaptive knot-refinement passes. Defaults
+            %       to 20.
+            %   max_segments:
+            %       Maximum number of polynomial spans used by the selected
+            %       axes; spans of the unselected-axis interpolant do not count.
+            %       Defaults to 20000.
+            %   out_of_range_mode:
+            %       "error" (default) or "clamp" for later out-of-range
+            %       evaluation. It does not affect fitting or auditing.
+            %
+            % Errors:
+            %   Native contract violations (for example repeated or
+            %   out-of-range axes, a tolerance vector of the wrong length, or
+            %   non-increasing parameters), exceeding max_segments or
+            %   max_refinements, numerical failure, or a failed final audit
+            %   raise copp:PathError. An unchecked or relaxed approximation
+            %   is never returned.
+            %
+            % API stability:
+            %   The waypoint path constructors, their options, and the
+            %   smoothing report are currently unstable: names, signatures, and
+            %   options may change as additional waypoint path-construction
+            %   algorithms are added.
+            %
+            % Example:
+            %   waypoints = [0, 0.25, 0.5, 0.75, 1; 0, 0.4, 0.5, 0.4, 0];
+            %   path = copp.Path.from_waypoints_fitting(waypoints, tolerance=1e-3);
+            %   report = path.smoothing_report();
+            %   disp(report.max_errors)
+            arguments
+                waypoints {mustBeNumeric, mustBeReal, mustBeFinite}
+                opts.tolerance {mustBeNumeric, mustBeReal, mustBeVector, mustBeFinite, mustBePositive} = 1.0e-3
+                opts.axes {mustBeNumeric, mustBeReal, mustBeFinite, mustBeInteger, mustBePositive} = []
+                opts.parameters {mustBeNumeric, mustBeReal, mustBeFinite} = []
+                opts.max_refinements (1,1) {mustBeNumeric, mustBeReal, mustBeInteger, mustBeNonnegative} = 20
+                opts.max_segments (1,1) {mustBeNumeric, mustBeReal, mustBeInteger, mustBePositive} = 20000
+                opts.out_of_range_mode (1,1) string {mustBeMember(opts.out_of_range_mode, ["error", "clamp"])} = "error"
+            end
+
             id = copp.internal.copp_mex( ...
-                'path_from_waypoints', ...
+                'path_from_waypoints_fitting', ...
                 double(waypoints), ...
-                double(opts.s_range(1)), ...
-                double(opts.s_range(2)), ...
-                double(opts.order), ...
-                char(opts.out_of_range_mode), ...
-                double(opts.start_state), ...
-                double(opts.end_state));
+                reshape(double(opts.tolerance), [], 1), ...
+                reshape(double(opts.axes), [], 1) - 1, ...
+                reshape(double(opts.parameters), [], 1), ...
+                double(opts.max_refinements), ...
+                double(opts.max_segments), ...
+                char(opts.out_of_range_mode));
             obj = copp.Path.from_native_id(id);
         end
 
@@ -416,6 +566,65 @@ classdef Path < handle
                 values = {q, dq, ddq, dddq};
                 varargout = values(1:nargout);
             end
+        end
+
+        function report = smoothing_report(obj)
+            %SMOOTHING_REPORT Return the construction report of a fitted path.
+            %
+            % REPORT = smoothing_report(OBJ) returns [] unless OBJ was built by
+            % Path.from_waypoints_fitting. For fitted paths REPORT is a struct
+            % with fields:
+            %   axes:
+            %       Column vector of 1-based selected rows, in tolerance and
+            %       report order.
+            %   segments:
+            %       Number of final polynomial spans shared by the selected
+            %       axes.
+            %   interpolated_segments:
+            %       Number of spans in the separate unselected-axis
+            %       interpolant. Zero when every row is selected; not included
+            %       in segments or the max_segments budget.
+            %   refinements:
+            %       Number of completed local knot-refinement passes.
+            %   fitting_rows:
+            %       Number of fitting rows assembled, counting rows assembled
+            %       again during local refits.
+            %   checked_intervals:
+            %       Number of reference intervals visited by numerical audits,
+            %       including revisits and the final full audit.
+            %   max_errors:
+            %       Column vector of final whole-domain absolute-error bounds,
+            %       one per selected axis in axes order and in input units.
+            %       These are Bernstein-derived numerical bounds computed with
+            %       ordinary floating-point arithmetic, not sampled maxima or
+            %       formal certificates.
+            %
+            % axes, segments, and interpolated_segments describe the final
+            % representation; the other counters are cumulative work counters
+            % and not optimality or run-time guarantees. Like the waypoint
+            % constructors, this report is currently unstable.
+            arguments
+                obj (1,1) copp.Path
+            end
+
+            [has_report, axes, segments, interpolated_segments, refinements, ...
+                fitting_rows, checked_intervals, max_errors] = copp.internal.copp_mex( ...
+                'path_smoothing_report', ...
+                obj.native_id_for_mex());
+
+            if ~logical(has_report)
+                report = [];
+                return
+            end
+
+            report = struct( ...
+                'axes', double(axes) + 1, ...
+                'segments', double(segments), ...
+                'interpolated_segments', double(interpolated_segments), ...
+                'refinements', double(refinements), ...
+                'fitting_rows', double(fitting_rows), ...
+                'checked_intervals', double(checked_intervals), ...
+                'max_errors', double(max_errors));
         end
 
         function delete(obj)

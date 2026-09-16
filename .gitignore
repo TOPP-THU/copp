@@ -1,7 +1,12 @@
 # Rust
 /target
 /data
+/scripts/
 /.vscode
+
+# Agent drafts, diagnostics, outputs, and archived worktrees
+/.agent/
+/.claude/
 
 # C
 /bindings/**/build/

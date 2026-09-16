@@ -251,9 +251,10 @@ void copp_profile_3rd_free(struct CoppProfile3rd profile);
 /**
  * Borrowed value descriptor for a TOPP3 problem solved from C.
  *
- * This is not an owning handle. `robot` and `a_linearization` are borrowed
- * only during the solver call.  Building the internal TOPP3 problem mutates the
- * robot's internal linearized third-order constraint cache.
+ * This is not an owning handle. `robot`, `a_linearization`, and
+ * `b_linearization` are borrowed only during the solver call.  Building the
+ * internal TOPP3 problem mutates the robot's internal linearized third-order
+ * constraint cache.
  *
  * # Example
  * The example below builds a TOPP3 descriptor using a seed `a` profile for
@@ -272,6 +273,17 @@ void copp_profile_3rd_free(struct CoppProfile3rd profile);
  *     1,
  *     1e-10,
  * };
+ * ```
+ *
+ * `b_linearization` is the last field, so a positional initializer that omits
+ * it, such as the one above, leaves it empty and selects direct linearization.
+ * The example below refines around a previously solved third-order `profile`
+ * with adaptive linearization.
+ *
+ * ```c
+ * struct Topp3Problem refined = problem;
+ * refined.a_linearization = (struct CoppSliceF64){profile.a.data, profile.a.len};
+ * refined.b_linearization = (struct CoppSliceF64){profile.b.data, profile.b.len};
  * ```
  */
 typedef struct Topp3Problem {
@@ -316,6 +328,28 @@ typedef struct Topp3Problem {
      * Denominator floor used when linearizing third-order constraints.
      */
     double a_linearization_floor;
+    /**
+     * Optional path acceleration `b[k]` paired with `a_linearization`.
+     *
+     * Leave empty (`data = NULL`, `len = 0`, as zero-initialization does) to
+     * linearize every third-order row of station `k` at `a_linearization[k]`.
+     * When non-empty, each row is instead anchored where that row is nearly
+     * active at the feasible state `(a_linearization, b_linearization)`, so a
+     * slack row is anchored high and a tight one stays near the state. It must
+     * then have the same length as `a_linearization`, otherwise the solver
+     * returns `COPP_STATUS_SOLVER_INVALID_INPUT` when it builds the problem,
+     * and the two must be the `a` and `b` of one previously solved
+     * third-order profile; the `b` of a TOPP2 profile is discretized
+     * differently and must not be used.
+     *
+     * Prefer this adaptive mode when `a` spans a wide range over the window,
+     * and especially when `a` can approach zero (about `1e-10`): anchoring
+     * both rows of one axis at the same small `a_linearization[k]` cancels `b`
+     * and `c` and leaves `a[k] <= 3 * a_linearization[k]`. On profiles that
+     * stay well away from zero the two modes agree closely, and leaving this
+     * field empty is cheaper.
+     */
+    struct CoppSliceF64 b_linearization;
 } Topp3Problem;
 
 /**
@@ -395,6 +429,28 @@ typedef struct Copp3Problem {
      * Number of objective descriptors.
      */
     size_t num_objectives;
+    /**
+     * Optional path acceleration `b[k]` paired with `a_linearization`.
+     *
+     * Leave empty (`data = NULL`, `len = 0`, as zero-initialization does) to
+     * linearize every third-order row of station `k` at `a_linearization[k]`.
+     * When non-empty, each row is instead anchored where that row is nearly
+     * active at the feasible state `(a_linearization, b_linearization)`, so a
+     * slack row is anchored high and a tight one stays near the state. It must
+     * then have the same length as `a_linearization`, otherwise the solver
+     * returns `COPP_STATUS_SOLVER_INVALID_INPUT` when it builds the problem,
+     * and the two must be the `a` and `b` of one previously solved
+     * third-order profile; the `b` of a TOPP2 profile is discretized
+     * differently and must not be used.
+     *
+     * Prefer this adaptive mode when `a` spans a wide range over the window,
+     * and especially when `a` can approach zero (about `1e-10`): anchoring
+     * both rows of one axis at the same small `a_linearization[k]` cancels `b`
+     * and `c` and leaves `a[k] <= 3 * a_linearization[k]`. On profiles that
+     * stay well away from zero the two modes agree closely, and leaving this
+     * field empty is cheaper.
+     */
+    struct CoppSliceF64 b_linearization;
 } Copp3Problem;
 
 /** @} */

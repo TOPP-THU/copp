@@ -645,11 +645,7 @@ impl PyClarabelSettings {
 ///
 /// Low-level Clarabel numerical settings are stored as a
 /// [`PyClarabelSettings`] value and default to COPP's finalized Rust settings.
-#[pyclass(
-    name = "ClarabelOptions",
-    module = "copp_py._native",
-    skip_from_py_object
-)]
+#[pyclass(name = "ClarabelOptions", module = "copp_py._native", skip_from_py_object)]
 pub(crate) struct PyClarabelOptions {
     /// Solver diagnostic verbosity.
     verbosity: PyVerbosity,

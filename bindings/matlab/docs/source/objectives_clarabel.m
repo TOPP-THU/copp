@@ -35,7 +35,7 @@
 % * |time| - supported by COPP2-SOCP and COPP3-SOCP.
 % * |linear| - supported by COPP2-SOCP and COPP3-SOCP.
 % * |thermal_energy| - supported by COPP2-SOCP and COPP3-SOCP.
-% * |total_variation_torque| - supported by SOCP backends.
+% * |total_variation_torque| - supported by COPP2-SOCP and COPP3-SOCP.
 
 %% Construct objective descriptors
 

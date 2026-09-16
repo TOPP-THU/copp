@@ -17,7 +17,11 @@
 %% Choosing a path constructor
 % Use the constructor that matches the source of your geometry:
 %
-% * |Path.from_waypoints| for spline paths through sampled configurations.
+% * |Path.from_waypoints_interpolating| for spline paths through every
+%   sampled configuration. |Path.from_waypoints| is an equivalent alias.
+% * |Path.from_waypoints_fitting| for smooth paths that stay within a
+%   tolerance of sampled configurations without passing through interior
+%   waypoints.
 % * |Path.from_evaluator_2nd| when a batch callback can return \(q,\dot{q},\ddot{q}\).
 % * |Path.from_evaluator_3rd| when a batch callback can return
 %   \(q,\dot{q},\ddot{q},q^{(3)}\).
@@ -39,7 +43,7 @@
 waypoints = [ ...
     0.0, 0.5, 1.0, 1.5, 2.0; ...
     0.0, 1.0, 0.0, -1.0, 0.0];
-path_wp = copp.Path.from_waypoints( ...
+path_wp = copp.Path.from_waypoints_interpolating( ...
     waypoints, ...
     s_range=[0, 2], ...
     order=3, ...
@@ -51,6 +55,34 @@ fprintf("q_wp shape: %d x %d\n", size(q_wp, 1), size(q_wp, 2));
 fprintf("Waypoint path dim: %d\n", path_wp.dim);
 disp(table([0; 1; 2], q_wp(1,:).', q_wp(2,:).', ...
     'VariableNames', {'s', 'q1', 'q2'}))
+
+%% Tolerance-fitted waypoint path
+% |Path.from_waypoints_fitting| joins the waypoint columns into a reference
+% polyline and approximates the selected rows with an adaptive quintic
+% B-spline with \(C^4\) continuity. Each selected row deviates from the
+% polyline by at most its tolerance, in input units, over every whole
+% reference interval. The first and last waypoints are kept, but interior
+% waypoints are generally not interpolated. |tolerance| is a scalar or one
+% value per entry of |axes| (1-based rows, in |axes| order), and |parameters|
+% optionally assigns the path parameter of each column.
+%
+% |smoothing_report| returns the selected axes, the final per-axis error
+% bounds, and refinement counters, or |[]| for paths that were not fitted.
+% The waypoint constructors are currently unstable: names, signatures, and
+% options may change as additional waypoint path-construction algorithms are
+% added.
+
+path_fit = copp.Path.from_waypoints_fitting( ...
+    waypoints, ...
+    tolerance=1.0e-3, ...
+    parameters=[0, 0.5, 1.0, 1.5, 2.0]);
+cleanup_fit = onCleanup(@() path_fit.release());
+
+report = path_fit.smoothing_report();
+fprintf("Fitted path: %d spans after %d refinements\n", ...
+    report.segments, report.refinements);
+disp(table(report.axes, report.max_errors, ...
+    'VariableNames', {'axis', 'max_error'}))
 
 %% Jet3 parametric path
 % |Path.from_parametric| is the lightest formula constructor. The callback is

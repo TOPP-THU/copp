@@ -28,7 +28,8 @@ extern "C" {
 /**
  * Opaque C handle for a library-owned `Path`.
  *
- * Create with `copp_path_from_waypoints`, `copp_path_from_parametric`,
+ * Create with `copp_path_from_waypoints_interpolating`,
+ * `copp_path_from_waypoints_fitting`, `copp_path_from_parametric`,
  * `copp_path_from_evaluator_2nd`, or `copp_path_from_evaluator_3rd` and
  * release exactly once with `copp_path_free`. C callers must not inspect or
  * allocate this type directly.
@@ -413,11 +414,12 @@ enum CoppStatus copp_path_default_options(double s_min,
                                           struct CoppPathOptions *out_options);
 
 /**
- * Build a waypoint spline path.
+ * Build an interpolating waypoint spline path.
  *
  * `waypoints` must be a matrix view of shape `dim x n_points`, where each
- * column is one waypoint. `options.start_state` and `options.end_state` may be
- * empty to use zero boundary derivatives.
+ * column is one waypoint. The spline interpolates every waypoint column.
+ * `options.start_state` and `options.end_state` may be empty to use zero
+ * boundary derivatives.
  *
  * Column-major input with `leading_dim >= rows` avoids a temporary layout
  * copy while building the spline coefficients. Row-major input is accepted
@@ -426,6 +428,12 @@ enum CoppStatus copp_path_default_options(double s_min,
  *
  * On success, `*out_path` receives a non-null handle that must be released
  * with `copp_path_free`.
+ *
+ * # API stability
+ * The waypoint path constructors are currently unstable: their names,
+ * signatures, and option types may change as additional waypoint
+ * path-construction algorithms are introduced. `copp_path_from_waypoints` is
+ * an equivalent alias of this function.
  *
  * # Example
  * The example below builds a two-dimensional spline path from column-major
@@ -443,7 +451,7 @@ enum CoppStatus copp_path_default_options(double s_min,
  * struct CoppPathOptions options;
  * struct CoppPath *path = NULL;
  * check(copp_path_default_options(0.0, 1.0, &options));
- * check(copp_path_from_waypoints(
+ * check(copp_path_from_waypoints_interpolating(
  *     COPP_MATRIX_VIEW_F64_COLUMN_MAJOR(waypoints, DIM, NUM_WAYPOINTS),
  *     options,
  *     &path));
@@ -456,9 +464,293 @@ enum CoppStatus copp_path_default_options(double s_min,
  * `double` arrays for their declared layouts for the duration of this call.
  * `out_path` must be valid for one `CoppPath*` write.
  */
+enum CoppStatus copp_path_from_waypoints_interpolating(struct CoppMatrixViewF64 waypoints,
+                                                       struct CoppPathOptions options,
+                                                       struct CoppPath **out_path);
+
+/**
+ * Build an interpolating waypoint spline path.
+ *
+ * This is an equivalent alias of `copp_path_from_waypoints_interpolating`
+ * with identical arguments, behavior, and status codes. Both names remain
+ * supported and share the unstable status of the waypoint path constructors.
+ *
+ * \par Safety
+ * Same requirements as `copp_path_from_waypoints_interpolating`.
+ */
 enum CoppStatus copp_path_from_waypoints(struct CoppMatrixViewF64 waypoints,
                                          struct CoppPathOptions options,
                                          struct CoppPath **out_path);
+
+/**
+ * Options for tolerance-bounded waypoint fitting.
+ *
+ * Use `copp_smoothing_default_options` first, then override only the fields
+ * you need. Empty borrowed slices (`data = NULL`, `len = 0`) select the
+ * documented defaults. Borrowed slices are read only during
+ * `copp_path_from_waypoints_fitting`; the returned path does not keep them.
+ *
+ * This options type is currently unstable: its fields and layout may change
+ * as additional waypoint path-construction algorithms are introduced.
+ *
+ * # Example
+ * The example below fits translational rows `0..=2` to `1e-3` input units and
+ * rotary rows `3..=4` to `1e-2` input units. Tolerance entries follow `axes`
+ * order.
+ *
+ * ```c
+ * size_t axes[] = {0, 1, 2, 3, 4};
+ * double tolerances[] = {1e-3, 1e-3, 1e-3, 1e-2, 1e-2};
+ * struct CoppSmoothingOptions options;
+ * check(copp_smoothing_default_options(&options));
+ * options.axes = (struct CoppSliceUsize){axes, 5};
+ * options.tolerance_per_axis = (struct CoppSliceF64){tolerances, 5};
+ * ```
+ */
+typedef struct CoppSmoothingOptions {
+    /**
+     * Absolute tolerance broadcast to every selected axis when
+     * `tolerance_per_axis` is empty.
+     *
+     * The value is expressed in each selected row's input units and must be
+     * finite and strictly positive. The default is `0.001`.
+     */
+    double tolerance;
+    /**
+     * Optional per-axis absolute tolerances.
+     *
+     * When non-empty, this replaces `tolerance`. Its length must equal the
+     * number of selected axes, and entry `i` applies to input row `axes[i]`:
+     * the order follows `axes`, not the row index. When `axes` is empty, the
+     * order is the natural row order `0..rows`. Every entry must be finite and
+     * strictly positive, in the corresponding row's input units.
+     */
+    struct CoppSliceF64 tolerance_per_axis;
+    /**
+     * Optional 0-based input rows allowed to deviate from their reference
+     * polylines.
+     *
+     * Empty selects every row. A non-empty list must contain distinct,
+     * in-range row indices; its order also defines the order of
+     * `tolerance_per_axis` and of the report's `axes` and `max_errors`.
+     * Unselected rows keep quintic `C4` interpolation through all waypoint
+     * columns, with zero first and second parameter derivatives at both ends.
+     */
+    struct CoppSliceUsize axes;
+    /**
+     * Optional common path parameter assigned to each waypoint column.
+     *
+     * Empty assigns the columns uniformly on `[0, 1]`. A non-empty list must
+     * contain one finite, strictly increasing entry per column; its first and
+     * last entries become the path parameter range. Relative spacing affects
+     * the fitted geometry, not only the returned parameter range.
+     */
+    struct CoppSliceF64 parameters;
+    /**
+     * Maximum number of adaptive knot-refinement passes.
+     *
+     * The default is 20. Reaching this limit before the whole-interval audit
+     * passes returns `COPP_STATUS_PATH_SMOOTHING`.
+     */
+    size_t max_refinements;
+    /**
+     * Maximum number of polynomial spans used by the selected axes.
+     *
+     * The default is 20000. Spans of the separate unselected-axis
+     * interpolant do not consume this budget.
+     */
+    size_t max_segments;
+    /**
+     * Behavior for out-of-range evaluation of the returned path.
+     *
+     * The default is `COPP_PATH_OUT_OF_RANGE_MODE_ERROR`. Clamping affects
+     * later queries, not fitting or auditing.
+     */
+    enum CoppPathOutOfRangeMode out_of_range_mode;
+} CoppSmoothingOptions;
+
+/**
+ * Diagnostics recorded while constructing a tolerance-fitted waypoint path.
+ *
+ * Obtain this report with `copp_path_smoothing_report`. `axes`, `segments`,
+ * and `interpolated_segments` describe the final representation, while
+ * `refinements`, `fitting_rows`, and `checked_intervals` are cumulative work
+ * counters. None of these values is an optimality or run-time guarantee.
+ * Both vectors are library-owned and must be released together with
+ * `copp_smoothing_report_free`.
+ *
+ * This report type is currently unstable: its fields and layout may change as
+ * additional waypoint path-construction algorithms are introduced.
+ */
+typedef struct CoppSmoothingReport {
+    /**
+     * Selected 0-based input-row indices, in tolerance/report order.
+     */
+    struct CoppVecUsize axes;
+    /**
+     * Number of final polynomial spans shared by the selected axes.
+     */
+    size_t segments;
+    /**
+     * Number of spans in the separate unselected-axis interpolant.
+     *
+     * This is zero when every row is selected and is not included in
+     * `segments` or the `max_segments` budget.
+     */
+    size_t interpolated_segments;
+    /**
+     * Number of completed local knot-refinement passes.
+     */
+    size_t refinements;
+    /**
+     * Number of discrete or quadrature fitting rows assembled, counting rows
+     * assembled again during local refits.
+     */
+    size_t fitting_rows;
+    /**
+     * Number of reference-polyline intervals visited by numerical audits,
+     * including revisits and the final full audit.
+     */
+    size_t checked_intervals;
+    /**
+     * Final whole-domain absolute-error bound for each selected axis.
+     *
+     * Values are in input units and follow `axes` order. They are
+     * Bernstein-derived numerical bounds computed with ordinary
+     * floating-point arithmetic, not sampled maxima or formal certificates.
+     */
+    struct CoppVecF64 max_errors;
+} CoppSmoothingReport;
+
+/**
+ * Write default tolerance-bounded fitting options into `out_options`.
+ *
+ * Defaults fit every row with absolute tolerance `0.001`, assign waypoint
+ * parameters uniformly on `[0, 1]`, allow 20 refinement passes and 20000
+ * selected-axis spans, and reject out-of-range queries. All borrowed slices
+ * are empty.
+ *
+ * \par Safety
+ * `out_options` must be valid for one `CoppSmoothingOptions` write.
+ */
+enum CoppStatus copp_smoothing_default_options(struct CoppSmoothingOptions *out_options);
+
+/**
+ * Build a tolerance-bounded waypoint-fitting path.
+ *
+ * `waypoints` must be a finite matrix view of shape `dim x n_points` with
+ * `dim > 0` and `n_points >= 2`, where each column is one waypoint. Each
+ * column receives a common path parameter (`options.parameters`, or uniform
+ * on `[0, 1]` when empty), and adjacent columns are joined linearly into a
+ * reference polyline. The selected axes (`options.axes`, or every row when
+ * empty) are approximated by one adaptive nonuniform quintic B-spline with
+ * `C4` continuity whose same-parameter absolute deviation from the reference
+ * polyline stays within each axis tolerance. The error is audited over every
+ * complete reference interval, not only at the waypoints.
+ *
+ * Unlike `copp_path_from_waypoints_interpolating`, the fitted path does not
+ * pass through interior waypoints: selected axes may deviate within their
+ * tolerances, while the first and last waypoints are retained. Unselected
+ * rows keep quintic `C4` interpolation through every column. Derivatives
+ * returned by path evaluation are with respect to the path parameter `s`,
+ * not time. Use `copp_path_smoothing_report` to inspect the selected axes,
+ * the final per-axis error bounds, and the refinement work.
+ *
+ * Column-major input with `leading_dim >= rows` is read without a temporary
+ * layout copy. Row-major input is accepted and copied once into column-major
+ * temporary storage. The returned path owns its fitted representation and
+ * does not borrow `waypoints` or the slices in `options` after the call.
+ *
+ * On success, `*out_path` receives a non-null handle that must be released
+ * with `copp_path_free`.
+ *
+ * # API stability
+ * The waypoint path constructors and `CoppSmoothingOptions` /
+ * `CoppSmoothingReport` are currently unstable: their names, signatures, and
+ * option types may change as additional waypoint path-construction
+ * algorithms are introduced.
+ *
+ * \par Errors
+ * Returns `COPP_STATUS_PATH_SMOOTHING` when the waypoint values, dimensions,
+ * axes, tolerances, or parameters violate their contracts, when the
+ * selected-axis span count exceeds `options.max_segments`, when refinement
+ * exhausts `options.max_refinements` or the parameter resolution, when the
+ * banded fit encounters an unusable numerical system, or when the final
+ * whole-interval audit fails. An unchecked or relaxed approximation is never
+ * returned.
+ *
+ * # Example
+ * The example below fits a two-dimensional waypoint path within `1e-3` input
+ * units and reads the final error bound of each axis.
+ *
+ * ```c
+ * enum { DIM = 2, NUM_WAYPOINTS = 5 };
+ * double waypoints[DIM * NUM_WAYPOINTS] = {
+ *     0.0, 0.0,
+ *     0.25, 0.4,
+ *     0.5, 0.5,
+ *     0.75, 0.4,
+ *     1.0, 0.0,
+ * };
+ *
+ * struct CoppSmoothingOptions options;
+ * struct CoppPath *path = NULL;
+ * check(copp_smoothing_default_options(&options));
+ * options.tolerance = 1e-3;
+ * check(copp_path_from_waypoints_fitting(
+ *     COPP_MATRIX_VIEW_F64_COLUMN_MAJOR(waypoints, DIM, NUM_WAYPOINTS),
+ *     options,
+ *     &path));
+ *
+ * bool has_report = false;
+ * struct CoppSmoothingReport report = {0};
+ * check(copp_path_smoothing_report(path, &has_report, &report));
+ * for (size_t i = 0; i < report.axes.len; ++i) {
+ *     printf("axis %zu: %.3e\n", report.axes.data[i], report.max_errors.data[i]);
+ * }
+ * copp_smoothing_report_free(report);
+ * copp_path_free(path);
+ * ```
+ *
+ * \par Safety
+ * Non-empty matrix views and slices in `waypoints` and `options` must point
+ * to valid arrays for their declared layouts for the duration of this call.
+ * `out_path` must be valid for one `CoppPath*` write.
+ */
+enum CoppStatus copp_path_from_waypoints_fitting(struct CoppMatrixViewF64 waypoints,
+                                                 struct CoppSmoothingOptions options,
+                                                 struct CoppPath **out_path);
+
+/**
+ * Return the construction report of a tolerance-fitted waypoint path.
+ *
+ * For a path built by `copp_path_from_waypoints_fitting`, `*out_has_report`
+ * receives `true` and `*out_report` receives a library-owned report that must
+ * be released with `copp_smoothing_report_free`. For any other path,
+ * `*out_has_report` receives `false` and `*out_report` receives an empty
+ * report with null vectors and zero counters; releasing it is allowed.
+ *
+ * \par Safety
+ * `path` must be a non-null handle created by this module.
+ * `out_has_report` must be valid for one `bool` write and `out_report` for
+ * one `CoppSmoothingReport` write.
+ */
+enum CoppStatus copp_path_smoothing_report(const struct CoppPath *path,
+                                           bool *out_has_report,
+                                           struct CoppSmoothingReport *out_report);
+
+/**
+ * Release memory owned by a `CoppSmoothingReport`.
+ *
+ * Passing an empty report is allowed and has no effect. Passing an
+ * already-freed report is invalid.
+ *
+ * \par Safety
+ * `report` must either be empty/null or have been returned by
+ * `copp_path_smoothing_report`. Passing arbitrary pointers or modified
+ * capacity fields is invalid.
+ */
+void copp_smoothing_report_free(struct CoppSmoothingReport report);
 
 /**
  * Build a path from a scalar-parametric C callback.

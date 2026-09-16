@@ -5,9 +5,45 @@
 //! | You have | Use | Notes |
 //! |---|---|---|
 //! | Analytic formula `q(s)` | [`Path::from_parametric`](crate::path::Path::from_parametric) | Computes derivatives up to third order by [`Jet3`] automatic differentiation. |
-//! | Waypoint positions | [`Path::from_waypoints`](crate::path::Path::from_waypoints) | Builds a spline from a `(dim x n_points)` waypoint matrix. |
+//! | Waypoints the path must pass through | [`Path::from_waypoints_interpolating`](crate::path::Path::from_waypoints_interpolating) | Interpolates every column of a `(dim x n_points)` waypoint matrix. |
+//! | A reference polyline that may be approximated | [`Path::from_waypoints_fitting`](crate::path::Path::from_waypoints_fitting) | `C4` quintic fitting; per-axis tolerance defaults to `0.001`. |
 //! | Explicit `q/dq/ddq` evaluator | [`Path::from_evaluator_2nd`](crate::path::Path::from_evaluator_2nd) | Use for TOPP2/COPP2 or other workflows that do not need jerk. See [`PathEvaluator2nd`]. |
 //! | Explicit `q/dq/ddq/dddq` evaluator | [`Path::from_evaluator_3rd`](crate::path::Path::from_evaluator_3rd) | Use for TOPP3/COPP3 workflows. See [`PathEvaluator3rd`]. |
+//!
+//! The waypoint constructor families also provide borrowed-view companions:
+//! [`Path::from_waypoints_interpolating_view`] and
+//! [`Path::from_waypoints_fitting_view`]. They accept compatible strided
+//! column-major nalgebra views without requiring callers to first materialize a
+//! `DMatrix`.
+//!
+//! # Interpolating versus fitting waypoint paths
+//!
+//! [`Path::from_waypoints_interpolating`](crate::path::Path::from_waypoints_interpolating)
+//! constrains the path to pass through **every** input waypoint at its assigned
+//! parameter, up to floating-point roundoff. Choose it when each waypoint is a
+//! position or event that must be retained.
+//!
+//! [`Path::from_waypoints_fitting`](crate::path::Path::from_waypoints_fitting)
+//! instead treats adjacent columns as a reference polyline under one common
+//! parameter. The fitted curve is **not** required to pass through interior
+//! waypoints: selected axes may deviate from them within their configured
+//! tolerances. Their absolute error at the same parameter is numerically audited
+//! over every complete reference interval, while endpoint positions are retained
+//! up to floating-point roundoff. Configure axis selection, parameters,
+//! tolerances, and construction budgets with [`SmoothingConfig`] and
+//! [`SmoothingTolerance`]; inspect final bounds and refinement work through
+//! [`SmoothingReport`].
+//!
+//! Fitting is geometric preprocessing, not time parameterization. Values from
+//! the evaluation methods below are derivatives with respect to `s`; physical
+//! velocity, acceleration, and jerk also depend on the later time law `s(t)`.
+//!
+//! # API stability
+//!
+//! The waypoint interpolation and fitting constructor families, including
+//! their `_view` variants, are currently **unstable**. As additional algorithms
+//! are introduced, their names, signatures, configuration types, and
+//! method-selection interfaces may change in future releases.
 //!
 //! Once built, call one of the evaluation methods with a one-dimensional parameter slice:
 //!
@@ -19,12 +55,14 @@
 
 pub mod autodiff;
 mod path_core;
+mod smoothing;
 pub mod spline;
 
 pub use autodiff::{Jet3, cos, exp, ln, powi, sin, sqrt};
 pub use path_core::{
     ParametricFn, Path, PathDerivatives, PathEvaluator, PathEvaluator2nd, PathEvaluator3rd,
 };
+pub use smoothing::{SmoothingConfig, SmoothingReport, SmoothingTolerance};
 pub use spline::{Parametrization, SplineConfig};
 
 #[cfg(test)]
@@ -161,7 +199,7 @@ mod tests {
         let sample_ms = start.elapsed().as_secs_f64() * 1e3;
 
         let start = Instant::now();
-        let path = super::Path::from_waypoints(&waypoints, SplineConfig::default())?;
+        let path = super::Path::from_waypoints_interpolating(&waypoints, SplineConfig::default())?;
         let build_ms = start.elapsed().as_secs_f64() * 1e3;
 
         let s = make_s_vector(N);

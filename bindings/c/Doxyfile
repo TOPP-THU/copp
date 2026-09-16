@@ -7,6 +7,9 @@
 #   powershell -ExecutionPolicy Bypass -File bindings/c/scripts/generate_docs.ps1
 
 PROJECT_NAME           = "COPP C ABI"
+# Set by scripts/generate_docs.sh and scripts/generate_docs.ps1 from the
+# crate version in Cargo.toml; empty when doxygen is run by hand.
+PROJECT_NUMBER         = $(COPP_VERSION)
 PROJECT_BRIEF          = "C interface for COPP trajectory optimization"
 OUTPUT_DIRECTORY       = bindings/c/docs
 

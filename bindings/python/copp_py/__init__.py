@@ -1,4 +1,4 @@
-r"""Python interface for COPP.
+r"""Python interface for copp-py.
 
 Import the package as::
 
@@ -37,7 +37,7 @@ from .core import (
 )
 from .constraints import Constraints
 from .interpolation import Profile3rd
-from .path import Path, PathDerivatives, SplineConfig
+from .path import Path, PathDerivatives, SmoothingConfig, SmoothingReport, SplineConfig
 from .robot import Robot
 
 __all__ = [
@@ -52,6 +52,8 @@ __all__ = [
     "PathError",
     "Profile3rd",
     "Robot",
+    "SmoothingConfig",
+    "SmoothingReport",
     "SplineConfig",
     "Verbosity",
     "__version__",

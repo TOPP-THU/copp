@@ -88,8 +88,8 @@
 %   where \(R\) is the number of inequality rows per station.
 %
 % A quick mental check: if a matrix is about robot coordinates, rows are axes
-% and columns are stations. If a matrix is about raw inequalities, rows are
-% inequality rows and columns are stations.
+% and columns are stations. If a matrix is about raw inequalities or reachable
+% set polygons, rows are inequality/vertex rows and columns are stations.
 
 %% First complete workflow
 % This example solves a compact TOPP2-RA problem. The path is \(q(s)=s\), sampled
@@ -126,7 +126,7 @@ fprintf("Final traversal time: %.6f seconds\n", t_final);
 % # |Path Module| - choose how to represent geometry.
 % # |Robot and Constraints| - convert geometry into station-indexed limits.
 % # |TOPP2 and COPP2 Solvers| - solve the easiest full problems first.
-% # |TOPP3 and COPP3 Solvers| - add jerk-level modeling.
+% # |TOPP3 and COPP3 Solvers| - add jerk-level modeling and reachability.
 % # |Interpolation| - turn \(a(s)\) or |Profile3rd| into \(s(t)\).
 % # |Errors and Diagnostics| - understand exceptions, expert solver statuses,
 %   and verbosity.

@@ -272,7 +272,6 @@ fn t_to_s_topp2_core(
                     + inverse_2order(
                         a_pair[0],
                         (a_pair[1] - a_pair[0]) / (s_pair[1] - s_pair[0]),
-                        0.0,
                         t_curr - t_pair[0],
                     ),
             );
@@ -291,23 +290,86 @@ fn t_to_s_topp2_core(
 }
 
 /// Solve `x_right` from the integral equation
-/// $dt = \int_{x_{left}}^{x_{right}} \frac{dx}{\sqrt{c_0 + c_1 x}}$.
-#[inline]
-fn inverse_2order(c0: f64, c1: f64, x_left: f64, dt: f64) -> f64 {
-    // Closed form: x_right = ((sqrt(c0 + c1 x_left) + c1 dt / 2)^2 - c0) / c1.
-    // Expanding the square cancels `c0` analytically, giving
-    //     x_right = x_left + sqrt(c0 + c1 x_left) dt + c1 dt^2 / 4,
-    // which is algebraically identical but free of the catastrophic cancellation
-    // that the un-expanded form suffers when `c1` is tiny compared with `c0`
-    // (e.g. a numerically constant profile whose nodes differ by rounding noise).
-    // The expanded form also degrades gracefully to `x_left + sqrt(c0) dt` as
-    // `c1 -> 0`, so no special-casing of small `c1` is needed.
-    let v_left_sq = c0 + c1 * x_left;
-    if dt == 0.0 {
-        x_left
-    } else if v_left_sq > 0.0 || c1 != 0.0 {
-        x_left + v_left_sq.max(0.0).sqrt() * dt + 0.25 * c1 * dt * dt
-    } else {
-        f64::INFINITY
+/// $dt = \int_{0}^{x_{right}} \frac{dx}{\sqrt{c_0 + c_1 x}}$.
+#[inline(always)]
+fn inverse_2order(c0: f64, c1: f64, dt: f64) -> f64 {
+    dt * c1.mul_add(0.25 * dt, c0.sqrt())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A node profile that is constant up to 1-ulp rounding noise must sample to a
+    /// uniformly spaced `s(t)`: the tiny slope `(a[i+1] - a[i]) / ds` must not
+    /// amplify floating-point cancellation into visible position error.
+    #[test]
+    fn t_to_s_topp2_is_stable_for_nearly_constant_profile() {
+        let n = 20_000_usize;
+        let ds = 0.01;
+        let sdot: f64 = 400.0 / 3.0;
+        let a_base = sdot * sdot;
+        let s: Vec<f64> = (0..n).map(|i| i as f64 * ds).collect();
+        let a: Vec<f64> = (0..n)
+            .map(|i| {
+                if i % 2 == 0 {
+                    a_base
+                } else {
+                    f64::from_bits(a_base.to_bits() + 1)
+                }
+            })
+            .collect();
+
+        let (_t_final, t_s) = s_to_t_topp2(&s, &a, 0.0).unwrap();
+        let dt = 0.002;
+        let s_t = t_to_s_topp2(
+            &s,
+            &a,
+            &t_s,
+            InterpolationMode::UniformTimeGrid(0.0, dt, false),
+        )
+        .unwrap();
+
+        assert!(s_t.len() > 100);
+        let expected_step = sdot * dt;
+        let mut worst = 0.0_f64;
+        for pair in s_t.windows(2) {
+            worst = worst.max((pair[1] - pair[0] - expected_step).abs());
+        }
+        assert!(
+            worst < 1.0e-9,
+            "sampled s(t) spacing deviates from {expected_step} by up to {worst}"
+        );
+    }
+
+    /// A genuinely accelerating profile must still match the closed-form
+    /// constant-acceleration solution.
+    #[test]
+    fn t_to_s_topp2_matches_constant_acceleration_solution() {
+        let b = 3.0;
+        let s0 = 1.0;
+        let n = 501_usize;
+        let s: Vec<f64> = (0..n).map(|i| s0 + i as f64 * 0.01).collect();
+        let a: Vec<f64> = s.iter().map(|&x| 2.0 * b * x).collect();
+
+        let (_t_final, t_s) = s_to_t_topp2(&s, &a, 0.0).unwrap();
+        let dt = 1.0e-3;
+        let s_t = t_to_s_topp2(
+            &s,
+            &a,
+            &t_s,
+            InterpolationMode::UniformTimeGrid(0.0, dt, false),
+        )
+        .unwrap();
+
+        let v0 = (2.0 * b * s0).sqrt();
+        for (i, &value) in s_t.iter().enumerate() {
+            let t = i as f64 * dt;
+            let exact = s0 + v0 * t + 0.5 * b * t * t;
+            assert!(
+                (value - exact).abs() < 1.0e-9,
+                "i={i} value={value} exact={exact}"
+            );
+        }
     }
 }

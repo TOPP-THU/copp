@@ -393,9 +393,11 @@ namespace copp::solver::topp3
         std::size_t idx_s_start,
         Boundary3 boundary,
         StationaryBounds num_stationary_max,
-        double a_linearization_floor)
+        double a_linearization_floor,
+        Span<const double> b_linearization)
         : constraints_(constraints),
           a_linearization_(copy_span(a_linearization)),
+          b_linearization_(copy_span(b_linearization)),
           idx_s_start_(idx_s_start),
           boundary_(boundary),
           num_stationary_max_(num_stationary_max),
@@ -406,6 +408,7 @@ namespace copp::solver::topp3
                                       { return handle->topp3_problem_prepare(
                                             idx_s_start_,
                                             to_rust_slice(a_linearization_),
+                                            to_rust_slice(b_linearization_),
                                             boundary_.a_start,
                                             boundary_.a_final,
                                             boundary_.b_start,
@@ -422,14 +425,16 @@ namespace copp::solver::topp3
         std::size_t idx_s_start,
         Boundary3 boundary,
         std::size_t symmetric_num_stationary_max,
-        double a_linearization_floor)
+        double a_linearization_floor,
+        Span<const double> b_linearization)
         : Problem(
               constraints,
               a_linearization,
               idx_s_start,
               boundary,
               StationaryBounds::both(symmetric_num_stationary_max),
-              a_linearization_floor) {}
+              a_linearization_floor,
+              b_linearization) {}
 
 } // namespace copp::solver::topp3
 
@@ -443,6 +448,7 @@ namespace copp::solver::topp3_lp
                                    { return handle->topp3_lp_solve(
                                          problem.idx_s_start(),
                                          to_rust_slice(problem.a_linearization()),
+                                         to_rust_slice(problem.b_linearization()),
                                          problem.boundary().a_start,
                                          problem.boundary().a_final,
                                          problem.boundary().b_start,
@@ -461,6 +467,7 @@ namespace copp::solver::topp3_lp
                                   { return handle->topp3_lp_solve_expert(
                                         problem.idx_s_start(),
                                         to_rust_slice(problem.a_linearization()),
+                                        to_rust_slice(problem.b_linearization()),
                                         problem.boundary().a_start,
                                         problem.boundary().a_final,
                                         problem.boundary().b_start,
@@ -484,6 +491,7 @@ namespace copp::solver::topp3_socp
                                    { return handle->topp3_socp_solve(
                                          problem.idx_s_start(),
                                          to_rust_slice(problem.a_linearization()),
+                                         to_rust_slice(problem.b_linearization()),
                                          problem.boundary().a_start,
                                          problem.boundary().a_final,
                                          problem.boundary().b_start,
@@ -502,6 +510,7 @@ namespace copp::solver::topp3_socp
                                   { return handle->topp3_socp_solve_expert(
                                         problem.idx_s_start(),
                                         to_rust_slice(problem.a_linearization()),
+                                        to_rust_slice(problem.b_linearization()),
                                         problem.boundary().a_start,
                                         problem.boundary().a_final,
                                         problem.boundary().b_start,
@@ -525,10 +534,12 @@ namespace copp::solver::copp3_socp
         std::size_t idx_s_start,
         Boundary3 boundary,
         StationaryBounds num_stationary_max,
-        double a_linearization_floor)
+        double a_linearization_floor,
+        Span<const double> b_linearization)
         : robot_(&robot),
           objectives_(std::move(objectives)),
           a_linearization_(copy_span(a_linearization)),
+          b_linearization_(copy_span(b_linearization)),
           idx_s_start_(idx_s_start),
           boundary_(boundary),
           num_stationary_max_(num_stationary_max),
@@ -540,6 +551,7 @@ namespace copp::solver::copp3_socp
                                       { return handle->copp3_problem_prepare(
                                             idx_s_start_,
                                             to_rust_slice(a_linearization_),
+                                            to_rust_slice(b_linearization_),
                                             boundary_.a_start,
                                             boundary_.a_final,
                                             boundary_.b_start,
@@ -559,7 +571,8 @@ namespace copp::solver::copp3_socp
         std::size_t idx_s_start,
         Boundary3 boundary,
         StationaryBounds num_stationary_max,
-        double a_linearization_floor)
+        double a_linearization_floor,
+        Span<const double> b_linearization)
         : Problem(
               robot,
               std::vector<Objective>(objectives),
@@ -567,7 +580,8 @@ namespace copp::solver::copp3_socp
               idx_s_start,
               boundary,
               num_stationary_max,
-              a_linearization_floor) {}
+              a_linearization_floor,
+              b_linearization) {}
 
     Problem::Problem(
         Robot &robot,
@@ -576,7 +590,8 @@ namespace copp::solver::copp3_socp
         std::size_t idx_s_start,
         Boundary3 boundary,
         std::size_t symmetric_num_stationary_max,
-        double a_linearization_floor)
+        double a_linearization_floor,
+        Span<const double> b_linearization)
         : Problem(
               robot,
               std::move(objectives),
@@ -584,7 +599,8 @@ namespace copp::solver::copp3_socp
               idx_s_start,
               boundary,
               StationaryBounds::both(symmetric_num_stationary_max),
-              a_linearization_floor) {}
+              a_linearization_floor,
+              b_linearization) {}
 
     Profile3rd solve(const Problem &problem, const clarabel::Options &options)
     {
@@ -594,6 +610,7 @@ namespace copp::solver::copp3_socp
                                    { return handle->copp3_socp_solve(
                                          problem.idx_s_start(),
                                          to_rust_slice(problem.a_linearization()),
+                                         to_rust_slice(problem.b_linearization()),
                                          problem.boundary().a_start,
                                          problem.boundary().a_final,
                                          problem.boundary().b_start,
@@ -615,6 +632,7 @@ namespace copp::solver::copp3_socp
                                   { return handle->copp3_socp_solve_expert(
                                         problem.idx_s_start(),
                                         to_rust_slice(problem.a_linearization()),
+                                        to_rust_slice(problem.b_linearization()),
                                         problem.boundary().a_start,
                                         problem.boundary().a_final,
                                         problem.boundary().b_start,
@@ -629,4 +647,3 @@ namespace copp::solver::copp3_socp
     }
 
 } // namespace copp::solver::copp3_socp
-

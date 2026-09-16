@@ -100,7 +100,50 @@ namespace copp
 
         /// Borrow one segment as the two-node profile `idx_s..=idx_s+1`.
         Profile3rdRef segment(std::size_t idx_s) const;
+
+        /// Adjust `a` and `b` in place so interpolated `a(s)` stays strictly
+        /// positive on every interval.
+        ///
+        /// A profile whose `a` touches zero at or between stations can have an
+        /// interpolated `a(s)` that dips to or below zero inside an interval.
+        /// Call this before `interpolation::s_to_t_topp3` on such profiles.
+        /// The adjustment rewrites `a` and `b` without knowing
+        /// the acceleration and jerk limits, so re-check the result with
+        /// `ConstraintsRef::exceed_topp3` afterwards.
+        ///
+        /// @param s Strictly increasing station grid with `s.size() == len()`
+        /// and at least four stations.
+        /// @param a_min Nonnegative lower target for interpolated `a`.
+        /// @return `true` when every interval was adjusted successfully;
+        /// `false` when the adjustment failed for some interval (not an error;
+        /// other intervals may still have been adjusted).
+        /// @throws copp::Error on invalid input: length mismatch, fewer than
+        /// four stations, negative `a` or `a_min`, non-finite values,
+        /// non-increasing `s`, or stationary counts that leave no motion
+        /// interval.
+        bool force_positive_a(Span<const double> s, double a_min = 1.0e-12);
+
+        /// No-throw forms of `force_positive_a`.
+        ///
+        /// The `Expected` only reports whether the call itself succeeded
+        /// (invalid input becomes an error). The repaired flag is its
+        /// `value()`, which can be `false` even when the call succeeded.
+        Expected<bool> force_positive_a(Span<const double> s, double a_min, NoThrowTag);
+        Expected<bool> force_positive_a(Span<const double> s, NoThrowTag);
     };
+
+    inline Expected<bool> Profile3rd::force_positive_a(
+        Span<const double> s,
+        double a_min,
+        NoThrowTag)
+    {
+        return detail::expected_from([&] { return force_positive_a(s, a_min); });
+    }
+
+    inline Expected<bool> Profile3rd::force_positive_a(Span<const double> s, NoThrowTag tag)
+    {
+        return force_positive_a(s, 1.0e-12, tag);
+    }
 
 } // namespace copp
 
