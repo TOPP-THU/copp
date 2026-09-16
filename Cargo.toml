@@ -21,6 +21,8 @@ include = [
     "/src/**",
     "/build.rs",
     "/examples/**",
+    # examples/path_smoothing.rs reuses the path cases from this test file.
+    "/tests/test_path_smoothing.rs",
     "/bindings/cpp/src/**",
     "/bindings/cpp/include/**",
     "/mathjax-config.html",
