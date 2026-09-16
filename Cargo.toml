@@ -73,5 +73,4 @@ env_logger = "0.11.11"
 
 [package.metadata.docs.rs]
 # The following line adds MathJax support for rendering mathematical equations in documentation.
-# Run `cargo doc` to generate the documentation with MathJax.
 rustdoc-args = ["--html-in-header", "mathjax-config.html"]
