@@ -4,7 +4,7 @@ All notable changes to this project are documented in this file.
 
 This changelog follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.3] - Unreleased
+## [0.2.3]
 
 ### Breaking
 
@@ -38,6 +38,7 @@ This changelog follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - [All languages] Made the incremental LP kernels and the TOPP2-RA passes independent of the unit of the path parameter: the 2-D violation test, deferred correction and interval reconciliation use a relative rounding tolerance, and the interval comparisons in `reach_set2` and the TOPP2-RA forward pass take their tolerance from the magnitude of the neighbouring state, so the same problem in m, mm, um or nm gives the same traversal time and a fine grid over a large-radius arc no longer reports a spurious `a_max = NaN`.
 - [All languages] Fixed the row alignment of the linearized third-order constraints, which could fall out of sync with the third-order constraint rows added by `with_constraint_3order`.
 - [All languages] Fixed COPP2-SOCP misaligning its first-order constraint rows by one row, which dropped `a >= 0` at the last interior station and loosened the first finite `amax` bound (or, without any finite `amax`, the first second-order bound) by that station's `a`, so the returned profile could exceed that bound where it was active, typically when the profile starts near full speed rather than at rest.
+- [All languages] Fixed COPP2-SOCP stalling when a boundary `a` is zero: Clarabel could stop with `InsufficientProgress` or `NumericalError` depending on the platform.
 
 ## [0.2.2]
 
