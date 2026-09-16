@@ -23,7 +23,7 @@ use crate::diag::{
     CoppError, DebugVerboser, SilentVerboser, SummaryVerboser, TraceVerboser, Verboser, Verbosity,
     format_duration_human,
 };
-use crate::math::numerical::{LpToleranceOptions, lp_1d};
+use crate::math::numerical::{LpToleranceOptions, lp_1d, normalize_lp2d};
 use core::f64;
 use itertools::izip;
 
@@ -115,6 +115,9 @@ fn topp2_ra_core(
             .constraints
             .fill_acc_topp2::<true>(&mut a_b, idx_s - 1);
         // a_b.0 * a[k] + a_b.1 * a[k-1] <= a_b.2
+        normalize_lp2d(&mut a_b);
+        // The bounds below are differences of terms at the scale of `a_prev`; the
+        // interval comparison further down uses that scale for its tolerance.
         let (mut a_max_curr, mut a_min_curr) = lp_1d::<true>(
             a_b.iter().map(|&coeffs| {
                 // coeffs.0 * a_curr  + coeffs.1* a_prev <= coeffs.2
@@ -146,7 +149,9 @@ fn topp2_ra_core(
                 approx_order(
                     a_max_curr,
                     a_min_curr,
-                    options.a_cmp_abs_tol,
+                    options
+                        .a_cmp_abs_tol
+                        .max(options.a_cmp_rel_tol * a_prev.abs()),
                     options.a_cmp_rel_tol,
                 ),
                 ApproxOrdering::Less
@@ -197,7 +202,9 @@ fn topp2_ra_core(
                 approx_order(
                     a_max_curr,
                     a_min_curr,
-                    options.a_cmp_abs_tol,
+                    options
+                        .a_cmp_abs_tol
+                        .max(options.a_cmp_rel_tol * a_prev.abs()),
                     options.a_cmp_rel_tol,
                 ),
                 ApproxOrdering::Equal
