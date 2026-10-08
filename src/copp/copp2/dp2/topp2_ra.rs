@@ -16,7 +16,7 @@
 //! 2. Run forward clipping against local constraints and backward intervals.
 //! 3. Select maximal feasible `a[k]` at each stage to recover the time-optimal profile.
 
-use super::reach_set2::{ReachSet2Options, reach_set2_backward};
+use super::reach_set2::{ReachSet2Options, reach_set2_backward, reach_set2_bidirectional};
 use crate::copp::copp2::formulation::Topp2Problem;
 use crate::copp::{ApproxOrdering, approx_order};
 use crate::diag::{
@@ -479,6 +479,53 @@ fn topp2_ra_core(
         }
     }
 
+    // Where the grid does not resolve a curvature spike, the backward cap at
+    // `k - 1` may be attained only with `a[k] = 0`, so the greedy pass stops
+    // at `k`.  Inside the path that stop is still traversable, but next to a
+    // zero terminal state the last interval would have zero speed at both
+    // ends.  Pin the station before the terminal to the largest state that
+    // is reachable from the start and can still stop at the end, and solve
+    // the path up to it again.
+    if n >= 2
+        && a[n] <= 0.0
+        && !matches!(
+            approx_order(
+                a[n - 1],
+                0.0,
+                options
+                    .a_cmp_abs_tol
+                    .max(options.a_cmp_rel_tol * a[n - 2].abs()),
+                options.a_cmp_rel_tol,
+            ),
+            ApproxOrdering::Greater
+        )
+    {
+        let a_last = reach_set2_bidirectional(problem, options)?.a_max[n - 1];
+        if verboser.is_enabled(Verbosity::Debug) {
+            crate::verbosity_log!(
+                Verbosity::Debug,
+                "The forward pass stopped at idx_s = {} before the zero terminal state (a = {}); solving up to it again with a = {a_last}.",
+                idx_s_final - 1,
+                a[n - 1]
+            );
+        }
+        if a_last.is_nan() || a_last <= 0.0 {
+            return Err(CoppError::Infeasible(
+                "topp2_ra".into(),
+                format!(
+                    "No state with positive speed at idx_s = {} is reachable from the start and can stop at idx_s = {idx_s_final}; the reachable upper bound is a = {a_last}",
+                    idx_s_final - 1
+                ),
+            ));
+        }
+        let head = Topp2Problem {
+            constraints: problem.constraints,
+            idx_s_interval: (idx_s_start, idx_s_final - 1),
+            a_boundary: (problem.a_boundary.0, a_last),
+        };
+        a[..n].copy_from_slice(&topp2_ra(&head, options)?);
+    }
+
     if verboser.is_enabled(Verbosity::Summary) {
         crate::verbosity_log!(
             Verbosity::Summary,
@@ -588,6 +635,45 @@ mod tests {
         assert!(a_curr <= (1.0 + options.lp_feas_tol) / 1.0e12);
         assert!(normalized <= options.lp_feas_tol);
         assert!(raw <= options.lp_feas_tol);
+    }
+
+    /// A curvature spike that the station grid does not resolve can make the
+    /// greedy pass stop one station before a zero terminal state.  Here `ddq`
+    /// jumps to 2 at station 2 while `dq` stays -1, so the backward cap
+    /// `a[1] <= 2` is attained only with `a[2] = 0`; with `a[3] = 0` the last
+    /// interval would have zero speed at both ends and never be traversed.
+    #[test]
+    fn test_topp2_ra_does_not_stop_before_zero_terminal() {
+        let s = [0.0, 1.0, 2.0, 3.0];
+        let mut constraints = Constraints::with_capacity(1, s.len());
+        constraints.with_s(&s[..]).unwrap();
+        constraints
+            .with_constraint_1order(&[10.0; 4][..], 0)
+            .unwrap();
+        let ddq = DMatrix::from_row_slice(1, 4, &[0.0, 0.0, 2.0, 0.0]);
+        let dq = DMatrix::from_element(1, 4, -1.0);
+        let acc_max = DMatrix::from_element(1, 4, 1.0);
+        let acc_min = DMatrix::from_element(1, 4, -1.0);
+        constraints
+            .with_constraint_2order(&ddq.as_view(), &dq.as_view(), &acc_max.as_view(), 0, false)
+            .unwrap()
+            .with_constraint_2order(&ddq.as_view(), &dq.as_view(), &acc_min.as_view(), 0, true)
+            .unwrap();
+        let problem = Topp2ProblemBuilder::with_constraint(&constraints, (0, 3), (0.0, 0.0))
+            .build()
+            .unwrap();
+        let options = ReachSet2OptionsBuilder::new().build().unwrap();
+
+        let a = topp2_ra(&problem, &options).unwrap();
+
+        assert!(a[2] > 0.0, "a = {a:?}");
+        assert_eq!(a[3], 0.0, "a = {a:?}");
+        s_to_t_topp2(&s, &a, 0.0).unwrap();
+        let (exceed_1st, exceed_2nd) = constraints.exceed_topp2(0, &a);
+        assert!(
+            exceed_1st <= 1e-12 && exceed_2nd <= 1e-12,
+            "a = {a:?}, exceed = ({exceed_1st:e}, {exceed_2nd:e})"
+        );
     }
 
     fn constraints_with_first_edge_rows(

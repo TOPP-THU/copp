@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 This changelog follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- [All languages] Fixed TOPP2-RA returning a profile that stops one station before a zero terminal state, which `s_to_t_topp2` then rejected with ``sqrt(a[n-1]) + sqrt(a[n])` must be finite and positive``. Where the station grid does not resolve a curvature spike, for example a fitted CNC tool path sampled more coarsely than its corner radii, the greedy forward pass could reach the backward cap before such a station only by stopping there. TOPP2-RA now pins the station before the terminal to the largest state that is reachable from the start and can still stop at the end, and solves the path up to it again. Profiles that did not end this way are unchanged.
+
 ## [0.2.3]
 
 ### Breaking
