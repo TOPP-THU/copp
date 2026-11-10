@@ -667,7 +667,6 @@ Project maintainers:
 
 + [Mr. Yunan Wang](https://scholar.google.com/citations?user=RXaTo_kAAAAJ): [wang-yn22@mails.tsinghua.edu.cn](mailto:wang-yn22@mails.tsinghua.edu.cn)
 + [Dr. Suqin He](https://github.com/hsqthu2012): [hsq_thu2012@163.com](mailto:hsq_thu2012@163.com)
-+ [Dr. Shize Lin](https://github.com/thume4zzzz): [linszthume@gmail.com](mailto:linszthume@gmail.com)
-+ [Prof. Chuxiong Hu](https://www.me.tsinghua.edu.cn/en/info/1275/2062.htm): [cxhu@tsinghua.edu.cn](mailto:cxhu@tsinghua.edu.cn)
++ [Dr. Shize Lin](https://github.com/thume4zzzz).
 
-Furthermore, we would like to thank [Jizhou Yan](https://github.com/yixing312) for his expertise on Rust and robotics, and to thank [Daoming Chen](https://github.com/Daoming-Chen) for his contribution to Python bindings.
+Furthermore, we would like to thank [Jizhou Yan](https://github.com/yixing312) for his expertise on Rust and robotics, and to thank [Jun Chen](https://github.com/orgs/TOPP-THU/people/JCh4205) for his contribution to chattering elimination and his expertise on CNC machining.
